@@ -12,7 +12,7 @@ RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin worm \
     && mkdir -p /data \
     && chown -R worm:worm /app /data /ms-playwright
 USER worm
-# The database lives in /data. Railway (and any other host) needs a persistent volume mounted at /data,
-# otherwise every redeploy or restart starts from an empty database.
-VOLUME ["/data"]
+# The database lives in /data. Mount a persistent volume there (on Railway: a Railway Volume attached to the
+# service at /data; Railway rejects a Docker VOLUME instruction), otherwise every redeploy starts from an
+# empty database. Set RAILWAY_RUN_UID=1000 so the mounted volume is owned by the unprivileged user.
 CMD ["python", "run.py"]
