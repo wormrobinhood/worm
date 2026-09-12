@@ -40,6 +40,7 @@ def build():
     newest = lambda: db.one("SELECT token,name,symbol,grad_ts FROM launches WHERE graduated=1"
                             " ORDER BY grad_block DESC LIMIT 1")
     screen = Screen(hub, newest=newest) if os.environ.get("WH_SCREEN", "1") != "0" else None
+    hub.screen_on = screen is not None            # the page hides the screen panel on a host that runs no browser
 
     def progress(ev):
         hub.scan(ev)

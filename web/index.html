@@ -529,6 +529,7 @@ function synapse(st,vd,sco,rd){
 let lastState=null,synTimer=null;addEventListener('resize',()=>{clearTimeout(synTimer);synTimer=setTimeout(()=>{lastSyn='';if(lastState)render(lastState)},250)});
 function render(s){
   lastState=s;const st=s.stats||{},ch=s.character||{};
+  $('#liveband').classList.toggle('noscreen',s.screen_on===false);
   if(ch.stage!==hood.stage)buildHood(ch.stage||0);
   const lo=[0,20,100,500,2000,10000,50000][ch.stage||0],hi=ch.next_usd;
   $('#stage').innerHTML=`<span class="live"></span>${s.live?'':'<span class="demo">DEMO · nothing signs or sends</span> '}stage ${(ch.stage||0)+1}/${num(ch.stages||7)}: <b>${esc(ch.stage_name||'hatchling')}</b> · treasury <b>$${(ch.usd||0).toFixed(2)}</b>${hi?` · next size at $${num(hi)}`:' · fully grown'}${ch.demo?' · demo treasury':''}${ch.wallet?'':' · no wallet yet'}`;

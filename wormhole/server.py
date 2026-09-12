@@ -210,7 +210,7 @@ def snapshot(rpc, db, brain, paper, hub=None):
     brain_sum, lab_sum = brain.summary(), LB.summary(db)
     ready = RD.compute(brain_sum, lab_sum, runway, bool(char.get("demo")), TR.MAX_POSITION_USD)
     return {"now": now, "stats": st, "scout": _scout(db), "readiness": ready, "lessons": _lessons(db), "feed": feed, "ticker": ticker,
-            "dig": (hub.dig if hub else []),
+            "dig": (hub.dig if hub else []), "screen_on": bool(getattr(hub, "screen_on", True)) if hub else True,
             "treasury": _treasury_cached(rpc, db), "voice": V.summary(db), "trader": TR.summary(db),
             "giving": G.summary(db), "compute": _compute_cached(), "live": C.LIVE, "lab": lab_sum,
             "bad_actors": {"serial": serial, "worst": worst},
