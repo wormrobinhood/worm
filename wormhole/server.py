@@ -99,7 +99,7 @@ def snapshot(rpc, db, brain, paper, hub=None):
     runway = projection(db, char["usd"])
     brain_sum, lab_sum = brain.summary(), LB.summary(db)
     ready = RD.compute(brain_sum, lab_sum, runway, bool(char.get("demo")), TR.MAX_POSITION_USD)
-    return {"now": now, "stats": st, "scout": _scout(db), "readiness": ready, "feed": feed, "ticker": ticker,
+    return {"now": now, "stats": st, "scout": _scout(db), "readiness": ready, "lessons": _lessons(db), "feed": feed, "ticker": ticker,
             "dig": (hub.dig if hub else []),
             "treasury": _treasury_cached(rpc, db), "voice": V.summary(db), "trader": TR.summary(db),
             "giving": G.summary(db), "compute": _compute_cached(), "live": C.LIVE, "lab": lab_sum,
@@ -107,6 +107,26 @@ def snapshot(rpc, db, brain, paper, hub=None):
             "paper": paper.summary(), "brain": brain_sum, "events": db.events(40),
             "character": char, "runway": runway, "disclosure": DISCLOSURE,
             "links": {"pons": "https://www.ponsfamily.com/launchpad/", "explorer": "https://robinhoodchain.blockscout.com/"}}
+
+
+def _lessons(db, limit=8):
+    """The latest resolved verdicts as plain lessons: what happened, was the call right, which rules moved."""
+    rows = db.q("SELECT o.token,o.score,o.verdict,o.outcome,o.change_pct,o.fired,o.scored_at,l.symbol,l.name FROM outcomes o"
+                " LEFT JOIN launches l ON l.token=o.token WHERE o.resolved=1 AND o.outcome!='unknown' ORDER BY o.scored_at DESC LIMIT ?", (limit,))
+    out = []
+    for r in rows:
+        bad, good = r["outcome"] in ("rugged", "dumped"), r["outcome"] == "grew"
+        try:
+            fired = json.loads(r["fired"] or "[]")
+        except Exception:
+            fired = []
+        up = [f["rule"] for f in fired if f.get("points", 0) and ((f["points"] < 0 and bad) or (f["points"] > 0 and good))]
+        down = [f["rule"] for f in fired if f.get("points", 0) and ((f["points"] > 0 and bad) or (f["points"] < 0 and good))]
+        tag = ("called it" if ((r["verdict"] == "avoid" and bad) or (r["verdict"] == "looks healthy" and good))
+               else "missed it" if ((r["verdict"] == "looks healthy" and bad) or (r["verdict"] == "avoid" and good)) else "no lesson")
+        out.append({"token": r["token"], "symbol": r["symbol"], "name": r["name"], "verdict": r["verdict"], "score": r["score"],
+                    "outcome": r["outcome"], "change_pct": r["change_pct"], "tag": tag, "up": up, "down": down, "scored_at": r["scored_at"]})
+    return out
 
 
 _scache = (0, None)
