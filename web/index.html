@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>IRL Wormhole</title>
+<title>IRL Worm</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
@@ -28,6 +28,11 @@ h1{font-family:"Instrument Serif",Georgia,"Times New Roman",serif;font-weight:40
 .stat{border:1px solid var(--g3);padding:8px 12px;min-width:118px;background:rgba(0,20,6,.65)}
 .stat b{display:block;font-size:20px;color:var(--g)}
 .stat span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.1em}
+.stat small{display:block;color:var(--dim);font-size:10px;margin-top:3px}
+.stat.wide{min-width:230px}
+.rbar{height:6px;border:1px solid var(--g3);margin-top:6px;background:#000;display:block}.rbar i{display:block;height:100%;background:var(--g2)}
+.rbar.big{height:10px;margin:0 0 8px}
+.rp{display:grid;grid-template-columns:150px 1fr 34px;gap:8px;align-items:center;margin:6px 0;font-size:12px}.rp .rbar{margin-top:0}
 .disc{border:1px dashed var(--g3);padding:10px 12px;color:var(--dim);font-size:12px;background:rgba(0,10,3,.75)}
 .disc b{color:var(--g)}
 .grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(320px,1fr);gap:16px;margin-top:16px}
@@ -106,9 +111,9 @@ ol.steps li.now{color:var(--g)}ol.steps li.now .dot{border-color:var(--g);animat
 <div class="wrap">
   <section class="hero">
     <canvas id="hood" width="900" height="380"></canvas>
-    <h1>IRL WORMHOLE</h1>
+    <h1>IRL WORM</h1>
     <div class="tag">internet money, real life impact</div>
-    <div class="sub">a small hooded worm on Robinhood Chain. It digs through every pons graduation, flags bad actors, and tells the community first.</div>
+    <div class="sub">a small hooded worm on Robinhood Chain. It digs through every pons graduation, flags bad actors, and tells the community first. <a href="/docs">how it works, the fee split, the roadmap →</a></div>
     <div class="stage" id="stage"><span class="live"></span>waking up…</div>
     <div class="bar"><i id="stagebar" style="width:0%"></i></div>
     <div class="meta" id="grow">grows with what it earns: the treasury it holds decides how long the worm is</div>
@@ -132,8 +137,9 @@ ol.steps li.now{color:var(--g)}ol.steps li.now .dot{border-color:var(--g);animat
       <div class="panel"><h2>bad actors <small>serial launchers in the window</small></h2><div id="serial"></div><div style="height:10px"></div><h2>worst verdicts</h2><div id="worst"></div></div>
       <div class="panel"><h2>runway <small>can it pay for itself?</small></h2><div id="runway"></div></div>
       <div class="panel"><h2>brain <small>rules, weights, what it learned</small></h2><div id="brain"></div></div>
+      <div class="panel"><h2>readiness <small>when does it trade for real? evidence only</small></h2><div id="ready"></div></div>
       <div class="panel"><h2>strategy lab <small>which exit rule actually pays</small></h2><div id="lab"></div></div>
-      <div class="panel"><h2>paper book <small>what it would have bought, no real money</small></h2><div id="paper"></div></div>
+      <div class="panel"><h2>training book <small>paper trades that teach the exit rules · no real money</small></h2><div id="paper"></div></div>
       <div class="panel"><h2>log</h2><ul class="log" id="log"></ul></div>
     </div>
   </div>
@@ -202,7 +208,7 @@ addEventListener('resize',sizeWorm);sizeWorm();setInterval(drawHood,50);
 
 /* ---------- rendering ---------- */
 let seen=new Set(),first=true,lastFeed=[];
-function stat(label,val){return `<div class="stat"><b>${esc(val??'—')}</b><span>${esc(label)}</span></div>`}
+function stat(label,val,sub){return `<div class="stat"><b>${esc(val??'—')}</b><span>${esc(label)}</span>${sub?`<small>${esc(sub)}</small>`:''}</div>`}
 const expanded=new Set();
 function vcls(v){return v==='looks healthy'?'healthy':v==='mixed'?'mixed':'avoid'}
 function card(t,isNew){
@@ -339,9 +345,11 @@ function render(s){
   $('#stage').innerHTML=`<span class="live"></span>${s.live?'':'<span class="demo">DEMO · nothing signs or sends</span> '}stage ${(ch.stage||0)+1}/${ch.stages||7}: <b>${esc(ch.stage_name||'hatchling')}</b> · treasury <b>$${(ch.usd||0).toFixed(2)}</b>${hi?` · next size at $${hi}`:' · fully grown'}${ch.demo?' · demo treasury':''}${ch.wallet?'':' · no wallet yet'}`;
   $('#stagebar').style.width=(hi?Math.min(100,100*((ch.usd||0)-lo)/(hi-lo)):100)+'%';
   const vd=st.verdicts||{};
-  $('#stats').innerHTML=stat('launches 24h',st.launches_24h)+stat('graduations 24h',st.grads_24h)+stat('scanned',st.scored)+stat('in queue',st.queued)
-    +stat('looks healthy',vd['looks healthy']||0)+stat('mixed',vd['mixed']||0)+stat('avoid',vd['avoid']||0)+stat('avg score',st.avg_score)
-    +stat('paper p&l',(s.paper?('$'+(s.paper.realized_usd+s.paper.unrealized_usd).toFixed(2)):'—'))+stat('block',st.last_block);
+  const sco=s.scout||{},rd=s.readiness||{};
+  $('#stats').innerHTML=stat('launches 24h',st.launches_24h)+stat('graduations 24h',st.grads_24h)+stat('screened',st.scored)+stat('in queue',st.queued)
+    +stat('warned: avoid',vd['avoid']||0)+stat('rugs called early',sco.called||0,sco.warn_precision!=null?`${sco.warn_precision}% of checked warnings proved right`:'checked 24h after each warning')
+    +stat('creators flagged',sco.creators_flagged||0,'serial launchers or a rug on record')
+    +`<div class="stat wide"><b>${rd.score??0}%</b><span>readiness · real trades at ${rd.ready_at||80}%</span><span class="rbar"><i style="width:${rd.score||0}%"></i></span></div>`+stat('block',st.last_block);
   $('#disc').innerHTML=`<b>what is real:</b> ${esc(s.disclosure.real)} <b>what is not:</b> ${esc(s.disclosure.not_real)}`;
   const feed=s.feed||[];$('#feedinfo').textContent=feed.length?`last ${feed.length} · scroll the box · click a card for details`:'';
   renderFeed(feed,false);
@@ -362,7 +370,7 @@ function render(s){
     +((vo.entries||[]).filter(e=>e.ok).length?vo.entries.filter(e=>e.ok).slice(0,6).map(e=>`<div class="post"><button class="copy" data-text="${esc(e.text)}">copy</button>${esc(e.text)}<span class="meta">${esc(e.mood||'')} · ${ago(e.ts)} · ${esc(e.model||'')}</span></div>`).join(''):'<div class="empty">no entries yet</div>');
   const trd=s.trader||{},pos=trd.positions||[],tds=trd.trades||[];
   $('#trades').innerHTML=`<div class="meta" style="margin-bottom:8px">${esc(trd.policy||'')}. ${s.live?'':'Demo: real quotes and simulated swaps, nothing sent.'}</div>`
-    +(pos.length?`<table><tr><th>position</th><th class="r">size</th><th class="r">entry</th><th>state</th></tr>`+pos.slice(0,8).map(x=>`<tr><td>$${esc(x.symbol)} <span class="meta">${esc(x.mode)}</span></td><td class="r">$${Number(x.size_usd).toFixed(2)}</td><td class="r">${usd(x.entry_usd)}</td><td>${x.status==='open'?((x.recovered_usd||0)>0?'<span class="pos">cost back, free bag</span>':'open'):esc('closed: '+(x.reason||''))}</td></tr>`).join('')+'</table>':'<div class="empty">no positions. It only acts on "looks healthy" verdicts with surplus above the reserve.</div>')
+    +(pos.length?`<table><tr><th>position</th><th class="r">size</th><th class="r">entry</th><th>state</th></tr>`+pos.slice(0,8).map(x=>`<tr><td>$${esc(x.symbol)} <span class="meta">${esc(x.mode)}</span></td><td class="r">$${Number(x.size_usd).toFixed(2)}</td><td class="r">${usd(x.entry_usd)}</td><td>${x.status==='open'?((x.recovered_usd||0)>0?'<span class="pos">cost back, free bag</span>':'open'):esc('closed: '+(x.reason||''))}</td></tr>`).join('')+'</table>':`<div class="empty">no positions. Locked until readiness reaches ${rd.ready_at||80}%; then only "looks healthy" verdicts, from the surplus above the reserve.</div>`)
     +(tds.length?'<div class="meta" style="margin-top:8px">'+tds.slice(0,5).map(t=>`${ago(t.ts)} · ${esc(t.side)} $${esc(t.symbol)} $${Number(t.usd).toFixed(2)} · ${esc(t.note||'')}`).join('<br>')+'</div>':'');
   const gv=s.giving||{};
   $('#causes').innerHTML=`<div class="meta">${esc(gv.rule||'')}. given so far $${(gv.given_total||0).toFixed(2)}</div>`+((gv.causes||[]).length?'<table style="margin-top:6px"><tr><th>cause</th><th>wallet</th><th class="r">weight</th></tr>'+gv.causes.map(c=>`<tr><td>${esc(c.name)}</td><td class="meta">${short(c.address)}</td><td class="r">${c.weight}</td></tr>`).join('')+'</table>':'<div class="empty">no causes configured yet (WH_CAUSES)</div>');
@@ -375,11 +383,14 @@ function render(s){
   const scoreTable=Object.keys(sc2).length?`<table style="margin-bottom:10px"><tr><th>verdict</th>${os.map(o=>`<th class="r">${o}</th>`).join('')}<th class="r">right?</th></tr>`+vs.filter(v=>sc2[v]).map(v=>{const row=sc2[v]||{},tot=Object.values(row).reduce((a,c)=>a+c,0),bad=(row.rugged||0)+(row.dumped||0),good=row.grew||0;const right=v==='avoid'?bad:v==='looks healthy'?good:null;return `<tr><td>${esc(v)}</td>${os.map(o=>`<td class="r">${row[o]||0}</td>`).join('')}<td class="r">${right==null?'—':Math.round(100*right/tot)+'%'}</td></tr>`}).join('')+'</table>':'';
   $('#brain').innerHTML=scoreTable+`<div class="meta" style="margin-bottom:8px">tracking ${b.tracked||0} verdicts · resolved ${b.resolved||0} · rugged ${cnt.rugged||0} · dumped ${cnt.dumped||0} · flat ${cnt.flat||0} · grew ${cnt.grew||0}. A rule that warned before a rug gains 2% weight, one that reassured before a rug loses 2%. Bounded 0.5x to 1.5x.</div>
     <table><tr><th>rule</th><th>weight</th><th class="r">hit / miss</th></tr>`+rules.map(r=>`<tr><td title="${esc(r.about)}">${esc(r.id)}</td><td><span class="wt"><i style="width:${Math.round((r.weight-0.5)/1*100)}%"></i></span>${Number(r.weight).toFixed(2)}x</td><td class="r">${r.hits} / ${r.misses}${r.hit_rate!=null?` (${r.hit_rate}%)`:''}</td></tr>`).join('')+'</table>';
+  $('#ready').innerHTML=`<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:6px"><b style="font-size:34px;color:var(--g)">${rd.score??0}%</b><span class="meta">${rd.ready?'<span class="pos">ready: real trades allowed, minimum size</span>':`real trades unlock at ${rd.ready_at||80}%`}</span></div><span class="rbar big"><i style="width:${rd.score||0}%"></i></span>`
+    +(rd.parts||[]).map(pt=>`<div class="rp"><span>${esc(pt.label)} <span class="meta">${Math.round(((rd.weights||{})[pt.id]||0)*100)}% of the score</span></span><span class="rbar"><i style="width:${pt.score||0}%"></i></span><span class="r">${pt.score||0}</span><div class="meta" style="grid-column:1/-1">${esc(pt.detail||'')}</div></div>`).join('')
+    +`<div class="meta" style="margin-top:8px">next: ${esc(rd.next||'')}<br>${esc(rd.gate||'')}</div>`;
   const lb=s.lab||{},arms=(lb.arms||[]);
   $('#lab').innerHTML=`<div class="meta" style="margin-bottom:8px">in use: <b class="pos">${esc(lb.in_use||'')}</b> · ${esc(lb.why||'')}. Every candidate scoring ≥ 60 is traded on paper by ${arms.length} arms at once (8 exit rules × entry delays of ${(lb.delays_min||[]).join('/')} min), with ${Math.round((lb.cost_per_side||0)*200)}% round-trip costs. An arm needs ${lb.min_n} cases before it can win. Cases: ${lb.cases_active||0} active · ${lb.cases_resolved||0} resolved.</div>`
     +(arms.some(a=>a.n>0)?`<table><tr><th>arm</th><th class="r">cases</th><th class="r">avg return</th><th class="r">win rate</th></tr>`+arms.filter(a=>a.n>0).slice(0,12).map(a=>`<tr><td>${esc(a.arm)}${a.arm===lb.in_use?' <span class="pos">◀ in use</span>':''}</td><td class="r">${a.n}</td><td class="r ${a.mean_ret>=0?'pos':'neg'}">${a.mean_ret==null?'—':(a.mean_ret*100).toFixed(0)+'%'}</td><td class="r">${a.win_rate==null?'—':a.win_rate+'%'}</td></tr>`).join('')+'</table>':'<div class="empty">no resolved cases yet: the first arms get scored 48 hours after the first candidates.</div>');
   const p=s.paper||{};
-  $('#paper').innerHTML=`<div class="meta" style="margin-bottom:8px">$${p.size_usd} paper per token scoring ≥ ${p.min_score}. Exits: ${esc(p.rules||'')}. Realized <span class="${p.realized_usd>=0?'pos':'neg'}">$${(p.realized_usd||0).toFixed(2)}</span> · open <span class="${p.unrealized_usd>=0?'pos':'neg'}">$${(p.unrealized_usd||0).toFixed(2)}</span>${p.win_rate!=null?` · win rate ${p.win_rate}% of ${p.closed_count}`:''}</div>`
+  $('#paper').innerHTML=`<div class="meta" style="margin-bottom:8px">training P&amp;L, fake money: realized <span class="${p.realized_usd>=0?'pos':'neg'}">$${(p.realized_usd||0).toFixed(2)}</span> · open <span class="${p.unrealized_usd>=0?'pos':'neg'}">$${(p.unrealized_usd||0).toFixed(2)}</span>${p.win_rate!=null?` · win rate ${p.win_rate}% of ${p.closed_count} closed`:''}. Every loss here is a lesson for the brain and the lab, not a cost. $${p.size_usd} paper per token scoring ≥ ${p.min_score}. Exits: ${esc(p.rules||'')}.</div>`
     +((p.open||[]).length?`<table><tr><th>open</th><th class="r">entry</th><th class="r">now</th><th class="r">%</th><th>arm · state</th></tr>`+p.open.map(x=>`<tr><td>$${esc(x.symbol)}</td><td class="r">${usd(x.entry_usd)}</td><td class="r">${usd(x.last_usd)}</td><td class="r ${x.change_pct>=0?'pos':'neg'}">${pct(x.change_pct)}</td><td><span class="meta">${esc((x.policy||'').split('@')[0])}</span> ${x.hedged?`<span class="pos">took profit, ${x.bag_pct}% left</span>`:''}</td></tr>`).join('')+'</table>':'<div class="empty">no open paper positions</div>')
     +((p.closed||[]).length?`<table style="margin-top:8px"><tr><th>closed</th><th class="r">%</th><th>why</th></tr>`+p.closed.slice(0,8).map(x=>`<tr><td>$${esc(x.symbol)}</td><td class="r ${x.pnl_usd>=0?'pos':'neg'}">${pct(x.change_pct)}</td><td>${esc(x.reason)}</td></tr>`).join('')+'</table>':'');
   $('#log').innerHTML=(s.events||[]).map(e=>`<li><span class="k ${esc(e.kind)}">${esc(e.kind)}</span>${esc(e.text)} <span class="meta">${ago(e.ts)}</span></li>`).join('');

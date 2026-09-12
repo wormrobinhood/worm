@@ -1,4 +1,4 @@
-"""IRL Wormhole, phase 1: index Pons, score graduations, learn from outcomes, serve the live page.
+"""IRL Worm: index Pons, score graduations, learn from outcomes, serve the live page.
 
   python run.py                 # http://127.0.0.1:4670
   python run.py --once 5        # backfill, score the 5 newest graduations, print them, exit
@@ -21,6 +21,7 @@ from wormhole.screen import Screen
 from wormhole import treasury as T
 from wormhole import voice, trader, giving, compute, lab
 from wormhole.budget import projection
+from wormhole import readiness
 import os
 from wormhole.growth import treasury
 from wormhole import budget
@@ -137,7 +138,8 @@ def main():
                 except Exception:
                     usdc = None
                 compute.plan(db, acct, usdc, rw.get("can_invest") or (tre["usd"] > 0), C.LIVE)
-                trader.decide(rpc, db, rw, C.LIVE, acct)
+                rd = readiness.compute(brain.summary(), lab.summary(db), rw, bool(tre.get("demo")), trader.MAX_POSITION_USD)
+                trader.decide(rpc, db, rw, C.LIVE, acct, rd)
                 trader.mark(rpc, db, C.LIVE, acct)
                 giving.cycle(rpc, db, acct, rw, C.LIVE)
                 voice.cycle(db, extra={"stage": tre.get("stage_name"), "treasury_usd": tre.get("usd")})

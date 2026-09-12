@@ -32,7 +32,7 @@ def new():
     existed = ENV.exists()
     with open(ENV, "a") as f:
         if not existed:
-            f.write("# IRL Wormhole secrets. Never commit this file.\n")
+            f.write("# IRL Worm secrets. Never commit this file.\n")
         f.write(f"WH_SECRET={key}\n")
     os.chmod(ENV, 0o600)
     print("wallet created. Address (same on Robinhood Chain and Base):")

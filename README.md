@@ -1,4 +1,4 @@
-# IRL Wormhole
+# IRL Worm
 
 *Internet money, real life impact.* A small hooded worm on Robinhood Chain. It digs through every
 [pons](https://www.ponsfamily.com/launchpad) graduation, looks for bad actors, tells the community
@@ -99,6 +99,12 @@ Posting to X is manual on purpose: entries sit on the site with a copy button.
 4. Buys from the surplus above the 90-day reserve with hedged exits, quoted and simulated on Uniswap v4. Built, demo mode;
    live USDG-quoted buys and live sells still need the Permit2 approval step.
 5. Causes: giving from the surplus, on-chain and public. Built, demo mode.
+
+## The docs page
+
+`/docs` explains the whole thing in plain words: how a dig works, the trust values, how the brain learns,
+the strategy lab, the readiness gate, the fee split, the runway policy, the token, security, and the roadmap.
+Set `WH_REPO_URL` once the public repository exists and the page links to it.
 
 ## Keeping secrets out of git
 

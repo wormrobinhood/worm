@@ -1,4 +1,4 @@
-"""How big IRL Wormhole is. The character grows with the treasury it actually holds."""
+"""How big IRL Worm is. The character grows with the treasury it actually holds."""
 import logging
 import os
 import time

@@ -17,6 +17,7 @@ from eth_utils import keccak
 from . import config as C
 from .chain import call_data, selector
 from . import lab
+from . import readiness as RD
 from .pons import POOL_REGISTERED
 from .prices import eth_usd, token_prices
 
@@ -124,13 +125,15 @@ def simulate_buy(rpc, wallet, pk, token, amount_in, min_out, zero_for_one):
 
 # ---- decisions --------------------------------------------------------------
 
-def decide(rpc, db, runway, live, acct=None):
+def decide(rpc, db, runway, live, acct=None, ready=None):
     ensure_tables(db)
     wallet = C.WALLET
     if not wallet:
         return
     if not runway.get("can_invest"):
         return
+    if ready is not None and not ready.get("ready"):
+        return                                         # readiness gate: evidence first, money later
     spent_today = db.one("SELECT COALESCE(SUM(usd),0) s FROM trades WHERE side='buy' AND ts>=?", (int(time.time()) - 86400,))["s"]
     n_open = db.one("SELECT COUNT(*) n FROM positions WHERE status='open'")["n"]
     if n_open >= MAX_OPEN or spent_today >= MAX_DAILY_USD:
@@ -234,5 +237,5 @@ def summary(db):
     ensure_tables(db)
     return {"positions": db.q("SELECT * FROM positions ORDER BY opened_ts DESC LIMIT 20"),
             "trades": db.q("SELECT * FROM trades ORDER BY id DESC LIMIT 20"),
-            "policy": f"verdict looks healthy and score ≥ {MIN_SCORE}; size min(${MAX_POSITION_USD:.0f}, 10% of surplus); "
+            "policy": f"readiness ≥ {RD.READY_AT}% first (evidence only, see the readiness panel); then verdict looks healthy and score ≥ {MIN_SCORE}; size min(${MAX_POSITION_USD:.0f}, 10% of surplus); "
                       f"≤ {MAX_OPEN} open; ≤ ${MAX_DAILY_USD:.0f} a day; only from the surplus above the 90-day reserve"}

@@ -84,6 +84,7 @@ OWNER_WALLET = os.environ.get("WH_OWNER_WALLET", "").lower()     # owner wallet:
 OWNER_SHARE = float(os.environ.get("WH_OWNER_SHARE", "0.20"))
 LIVE = os.environ.get("WH_LIVE", "0") == "1"                         # nothing is ever signed unless 1
 SITE_URL = os.environ.get("WH_SITE_URL", "http://127.0.0.1:4670").rstrip("/")
+REPO_URL = os.environ.get("WH_REPO_URL", "").strip()               # public source, shown on /docs once it exists
 TOKEN = os.environ.get("WH_TOKEN", "").lower()                        # the worm's own token once launched
 BASE_RPC = os.environ.get("WH_BASE_RPC", "https://mainnet.base.org")
 BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"

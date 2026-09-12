@@ -24,7 +24,7 @@ LAUNCH_SIG = f"launchToken({TOKEN_PARAMS_T},uint256,address)"
 LIMITS = {"name": 64, "symbol": 16, "logo": 512, "description": 2048, "social": 256}
 
 DEFAULT_DESCRIPTION = (
-    "Worm is a small hooded worm that lives at IRL Wormhole on Robinhood Chain. It digs through every pons "
+    "Worm is a small hooded worm that lives at IRL Worm on Robinhood Chain. It digs through every pons "
     "graduation, flags bad actors, and tells the community first. Its fees pay for its own compute; 20% of what "
     "it earns goes to its creator. Internet money, real life impact. It is a screening aid, not advice.")
 

@@ -15,7 +15,7 @@ from .growth import treasury
 from .learn import creator_trust
 from .budget import projection
 from . import treasury as T
-from . import voice as V, trader as TR, giving as G, compute as CP, lab as LB
+from . import voice as V, trader as TR, giving as G, compute as CP, lab as LB, readiness as RD
 
 log = logging.getLogger("wormhole.server")
 WEB = C.ROOT / "web"
@@ -24,7 +24,7 @@ DISCLOSURE = {
     "real": "Every number on this page is read from Robinhood Chain or GeckoTerminal: launches, graduations, "
             "curve buys, holders, swaps, prices.",
     "not_real": "The verdicts are rules written by a person and re-weighted by outcomes. They are a screening aid, "
-                "not an audit and not advice. IRL Wormhole has bought nothing; the paper book is what it would have done.",
+                "not an audit and not advice. IRL Worm has bought nothing; the training book is paper trades that teach its exit rules.",
 }
 
 
@@ -95,13 +95,38 @@ def snapshot(rpc, db, brain, paper, hub=None):
     worst = db.q("SELECT l.token,l.name,l.symbol,l.deployer,s.score,s.verdict,s.reasons,l.grad_ts FROM scores s"
                  " JOIN launches l ON l.token=s.token WHERE s.verdict='avoid' ORDER BY s.scored_at DESC LIMIT 8")
     worst = [_js(r, ("reasons",)) for r in worst]
-    return {"now": now, "stats": st, "feed": feed, "ticker": ticker, "dig": (hub.dig if hub else []),
+    char = treasury(rpc)
+    runway = projection(db, char["usd"])
+    brain_sum, lab_sum = brain.summary(), LB.summary(db)
+    ready = RD.compute(brain_sum, lab_sum, runway, bool(char.get("demo")), TR.MAX_POSITION_USD)
+    return {"now": now, "stats": st, "scout": _scout(db), "readiness": ready, "feed": feed, "ticker": ticker,
+            "dig": (hub.dig if hub else []),
             "treasury": _treasury_cached(rpc, db), "voice": V.summary(db), "trader": TR.summary(db),
-            "giving": G.summary(db), "compute": _compute_cached(), "live": C.LIVE, "lab": LB.summary(db),
+            "giving": G.summary(db), "compute": _compute_cached(), "live": C.LIVE, "lab": lab_sum,
             "bad_actors": {"serial": serial, "worst": worst},
-            "paper": paper.summary(), "brain": brain.summary(), "events": db.events(40),
-            "character": (char := treasury(rpc)), "runway": projection(db, char["usd"]), "disclosure": DISCLOSURE,
+            "paper": paper.summary(), "brain": brain_sum, "events": db.events(40),
+            "character": char, "runway": runway, "disclosure": DISCLOSURE,
             "links": {"pons": "https://www.ponsfamily.com/launchpad/", "explorer": "https://robinhoodchain.blockscout.com/"}}
+
+
+_scache = (0, None)
+
+
+def _scout(db):
+    """Headline numbers for the community: what the worm caught, cached 30 s."""
+    global _scache
+    if time.time() - _scache[0] < 30 and _scache[1]:
+        return _scache[1]
+    called = db.one("SELECT COUNT(*) n FROM outcomes WHERE resolved=1 AND verdict='avoid' AND outcome IN ('rugged','dumped')")["n"]
+    checked = db.one("SELECT COUNT(*) n FROM outcomes WHERE resolved=1 AND verdict='avoid' AND outcome!='unknown'")["n"]
+    missed = db.one("SELECT COUNT(*) n FROM outcomes WHERE resolved=1 AND verdict='looks healthy' AND outcome IN ('rugged','dumped')")["n"]
+    creators = db.one("SELECT COUNT(*) n FROM (SELECT l.deployer d, COUNT(*) c, SUM(CASE WHEN o.outcome IN ('rugged','dumped')"
+                      " THEN 1 ELSE 0 END) r FROM launches l LEFT JOIN outcomes o ON o.token=l.token GROUP BY l.deployer"
+                      " HAVING c>=5 OR r>=1)")["n"]
+    v = {"called": called, "checked_warnings": checked, "warn_precision": round(100.0 * called / checked) if checked else None,
+         "missed": missed, "creators_flagged": creators}
+    _scache = (time.time(), v)
+    return v
 
 
 _tcache = (0, None)
@@ -140,12 +165,31 @@ def _compute_cached():
 
 
 def make_app(rpc, db, brain, paper, hub):
-    app = FastAPI(title="IRL Wormhole")
+    app = FastAPI(title="IRL Worm", docs_url=None, redoc_url=None, openapi_url=None)
     clients = set()
 
     @app.get("/", response_class=HTMLResponse)
     def index():
         return (WEB / "index.html").read_text(encoding="utf-8")
+
+    @app.get("/docs", response_class=HTMLResponse)
+    def docs():
+        """How it works, the fee split, the policies. Static text with the live addresses filled in."""
+        page = (WEB / "docs.html").read_text(encoding="utf-8")
+        try:
+            from eth_utils import to_checksum_address
+            wallet_shown = to_checksum_address(C.WALLET) if C.WALLET else "not created yet"
+        except Exception:
+            wallet_shown = C.WALLET or "not created yet"
+        fills = {"wallet": wallet_shown, "owner_share": str(int(round(C.OWNER_SHARE * 100))),
+                 "treasury_share": str(100 - int(round(C.OWNER_SHARE * 100))), "ready_at": str(RD.READY_AT),
+                 "token": (f'<a href="https://www.ponsfamily.com/launchpad/{C.TOKEN}" target="_blank" rel="noopener noreferrer">$WORM on pons</a>'
+                           if C.TOKEN else "not launched yet"),
+                 "explorer": "https://robinhoodchain.blockscout.com/",
+                 "repo": (f'<a href="{C.REPO_URL}" target="_blank" rel="noopener noreferrer">{C.REPO_URL}</a>' if C.REPO_URL else "public repository coming with the launch")}
+        for k, v in fills.items():
+            page = page.replace("{{%s}}" % k, v)
+        return page
 
     @app.get("/api/state")
     def state():

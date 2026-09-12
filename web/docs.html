@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IRL Worm · how it works</title>
+<link rel="icon" href="/logo.png">
+<style>
+:root{--g:#00ff41;--g2:#00b32d;--g3:#0a5c1f;--g4:#063d15;--bg:#000;--dim:#5fbf6f;--bad:#ff5252;--txt:#b6ffc8;--white:#e9ffee}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:var(--g)}
+.wrap{max-width:900px;margin:0 auto;padding:22px 18px 80px}
+h1{font-size:34px;letter-spacing:.06em;color:var(--g);margin:0 0 4px;text-shadow:0 0 18px rgba(0,255,65,.45)}
+.tag{color:var(--dim);font-style:italic;margin-bottom:18px}
+h2{font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--g);margin:34px 0 10px;border-bottom:1px solid var(--g3);padding-bottom:6px}
+h3{font-size:13px;color:var(--white);margin:18px 0 6px}
+p{margin:0 0 10px;color:var(--txt)}
+.dim{color:var(--dim)}
+ul{margin:0 0 10px 18px;padding:0}li{margin:3px 0}
+table{border-collapse:collapse;width:100%;margin:8px 0 12px;font-size:13px}
+td,th{padding:5px 8px;border-bottom:1px solid var(--g4);text-align:left;vertical-align:top}
+th{color:var(--dim);font-weight:normal;font-size:11px;text-transform:uppercase;letter-spacing:.1em}
+.r{text-align:right}
+.box{border:1px solid var(--g3);padding:12px 14px;background:rgba(0,8,2,.8);margin:10px 0}
+.warn{border-color:var(--g2)}
+code{color:var(--white);background:rgba(0,40,10,.6);padding:0 4px}
+.nav{display:flex;flex-wrap:wrap;gap:6px 14px;margin:0 0 10px;font-size:12px}
+.addr{word-break:break-all;color:var(--white)}
+.stage{display:inline-block;border:1px solid var(--g4);padding:1px 7px;margin:2px 4px 2px 0;font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav"><a href="/">← live page</a> <a href="https://www.ponsfamily.com/launchpad/" target="_blank" rel="noopener noreferrer">pons launchpad</a> <a href="{{explorer}}address/{{wallet}}" target="_blank" rel="noopener noreferrer">the worm's wallet on the explorer</a></div>
+<h1>IRL WORM</h1>
+<div class="tag">internet money, real life impact · how it works, what it earns, where the money goes</div>
+
+<div class="nav">
+<a href="#what">what it is</a><a href="#dig">how a dig works</a><a href="#trust">trust values</a><a href="#learn">how it learns</a><a href="#lab">strategy lab</a><a href="#ready">readiness</a><a href="#money">money and fee split</a><a href="#runway">runway policy</a><a href="#token">the token</a><a href="#security">security</a><a href="#roadmap">roadmap</a><a href="#real">what is real</a>
+</div>
+
+<h2 id="what">what it is</h2>
+<p>IRL Worm is a small hooded worm that lives on Robinhood Chain. It is a program with its own wallet. It reads every token launch on the pons launchpad, and every time a token graduates from the bonding curve into a real pool, the worm digs through it and tells the community what it found, before anyone asks.</p>
+<p>It is a scout first. It flags bad actors and shows its reasoning in the open. Trading is the last thing it will do, and only once it has proven, on paper and in public, that it knows what it is doing.</p>
+<div class="box"><b>Not advice.</b> The verdicts are rules written by a person and re-weighted by what actually happened afterwards. They are a screening aid. Nothing here is a recommendation to buy or sell anything.</div>
+
+<h2 id="dig">how a dig works</h2>
+<p>Pons launches roughly 950 tokens an hour on this chain and about 18 of them graduate. The worm follows the chain block by block and keeps the last 72 hours of launches, so it knows every creator's recent history.</p>
+<p>When a token graduates, the worm opens it on its own browser (that is the screen on the live page) and reads five things from the chain:</p>
+<ul>
+<li><b>the creator:</b> how many tokens this wallet launched in the window, how many graduated, and how they ended</li>
+<li><b>the curve:</b> every buy and sell on the bonding curve, including the 3-second snipe window right after launch, when pons charges a 99 percent tax that decays to zero</li>
+<li><b>the holders:</b> who holds what, how much the top 10 hold, and whether the creator is still holding or already out</li>
+<li><b>the pool:</b> swaps since graduation and the price</li>
+<li><b>the token:</b> the creator tax it charges and whether it has links attached</li>
+</ul>
+<p>Twelve rules then add or remove points. The sum is clamped to 0 to 100 and becomes the score. A score of 70 or more reads <b>looks healthy</b>, 45 to 69 reads <b>mixed</b>, below 45 reads <b>avoid</b>. Every point is explained next to the verdict, so anyone can disagree with the reasoning.</p>
+<table>
+<tr><th>rule</th><th>what it looks at</th></tr>
+<tr><td>creator_history</td><td>other tokens this creator launched in the window</td></tr>
+<tr><td>creator_grads</td><td>other tokens this creator graduated</td></tr>
+<tr><td>creator_tax</td><td>creator tax charged on every trade</td></tr>
+<tr><td>snipe</td><td>share of the curve supply bought in the 3-second snipe window</td></tr>
+<tr><td>buyers</td><td>unique buyers on the bonding curve</td></tr>
+<tr><td>deployer_buy</td><td>the creator buying its own curve</td></tr>
+<tr><td>top_buyer</td><td>one wallet's share of all curve buys</td></tr>
+<tr><td>top10</td><td>top-10 holders' share of circulating supply</td></tr>
+<tr><td>deployer_hold</td><td>the creator's current share of circulating supply</td></tr>
+<tr><td>activity</td><td>trades since graduation</td></tr>
+<tr><td>socials</td><td>links attached to the token</td></tr>
+<tr><td>pace</td><td>time from launch to graduation</td></tr>
+</table>
+
+<h2 id="trust">trust values</h2>
+<p>Every creator wallet gets a trust value from 0 to 100, built only from what the chain shows it did:</p>
+<ul>
+<li>start at 50</li>
+<li>minus 3 for every extra launch in the 72-hour window, down to minus 30</li>
+<li>plus 8 for every token it graduated, up to plus 24</li>
+<li>minus 20 for every token of its that rugged or dumped after the worm's verdict</li>
+<li>plus 10 for every token of its that grew, up to plus 20</li>
+</ul>
+<p>The headline on the live page counts <b>creators flagged</b>: wallets with five or more launches in the window, or a rug on record. <b>Rugs called early</b> counts avoid verdicts that then rugged or dumped, checked 24 hours after the warning.</p>
+
+<h2 id="learn">how it learns</h2>
+<p>Every verdict is linked to what the token did afterwards. The worm checks the price 1 hour, 6 hours, and 24 hours after the verdict:</p>
+<ul>
+<li>down 80 percent or more at any check: <b>rugged</b></li>
+<li>down 50 percent or more at 24 hours: <b>dumped</b></li>
+<li>up 50 percent or more at 24 hours: <b>grew</b></li>
+<li>anything else: <b>flat</b></li>
+</ul>
+<p>Then it grades the rules. A rule that warned before a rug gains 2 percent weight. A rule that reassured before a rug loses 2 percent. Weights stay between 0.5x and 1.5x, so no single rule can take over, and every weight is shown in the brain panel. The lesson is written to the log in plain words.</p>
+
+<h2 id="lab">strategy lab</h2>
+<p>Screening and trading are learned separately. The lab answers one question: if the worm bought a token that scored 60 or more, which exit rule would actually pay after costs?</p>
+<p>Every such token becomes a case. Its price is sampled every 5 minutes for 48 hours. On that same price path the lab simulates 24 arms at once: 8 exit rules times entry delays of 0, 30, and 60 minutes, with a 3 percent round-trip cost for fees, creator tax, and slippage.</p>
+<table>
+<tr><th>exit rule</th><th>what it does</th></tr>
+<tr><td>hedge_2x</td><td>at 2x sell the cost plus 20 percent, trail the rest 50 percent below its peak</td></tr>
+<tr><td>costout_1.5x</td><td>at +50 percent sell two thirds so the cost is back, trail the rest 40 percent below its peak, cut at −35 percent before that</td></tr>
+<tr><td>ladder</td><td>sell a quarter at 1.5x, 2x, and 3x, trail the rest 50 percent</td></tr>
+<tr><td>fixed_100_40</td><td>sell everything at +100 percent, stop at −40 percent</td></tr>
+<tr><td>fixed_40_25</td><td>sell everything at +40 percent, stop at −25 percent</td></tr>
+<tr><td>trail_35</td><td>no target, a 35 percent trailing stop from the start</td></tr>
+<tr><td>time_6h</td><td>sell everything 6 hours after entry, stop at −40 percent</td></tr>
+<tr><td>time_24h</td><td>sell everything 24 hours after entry, stop at −40 percent</td></tr>
+</table>
+<p>An arm needs 10 resolved cases before it can win. The best arm by average net return per dollar risked becomes the rule the training book uses, and one position in ten runs a different arm so the lab never stops testing. Until the lab has enough cases the default is costout_1.5x with no delay, because it gets the cost back early and never turns a winner into a loser.</p>
+<p>The <b>training book</b> is that rule applied on paper, 10 dollars of fake money per candidate. Its profit and loss is a training number. A loss there costs nothing and teaches the brain which creators to avoid.</p>
+
+<h2 id="ready">readiness</h2>
+<p>The worm does not trade real money until the evidence says it should. Readiness is one number from 0 to 100, and nothing in it can be raised by hand:</p>
+<table>
+<tr><th>part</th><th class="r">weight</th><th>full marks when</th></tr>
+<tr><td>exit rule proven</td><td class="r">35%</td><td>30 resolved lab cases and a best rule averaging +10 percent net after costs</td></tr>
+<tr><td>warnings right</td><td class="r">30%</td><td>20 verdicts checked at 24 hours, 70 percent of them right</td></tr>
+<tr><td>runway</td><td class="r">20%</td><td>a real treasury covering 90 days of costs</td></tr>
+<tr><td>surplus</td><td class="r">15%</td><td>real money above the reserve, at least one minimum trade</td></tr>
+</table>
+<p>Demo money counts for nothing. Real trades unlock at <b>{{ready_at}} percent</b>, and only if the best exit rule is net positive and there is real surplus. They start at the minimum size.</p>
+<p>Once unlocked, the trading rules are fixed and public: only <b>looks healthy</b> verdicts with a score of 70 or more, size the smaller of 10 dollars or 10 percent of the surplus, at most 5 open positions, at most 30 dollars a day, exits by the lab's best rule, and never a dollar from the 90-day reserve.</p>
+
+<h2 id="money">money and fee split</h2>
+<p>The worm earns from its own token, <b>Worm ($WORM)</b>, launched on pons V2 and paired with USDG. Pons charges on every trade of the token:</p>
+<table>
+<tr><th>fee on each trade</th><th>who gets it</th></tr>
+<tr><td>1 percent base fee</td><td>70 percent to the token's creator (the worm), 30 percent to pons</td></tr>
+<tr><td>1 percent creator tax, set by the worm (pons allows up to 10)</td><td>the worm</td></tr>
+</table>
+<p>Pons credits the worm's share to a fee escrow. The worm claims it in USDG whenever at least 1 dollar is waiting. Every claim is then split:</p>
+<table>
+<tr><th>of every claim</th><th class="r">share</th><th>goes to</th></tr>
+<tr><td>the creator's share</td><td class="r">{{owner_share}}%</td><td>the person who made the worm, forwarded on-chain right after the claim</td></tr>
+<tr><td>the treasury</td><td class="r">{{treasury_share}}%</td><td>the worm's own wallet: compute, gas, reserve, later trades and giving</td></tr>
+</table>
+<p>Every claim and every forward is a transaction on Robinhood Chain from the worm's wallet, and the wallet panel on the live page lists them.</p>
+<p class="dim">Wallet: <span class="addr">{{wallet}}</span> · same address on Base for compute money · token: {{token}}</p>
+
+<h2 id="runway">runway policy</h2>
+<p>The worm has to pay its own bills, so it keeps books. The rule is written down and does not change:</p>
+<ul>
+<li>keep a <b>90-day reserve</b> at all times</li>
+<li>spend on compute at most <b>half of what it earns</b></li>
+<li>invest and give <b>only from the surplus</b> above the reserve</li>
+</ul>
+<p>Planned bills: about 0.75 dollars a day of compute, about 0.10 dollars a day of gas, about 0.20 dollars a month of bridge fees. The runway panel projects 90 days under three scenarios (no income, current income, half income) and says on which day the money would run out.</p>
+<p><b>Compute</b> is bought from Venice AI through x402, a pay-per-use protocol, as a prepaid balance in USDC on Base. The worm bridges a few dollars of USDG from Robinhood Chain when needed and tops up 5 dollars whenever the balance falls under 1 dollar. Hosting the site is the one bill it cannot pay itself, because hosts do not take crypto, so its creator pays that.</p>
+<p><b>Giving:</b> every 30 days, 10 percent of the surplus above the reserve goes to the listed causes, split by weight, on-chain. The causes panel shows them once they are set.</p>
+<p><b>Growth:</b> the worm on the live page gets longer as its real treasury grows: <span class="stage">hatchling $0</span><span class="stage">tiny $20</span><span class="stage">small $100</span><span class="stage">growing $500</span><span class="stage">long $2,000</span><span class="stage">mighty $10,000</span><span class="stage">legend $50,000</span></p>
+
+<h2 id="token">the token</h2>
+<p><b>Worm ($WORM)</b> is launched by the worm itself from its own wallet, on pons V2, paired with USDG, with the logo, description, and links written on-chain at launch. Like every pons token it starts on a bonding curve and graduates into a locked Uniswap v4 pool once the curve reaches its threshold. The worm does not hold a hidden allocation. What it earns is the fee share above, in the open.</p>
+
+<h2 id="security">security</h2>
+<ul>
+<li><b>Its own wallet.</b> The key was generated on the machine that runs the worm and lives only in a file that the code, the site, and the public repository never expose. The address is public, so every move can be checked on the explorer.</li>
+<li><b>A hot wallet is as safe as its machine.</b> The worm has to hold the key to sign, so the person running it keeps a backup key and the treasury is kept small on purpose. The 20 percent forward moves money off the hot wallet on every claim. Planned next: a Safe vault that owns the treasury while the worm's key only gets a daily allowance.</li>
+<li><b>Open source.</b> The whole program is public. A guard runs before every commit and push and refuses secrets, keys, and personal details.</li>
+<li><b>Nothing signs in demo mode.</b> Until the creator flips it live, the worm reads the chain, simulates swaps with real quotes, and sends nothing.</li>
+<li><b>Public rules can be gamed.</b> A scammer can read the rules and build a token that passes them. That is why the sizes are small, why the brain re-weights rules from outcomes, and why the score is never the whole story.</li>
+</ul>
+
+<h2 id="roadmap">roadmap</h2>
+<table>
+<tr><th>phase</th><th>what</th><th>state</th></tr>
+<tr><td>1 · scout</td><td>index every launch, dig every graduation, verdicts, trust values, live page</td><td>running</td></tr>
+<tr><td>2 · learn</td><td>outcomes at 1h/6h/24h, rule weights, strategy lab, training book, readiness</td><td>running, gathering cases</td></tr>
+<tr><td>3 · its own token</td><td>launch $WORM on pons, claim fees, forward the creator's share</td><td>built, waiting for the creator to go live</td></tr>
+<tr><td>4 · pays its own way</td><td>compute bought with its own fees, 90-day runway kept</td><td>built, demo</td></tr>
+<tr><td>5 · trades small</td><td>real trades from the surplus once readiness reaches {{ready_at}} percent, lab-chosen exits</td><td>locked by readiness</td></tr>
+<tr><td>6 · gives</td><td>10 percent of the surplus to causes every 30 days</td><td>built, waiting for causes</td></tr>
+<tr><td>7 · vault</td><td>Safe vault owns the treasury, the worm's key gets an allowance</td><td>planned</td></tr>
+</table>
+
+<h2 id="real">what is real and what is not</h2>
+<p><b>Real:</b> every number on the live page is read from Robinhood Chain or GeckoTerminal: launches, graduations, curve buys, holders, swaps, prices, wallet balances, claims, forwards.</p>
+<p><b>Not real:</b> the verdicts are rules written by a person and re-weighted by outcomes. They are a screening aid, not an audit and not advice. The training book is paper trades with fake money. The demo badge on the live page means nothing has been signed or sent.</p>
+<p class="dim">Source code: {{repo}}</p>
+</div>
+</body>
+</html>
