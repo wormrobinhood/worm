@@ -25,6 +25,7 @@ RULES = {
     "top_buyer": "one wallet's share of all curve buys",
     "fresh_buyers": "share of curve buy volume from throwaway wallets with no other history",
     "funding_cluster": "curve buyers funded by the same wallet just before they bought (one buyer wearing many wallets)",
+    "bot_fleet": "share of curve buy volume from wallets that buy on many curves (fleets that sell at graduation)",
     "top10": "top-10 holders' share of circulating supply",
     "deployer_hold": "creator's current share of circulating supply",
     "activity": "trades since graduation",
@@ -39,6 +40,10 @@ DUST_DIVISOR = 2000                                # a curve buyer must receive 
 PROVENANCE_MAX = 120                               # biggest buyers whose history and funding are read
 FRESH_NONCE = 3                                    # a wallet with at most this many transactions ever is a throwaway
 FUND_LOOKBACK = 20_000                             # blocks (~35 min) before launch in which funding transfers are looked for
+FLEET_MIN_CURVES = 5                               # a wallet seen buying on this many other curves in a day is a fleet wallet
+FLEET_WINDOW_S = 24 * 3600
+FLEET_MIN_KNOWN = 20                               # other curves the worm must have on record before the fleet read counts
+BUYERS_KEPT = 300                                  # biggest buyers remembered per token, for the fleet read of later tokens
 
 
 def _topic_addr(a):
@@ -70,6 +75,29 @@ class Scorer:
             self.progress({"token": token, "step": step, "text": text, "ts": int(time.time()), "data": data})
         except Exception as e:
             log.info("progress callback failed: %s", e)
+
+    def _bot_fleet(self, token, L, humans):
+        """Wallets that buy on many curves are fleets: they buy every launch and sell into the pool at
+        graduation, which is what a 15-minute rug after a clean-looking curve usually is. The biggest buyers of
+        every token scored are remembered, so a buyer seen on FLEET_MIN_CURVES other curves within a day is a
+        fleet wallet. Returns (fleet set, share of buy volume from the fleet, other curves known in the window)."""
+        now = int(time.time())
+        since = now - FLEET_WINDOW_S
+        rows = sorted(humans.items(), key=lambda kv: -kv[1])[:BUYERS_KEPT]
+        if rows:
+            self.db.many("INSERT OR REPLACE INTO curve_buyers(token,wallet,tokens_out,ts) VALUES(?,?,?,?)",
+                         [(token, a, float(v), int(L.get("grad_ts") or now)) for a, v in rows])
+        known = self.db.one("SELECT COUNT(DISTINCT token) n FROM curve_buyers WHERE token!=? AND ts>=?", (token, since))["n"]
+        fleet = set()
+        addrs = [a for a, _ in rows]
+        for i in range(0, len(addrs), 400):
+            chunk = addrs[i:i + 400]
+            qs = ",".join("?" * len(chunk))
+            for r in self.db.q(f"SELECT wallet, COUNT(DISTINCT token) n FROM curve_buyers WHERE wallet IN ({qs})"
+                               f" AND token!=? AND ts>=? GROUP BY wallet HAVING n>=?", (*chunk, token, since, FLEET_MIN_CURVES)):
+                fleet.add(r["wallet"])
+        vol = sum(humans.values())
+        return fleet, _pct(sum(humans[a] for a in fleet), vol), known
 
     def _buyer_provenance(self, token, L, humans, lb, gb, m):
         """Two reads behind the buyer count. (1) Transaction counts: a wallet whose whole history is this buy
@@ -196,6 +224,8 @@ class Scorer:
         dust = total_out // DUST_DIVISOR
         humans = {a: v for a, v in by_rec.items() if a not in C.INFRA and v > 0 and v >= dust}
         uniq = len(humans)
+        fleet, fleet_pct, fleet_known = self._bot_fleet(token, L, humans)
+        organic = uniq - len(fleet)
         window = int(C.SNIPE_WINDOW_S / C.BLOCK_TIME)
         # the creator's own launch-block buy is charged by deployer_buy, not counted as a snipe
         snipe_out = sum(b["tokensOut"] for b in buys if b["_block"] <= lb + window and b["recipient"] != L["deployer"])
@@ -203,7 +233,8 @@ class Scorer:
         top_addr, top_val = (max(humans.items(), key=lambda kv: kv[1]) if humans else (None, 0))
         top_pct = _pct(top_val, total_out)
         dep_pct = _pct(by_rec.get(L["deployer"], 0), total_out)
-        m.update(curve_buys=len(buys), curve_sells=len(sells), unique_buyers=uniq,
+        m.update(curve_buys=len(buys), curve_sells=len(sells), unique_buyers=uniq, organic_buyers=organic,
+                 fleet_buyers=len(fleet), fleet_pct=round(fleet_pct, 1), fleet_known_curves=fleet_known,
                  dust_buyers=sum(1 for a, v in by_rec.items() if a not in C.INFRA and not (v > 0 and v >= dust)),
                  snipe_pct=round(snipe_pct, 1), top_buyer_pct=round(top_pct, 1), top_buyer=top_addr,
                  deployer_buy_pct=round(dep_pct, 1), launch_block_known=lb_known)
@@ -226,12 +257,13 @@ class Scorer:
                 rule("snipe", -8, f"{snipe_pct:.0f}% of the curve was bought in the snipe window")
             else:
                 rule("snipe", 5, f"quiet launch window, {snipe_pct:.0f}% sniped")
-            if uniq < 25:
-                rule("buyers", -10, f"only {uniq} unique buyers on the curve")
-            elif uniq >= 150:
-                rule("buyers", 10, f"{uniq} unique buyers on the curve")
+            besides = f" besides {len(fleet)} fleet wallets" if fleet else ""
+            if organic < 25:
+                rule("buyers", -10, f"only {organic} unique buyers on the curve{besides}")
+            elif organic >= 150:
+                rule("buyers", 10, f"{organic} unique buyers on the curve{besides}")
             else:
-                rule("buyers", 0, f"{uniq} unique buyers on the curve")
+                rule("buyers", 0, f"{organic} unique buyers on the curve{besides}")
             if dep_pct >= 20:
                 rule("deployer_buy", -20, f"creator bought {dep_pct:.0f}% of the curve supply itself")
             elif dep_pct >= 5:
@@ -242,6 +274,14 @@ class Scorer:
         # 2b. who is behind the buyers: throwaway wallets and shared funding ------------------------
         # 271 wallets funded by one hand look like 271 people to every rule above. Two reads see through it.
         if buys and uniq >= 10:
+            if fleet_known < FLEET_MIN_KNOWN:
+                rule("bot_fleet", 0, f"fleet check needs {FLEET_MIN_KNOWN} recent curves on record, has {fleet_known}")
+            elif fleet_pct >= 50:
+                rule("bot_fleet", -15, f"{fleet_pct:.0f}% of the buy volume came from {len(fleet)} wallets that buy on many curves and sell at graduation")
+            elif fleet_pct >= 25:
+                rule("bot_fleet", -8, f"{fleet_pct:.0f}% of the buy volume came from wallets that buy on many curves")
+            else:
+                rule("bot_fleet", 0, f"{fleet_pct:.0f}% of the buy volume came from fleet wallets")
             fresh_pct, funders = self._buyer_provenance(token, L, humans, lb, gb, m)
             if fresh_pct is not None:
                 m["fresh_buyers_pct"] = round(fresh_pct, 1)
@@ -402,3 +442,32 @@ class Scorer:
                    1 if m["partial"] else 0, json.dumps(fired)))
         return {"token": token, "score": score, "verdict": verdict, "reasons": reasons, "metrics": m, "fired": fired,
                 "retry": bool(m["partial"])}
+
+
+def backfill_curve_buyers(rpc, db, hours=24, limit=150):
+    """Remember the buyers of tokens scored before the fleet read existed, so it has curves to compare against.
+    One curve-log read per token; nothing is re-scored."""
+    since = int(time.time()) - hours * 3600
+    rows = db.q("SELECT l.token, l.curve, l.block, l.grad_block, l.grad_ts FROM scores s JOIN launches l ON l.token=s.token"
+                " WHERE s.scored_at>=? AND l.curve IS NOT NULL AND l.grad_block IS NOT NULL"
+                " AND l.token NOT IN (SELECT DISTINCT token FROM curve_buyers) ORDER BY s.scored_at DESC LIMIT ?", (since, limit))
+    done = 0
+    for L in rows:
+        gb = int(L["grad_block"])
+        lb = int(L["block"]) if L["block"] else max(0, gb - 24 * C.BLOCKS_PER_HOUR)
+        by_rec = collections.Counter()
+        try:
+            for lg in rpc.get_logs(L["curve"], [[CURVE_BUY.topic]], lb, gb, 200_000, cap=20_000):
+                b = CURVE_BUY.decode(lg)
+                by_rec[b["recipient"]] += b["tokensOut"]
+        except Exception as e:
+            log.info("buyer backfill failed for %s: %s", L["token"][:10], e)
+            continue
+        total = sum(by_rec.values())
+        dust = total // DUST_DIVISOR
+        humans = sorted(((a, v) for a, v in by_rec.items() if a not in C.INFRA and v > 0 and v >= dust), key=lambda kv: -kv[1])[:BUYERS_KEPT]
+        if humans:
+            db.many("INSERT OR REPLACE INTO curve_buyers(token,wallet,tokens_out,ts) VALUES(?,?,?,?)",
+                    [(L["token"], a, float(v), int(L["grad_ts"] or since)) for a, v in humans])
+            done += 1
+    return done

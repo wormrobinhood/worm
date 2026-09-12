@@ -343,3 +343,46 @@ def test_infrastructure_is_never_a_funder(db):
     crowd_of_throwaways(rpc, 60, funded_by=C.PONS_ROUTER, nonce=40)   # sells paid out through the router look like funding
     r = run(rpc, db, TOKEN)
     assert points(r)["funding_cluster"] == 0
+
+
+# ---- fleets: the same wallets on every curve -------------------------------------------------------
+
+def other_curves(db, wallets, n_tokens=25):
+    """n_tokens earlier curves in the last day, each bought by the same wallets."""
+    for k in range(n_tokens):
+        t = addr(0x7000 + k)
+        db.many("INSERT OR REPLACE INTO curve_buyers(token,wallet,tokens_out,ts) VALUES(?,?,?,?)",
+                [(t, w, 1e21, NOW - 3600 * (k % 20 + 1)) for w in wallets])
+
+
+def test_a_fleet_of_veteran_wallets_is_not_a_crowd(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    fleet = [addr(0x1000 + i) for i in range(150)]
+    other_curves(db, fleet)
+    crowd(rpc, 200)                                   # 150 fleet wallets + 50 organic buyers, all well used
+    r = run(rpc, db, TOKEN)
+    m, pts = r["metrics"], points(r)
+    assert m["unique_buyers"] == 200 and m["fleet_buyers"] == 150 and m["organic_buyers"] == 50
+    assert m["fleet_known_curves"] == 25 and pts["bot_fleet"] == -15
+    assert pts["buyers"] == 0                          # 50 organic buyers earn nothing, the fleet earns nothing
+
+
+def test_fleet_read_stays_silent_until_enough_curves_are_known(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    other_curves(db, [addr(0x1000 + i) for i in range(150)], n_tokens=8)
+    crowd(rpc, 200)
+    r = run(rpc, db, TOKEN)
+    m, pts = r["metrics"], points(r)
+    assert pts["bot_fleet"] == 0 and "needs" in [f["text"] for f in r["fired"] if f["rule"] == "bot_fleet"][0]
+    assert pts["buyers"] == 0                          # the fleet is still discounted from the buyer count
+    assert m["fleet_buyers"] == 150
+
+
+def test_buyers_are_remembered_for_later_tokens(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd(rpc, 40)
+    run(rpc, db, TOKEN)
+    assert db.one("SELECT COUNT(*) n FROM curve_buyers WHERE token=?", (TOKEN,))["n"] == 40

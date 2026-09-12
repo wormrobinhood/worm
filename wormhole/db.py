@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, text TEXT, token TEXT);
 CREATE TABLE IF NOT EXISTS samples(ts INTEGER PRIMARY KEY, usd REAL);
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS curve_buyers(token TEXT, wallet TEXT, tokens_out REAL, ts INTEGER, PRIMARY KEY(token, wallet));
+CREATE INDEX IF NOT EXISTS curve_buyers_wallet ON curve_buyers(wallet, ts);
 """
 
 # Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an existing table alone.
