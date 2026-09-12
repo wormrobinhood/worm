@@ -33,6 +33,7 @@ h1{font-family:"Instrument Serif",Georgia,"Times New Roman",serif;font-weight:40
 .rbar{height:6px;border:1px solid var(--g3);margin-top:6px;background:#000;display:block}.rbar i{display:block;height:100%;background:var(--g2)}
 .rbar.big{height:10px;margin:0 0 8px}
 .rp{display:grid;grid-template-columns:150px 1fr 34px;gap:8px;align-items:center;margin:6px 0;font-size:12px}.rp .rbar{margin-top:0}
+.liverow{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:16px;margin-top:16px}@media(max-width:900px){.liverow{grid-template-columns:1fr}}
 .synapse{margin:10px 0 0}.synapse svg{width:100%;height:auto;display:block}
 @media(max-width:599px){.synapse{display:none}}@media(min-width:600px){.stats{display:none}}
 .learn-grid{display:grid;grid-template-columns:1.25fr 1fr 1fr;gap:18px}@media(max-width:900px){.learn-grid{grid-template-columns:1fr}}
@@ -129,20 +130,22 @@ ol.steps li.now{color:var(--g)}ol.steps li.now .dot{border-color:var(--g);animat
   <div class="synapse" id="synapse"></div>
   <div class="stats" id="stats"></div>
   <div class="disc" id="disc"></div>
+  <div class="liverow">
+    <div class="panel" style="margin:0"><h2>screen <small>live from the worm's own browser · the worm crawls to what it reads</small></h2>
+      <div class="screen"><img id="screenimg" alt=""><canvas id="eye"></canvas><div class="shot" id="screennote">screen warming up…</div></div></div>
+    <div class="panel" style="margin:0"><h2>live dig <small>what the worm is inside right now</small></h2><div id="dig"><div class="empty">waiting for the next graduation…</div></div></div>
+  </div>
   <section class="panel learn" style="margin-top:16px"><h2>learning <small>what the worm changed its mind about · every verdict is checked 24 hours later</small></h2>
     <div class="learn-grid"><div><h3>latest lessons</h3><div id="lessons"></div></div><div><h3>rules moving</h3><div id="moving"></div></div><div><h3>readiness</h3><div id="ready"></div></div></div>
     <div class="meta" id="learnmeta" style="margin-top:10px"></div></section>
 
   <div class="grid">
     <div>
-      <div class="panel"><h2>screen <small>live from the worm's own browser · the worm crawls to what it reads</small></h2>
-        <div class="screen"><img id="screenimg" alt=""><canvas id="eye"></canvas><div class="shot" id="screennote">screen warming up…</div></div></div>
-      <div class="panel"><h2>live dig <small>what the worm is inside right now</small></h2><div id="dig"><div class="empty">waiting for the next graduation…</div></div></div>
       <div class="panel"><h2>graduations, newest first <small id="feedinfo"></small></h2><div id="feed"><div class="empty">reading the chain…</div></div></div>
-    </div>
-    <div>
       <div class="panel"><h2>voice <small>its journal · copy what you like to X</small></h2><div id="voice"></div></div>
       <div class="panel"><h2>wallet <small>its own money, in the open</small></h2><div id="wallet"></div></div>
+    </div>
+    <div>
       <div class="panel"><h2>trades <small>from the surplus only, hedged</small></h2><div id="trades"></div></div>
       <div class="panel"><h2>causes <small>giving from the surplus</small></h2><div id="causes"></div></div>
       <div class="panel"><h2>bad actors <small>serial launchers in the window</small></h2><div id="serial"></div><div style="height:10px"></div><h2>worst verdicts</h2><div id="worst"></div></div>
