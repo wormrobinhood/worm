@@ -52,8 +52,8 @@ Optional environment (see `.env.example`): `WH_DEMO_TREASURY` fakes a treasury t
 (it never counts for runway, readiness, giving or trades).
 
 Deploying: the image sets `WH_DATA_DIR=/data`; on Railway attach a persistent volume at `/data` (Railway rejects
-a Docker `VOLUME` line) and set `RAILWAY_RUN_UID=1000`, otherwise every redeploy starts from an empty database
-or the unprivileged user cannot write it. The container runs as user `worm` (uid 1000).
+a Docker `VOLUME` line), otherwise every redeploy starts from an empty database. The entrypoint starts as root
+only to take ownership of the mounted volume, then runs the worm as the unprivileged user `worm` (uid 1000).
 `/healthz` answers 503 once the indexer has not advanced for 3 minutes, and the process exits after 15 minutes
 of stall so the host restarts it.
 
