@@ -69,7 +69,7 @@ code{color:var(--white);background:rgba(0,40,10,.6);padding:0 4px;font-size:.95e
 <li><b>the pool:</b> swaps since graduation and the price</li>
 <li><b>the token:</b> the creator tax it charges and whether it has links attached</li>
 </ul>
-<p>Thirteen rules then add or remove points. The sum is clamped to 0 to 100 and becomes the score. A score of 70 or more reads <b>looks healthy</b>, 45 to 69 reads <b>mixed</b>, below 45 reads <b>avoid</b>. Three hard signals demote a healthy verdict to mixed whatever the score: the creator still holding a fifth of the supply, a heavily sniped launch, or a creator with a rug on record. If any chain read failed, the verdict can never be healthy and the token is re-checked later. Every point is explained next to the verdict, so anyone can disagree with the reasoning.</p>
+<p>Fifteen rules then add or remove points. The sum is clamped to 0 to 100 and becomes the score. A score of 70 or more reads <b>looks healthy</b>, 45 to 69 reads <b>mixed</b>, below 45 reads <b>avoid</b>. Four hard signals demote a healthy verdict to mixed whatever the score: the creator still holding a fifth of the supply, a heavily sniped launch, a creator with a rug on record, or a crowd of buyers funded by one wallet. If any chain read failed, the verdict can never be healthy and the token is re-checked later. Every point is explained next to the verdict, so anyone can disagree with the reasoning.</p>
 <table>
 <tr><th>rule</th><th>what it looks at</th></tr>
 <tr><td>creator_history</td><td>other tokens this creator launched in the window</td></tr>
@@ -79,6 +79,8 @@ code{color:var(--white);background:rgba(0,40,10,.6);padding:0 4px;font-size:.95e
 <tr><td>buyers</td><td>unique buyers on the bonding curve; dust buys of under 0.05 percent of the curve do not count</td></tr>
 <tr><td>deployer_buy</td><td>the creator buying its own curve</td></tr>
 <tr><td>top_buyer</td><td>one wallet's share of all curve buys</td></tr>
+<tr><td>fresh_buyers</td><td>share of the buy volume from throwaway wallets whose whole history is this buy; a crowd of new wallets is usually one hand</td></tr>
+<tr><td>funding_cluster</td><td>buyers funded by the same wallet in the half hour before launch, read from the pair token's transfers (USDG and stock pairs; ETH funding leaves no trace); a shared funder is a hard warning</td></tr>
 <tr><td>top10</td><td>top-10 holders' share of circulating supply</td></tr>
 <tr><td>deployer_hold</td><td>the creator's current share of circulating supply</td></tr>
 <tr><td>activity</td><td>trades since graduation</td></tr>

@@ -128,6 +128,7 @@ def refresh_scored(db, hours=24):
                  reserve_usd=p.get("reserve_usd"), price_ts=fetched_at)
         if not m.get("price0_ts"):
             m["price0_ts"] = fetched_at          # when the first price for this verdict was read
+            m["price0_usd"], m["fdv0_usd"] = p.get("price_usd"), p.get("fdv_usd")   # the values at scan, never overwritten
         db.x("UPDATE scores SET metrics=? WHERE token=? AND scored_at=?", (json.dumps(m), r["token"], r["scored_at"]))
         db.x("UPDATE outcomes SET price0=? WHERE token=? AND price0 IS NULL AND scored_at>=?",
              (p["price_usd"], r["token"], now - PRICE0_WINDOW_S))

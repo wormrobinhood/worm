@@ -28,10 +28,27 @@ class FakeRpc(Rpc):
         self.fail_addr = set()   # addresses whose eth_getLogs raises
         self.node_cap = node_cap
         self.calls = []
+        self.nonces = {}         # address -> transaction count; unknown wallets look well used
+        self.default_nonce = 40
+        self.fail_batch = False
+
+    def batch(self, calls, chunk=25):
+        """The real batch() posts JSON-RPC arrays; here every item goes through call(), None on failure."""
+        if self.fail_batch:
+            return [None] * len(calls)
+        out = []
+        for method, params in calls:
+            try:
+                out.append(self.call(method, params))
+            except RpcError:
+                out.append(None)
+        return out
 
     def call(self, method, params, retries=4):
         if method == "eth_blockNumber":
             return hex(self.latest)
+        if method == "eth_getTransactionCount":
+            return hex(self.nonces.get(params[0].lower(), self.default_nonce))
         if method == "eth_getLogs":
             f = params[0]
             a, b = int(f["fromBlock"], 16), int(f["toBlock"], 16)

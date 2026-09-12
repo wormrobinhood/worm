@@ -272,3 +272,74 @@ def test_score_rounding_is_half_up_and_order_independent():
     assert {S.final_score(sum(p)) for p in itertools.permutations(vals)} == {71}
     assert S.final_score(69.4999) == 69 and S.final_score(-3) == 0 and S.final_score(140) == 100
     assert S.verdict_for(70) == "looks healthy" and S.verdict_for(69) == "mixed" and S.verdict_for(44) == "avoid"
+
+
+# ---- who is behind the buyers: throwaway wallets and shared funding ----------------------------
+
+FUNDER = addr(0x9999)
+
+
+def crowd_of_throwaways(rpc, n=200, funded_by=None, nonce=1):
+    """n buyers with almost no history, optionally all funded in USDG by one wallet just before launch."""
+    for i in range(n):
+        b = addr(0x1000 + i)
+        rpc.nonces[b] = nonce
+        rpc.curve_buy(CURVE, LB + 40 + i, b, b, 10**21)
+        rpc.transfer(TOKEN, LB + 40 + i, CURVE, b, 10**21)
+        if funded_by:
+            rpc.transfer(C.USDG, LB - 300 + i, funded_by, b, 5 * 10**6)
+
+
+def test_one_wallet_funding_the_buyers_is_one_buyer(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd_of_throwaways(rpc, 200, funded_by=FUNDER)
+    r = run(rpc, db, TOKEN)
+    m, pts = r["metrics"], points(r)
+    assert m["unique_buyers"] == 200 and pts["buyers"] == 10           # the old rules still see a crowd
+    assert m["funding_visible"] is True and m["top_funder"] == FUNDER and m["top_funder_pct"] >= 50
+    assert pts["funding_cluster"] == -20 and pts["fresh_buyers"] == -12
+    assert r["verdict"] != "looks healthy"                            # a funding cluster is a hard warning
+
+
+def test_organic_crowd_passes_both_reads(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    for i in range(200):                                              # well-used wallets, each funded by a different one
+        b = addr(0x1000 + i)
+        rpc.curve_buy(CURVE, LB + 40 + i, b, b, 10**21)
+        rpc.transfer(TOKEN, LB + 40 + i, CURVE, b, 10**21)
+        rpc.transfer(C.USDG, LB - 300 + i, addr(0x5000 + i), b, 5 * 10**6)
+    r = run(rpc, db, TOKEN)
+    pts = r["metrics"], points(r)
+    m, pts = r["metrics"], points(r)
+    assert pts["funding_cluster"] == 0 and pts["fresh_buyers"] == 0 and m["fresh_buyers_pct"] == 0.0
+    assert m["partial"] is False
+
+
+def test_eth_pairs_only_get_the_history_read(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    db.x("UPDATE launches SET pair_token=?, pair_symbol='ETH' WHERE token=?", (C.ZERO, TOKEN))
+    crowd_of_throwaways(rpc, 200)
+    r = run(rpc, db, TOKEN)
+    m, pts = r["metrics"], points(r)
+    assert pts["fresh_buyers"] == -12 and "funding_cluster" not in pts and m["funding_visible"] is False
+
+
+def test_failed_history_read_marks_the_score_partial(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd(rpc, 200)
+    rpc.fail_batch = True
+    r = run(rpc, db, TOKEN)
+    assert r["metrics"]["partial"] is True and "fresh_buyers" not in points(r)
+    assert r["verdict"] != "looks healthy"
+
+
+def test_infrastructure_is_never_a_funder(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd_of_throwaways(rpc, 60, funded_by=C.PONS_ROUTER, nonce=40)   # sells paid out through the router look like funding
+    r = run(rpc, db, TOKEN)
+    assert points(r)["funding_cluster"] == 0

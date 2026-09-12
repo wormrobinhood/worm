@@ -23,17 +23,26 @@ RULES = {
     "buyers": "unique buyers on the bonding curve",
     "deployer_buy": "creator buying its own curve",
     "top_buyer": "one wallet's share of all curve buys",
+    "fresh_buyers": "share of curve buy volume from throwaway wallets with no other history",
+    "funding_cluster": "curve buyers funded by the same wallet just before they bought (one buyer wearing many wallets)",
     "top10": "top-10 holders' share of circulating supply",
     "deployer_hold": "creator's current share of circulating supply",
     "activity": "trades since graduation",
     "socials": "links attached to the token",
     "pace": "time from launch to graduation",
 }
-HARD = {("deployer_hold", -30), ("snipe", -15)}   # with one of these (or creator_rugs) fired, healthy becomes mixed
+HARD = {("deployer_hold", -30), ("snipe", -15), ("funding_cluster", -20)}   # one of these (or creator_rugs) demotes healthy to mixed
 PARTIAL_CAP = 69                                   # a score on incomplete data can never read "looks healthy"
 PARTIAL_TEXT = "incomplete data: some chain reads failed, will re-check"
 SWAP_CAP = 10_000                                  # swaps read per window (the node's own cap per query)
 DUST_DIVISOR = 2000                                # a curve buyer must receive at least 1/2000 of the curve output
+PROVENANCE_MAX = 120                               # biggest buyers whose history and funding are read
+FRESH_NONCE = 3                                    # a wallet with at most this many transactions ever is a throwaway
+FUND_LOOKBACK = 20_000                             # blocks (~35 min) before launch in which funding transfers are looked for
+
+
+def _topic_addr(a):
+    return "0x" + a[2:].lower().rjust(64, "0")
 
 
 def _pct(a, b):
@@ -61,6 +70,49 @@ class Scorer:
             self.progress({"token": token, "step": step, "text": text, "ts": int(time.time()), "data": data})
         except Exception as e:
             log.info("progress callback failed: %s", e)
+
+    def _buyer_provenance(self, token, L, humans, lb, gb, m):
+        """Two reads behind the buyer count. (1) Transaction counts: a wallet whose whole history is this buy
+        and maybe one sell is a throwaway; fresh_pct is the share of buy volume from such wallets. (2) When the
+        pair is an ERC-20 (USDG or a stock token), that token's Transfer logs into the buyers during the half
+        hour before launch show who funded them; many buyers fed by one wallet are one buyer. ETH funding is a
+        plain value transfer with no log, so for ETH pairs only the first read is possible.
+        Returns (fresh_pct or None, funders Counter or None); a failed read marks the score partial."""
+        top = sorted(humans.items(), key=lambda kv: -kv[1])[:PROVENANCE_MAX]     # the biggest buyers carry the volume
+        fresh_pct = None
+        try:
+            counts = self.rpc.batch([("eth_getTransactionCount", [a, "latest"]) for a, _ in top])
+        except Exception as e:
+            log.info("nonce reads failed for %s: %s", token[:10], e)
+            counts = None
+        known = [(v, int(c, 16)) for (a, v), c in zip(top, counts or []) if c is not None]
+        if known:
+            fresh_pct = _pct(sum(v for v, n in known if n <= FRESH_NONCE), sum(v for v, n in known))
+            m["fresh_buyers"] = sum(1 for v, n in known if n <= FRESH_NONCE)
+        else:
+            m["partial"] = True
+        pair = (L.get("pair_token") or "").lower()
+        if not pair or pair == C.ZERO or not top:
+            return fresh_pct, None
+        funders = collections.Counter()
+        exclude = set(C.INFRA) | {L["curve"], token, pair}
+        addrs = [a for a, _ in top]
+        try:
+            for i in range(0, len(addrs), 40):
+                chunk = addrs[i:i + 40]
+                seen = set()
+                for lg in self.rpc.get_logs(pair, [TRANSFER.topic, None, [_topic_addr(a) for a in chunk]],
+                                            max(0, lb - FUND_LOOKBACK), gb, 200_000, cap=5000):
+                    t = TRANSFER.decode(lg)
+                    if t["from"] in exclude or (t["from"], t["to"]) in seen:
+                        continue
+                    seen.add((t["from"], t["to"]))
+                    funders[t["from"]] += 1
+        except Exception as e:
+            log.info("funding logs failed for %s: %s", token[:10], e)
+            m["partial"] = True
+            return fresh_pct, None
+        return fresh_pct, funders
 
     def score(self, token):
         from .learn import creator_trust          # learn imports RULES from here, so this import stays local
@@ -186,6 +238,33 @@ class Scorer:
                 rule("deployer_buy", -8, f"creator bought {dep_pct:.0f}% of the curve supply itself")
             if top_pct >= 25 and top_addr != L["deployer"]:
                 rule("top_buyer", -8, f"one wallet bought {top_pct:.0f}% of the curve supply")
+
+        # 2b. who is behind the buyers: throwaway wallets and shared funding ------------------------
+        # 271 wallets funded by one hand look like 271 people to every rule above. Two reads see through it.
+        if buys and uniq >= 10:
+            fresh_pct, funders = self._buyer_provenance(token, L, humans, lb, gb, m)
+            if fresh_pct is not None:
+                m["fresh_buyers_pct"] = round(fresh_pct, 1)
+                if fresh_pct >= 60:
+                    rule("fresh_buyers", -12, f"{fresh_pct:.0f}% of the buy volume came from throwaway wallets with no other history")
+                elif fresh_pct >= 40:
+                    rule("fresh_buyers", -6, f"{fresh_pct:.0f}% of the buy volume came from wallets with almost no history")
+                else:
+                    rule("fresh_buyers", 0, f"{fresh_pct:.0f}% of the buy volume came from new wallets")
+            if funders is not None:
+                top_f = funders.most_common(3)
+                share1 = _pct(top_f[0][1], uniq) if top_f else 0.0
+                share3 = _pct(sum(n for _, n in top_f), uniq)
+                m.update(funding_visible=True, top_funder=(top_f[0][0] if top_f else None),
+                         top_funder_pct=round(share1, 1), top3_funders_pct=round(share3, 1))
+                if share1 >= 25:
+                    rule("funding_cluster", -20, f"one wallet funded {top_f[0][1]} of the {uniq} buyers just before they bought: one buyer wearing many wallets")
+                elif share3 >= 50:
+                    rule("funding_cluster", -12, f"three wallets funded {share3:.0f}% of the buyers just before they bought")
+                else:
+                    rule("funding_cluster", 0, "no shared funding found among the buyers")
+            else:
+                m["funding_visible"] = False
 
         # 3. holders now --------------------------------------------------------
         bal = collections.Counter()
