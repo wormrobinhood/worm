@@ -1,10 +1,25 @@
 """The screen's closed-page decision, without launching a browser."""
+import time
+
 import pytest
 
-from wormhole.screen import LAUNCHPAD, Screen, page_gone
+from wormhole.screen import LAUNCHPAD, WAITING, Screen, page_gone
 
 CLOSED = "Target page, context or browser has been closed"
 TOKEN = "0x" + "ab" * 20
+
+
+class FakeLoc:
+    first = property(lambda self: self)
+
+    def scroll_into_view_if_needed(self, **kw):
+        pass
+
+    def click(self, **kw):
+        pass
+
+    def bounding_box(self, **kw):
+        return {"x": 100, "y": 200, "width": 20, "height": 10}
 
 
 class FakePage:
@@ -17,6 +32,7 @@ class FakePage:
     def goto(self, url, **kw):
         if self.error:
             raise self.error
+        self.url = url
 
     def wait_for_timeout(self, ms):
         pass
@@ -24,8 +40,16 @@ class FakePage:
     def screenshot(self, **kw):
         return b"jpeg"
 
+    def evaluate(self, *a, **k):
+        pass
+
+    def get_by_role(self, *a, **k):
+        return FakeLoc()
+
     def get_by_text(self, *a, **k):
-        raise self.error or RuntimeError("no locator")
+        if self.error:
+            raise self.error
+        return FakeLoc()
 
 
 class Sink:
@@ -58,6 +82,25 @@ def test_dig_step_reraises_when_the_page_is_gone():
         s._dig_step(FakePage(closed=True, error=RuntimeError("Timeout 45000ms exceeded.")), ev)
     s._dig_step(FakePage(error=RuntimeError("Timeout 45000ms exceeded.")), ev)   # an ordinary failure is logged and swallowed
     s._dig_step(FakePage(error=RuntimeError("no locator")), {"step": "creator", "token": TOKEN, "text": "x"})
+
+
+def test_idle_frames_say_the_worm_is_waiting():
+    """Between digs every caption starts by saying the worm waits for the next graduation, whichever of the
+    three views it is on, and the frame is flagged idle; a dig frame is not."""
+    sink = Sink()
+    s = Screen(sink, newest=lambda: {"token": TOKEN, "name": "Tok", "symbol": "TOK", "grad_ts": time.time() - 120})
+    for _ in range(3):
+        s._idle(FakePage(), None)
+    assert len(sink.frames) == 3
+    assert all(f["idle"] is True and f["note"].startswith(WAITING + " · ") for f in sink.frames)
+    assert all("idle:" not in f["note"] for f in sink.frames)
+    notes = "\n".join(f["note"] for f in sink.frames)
+    assert "the newest so far: Tok ($TOK), graduated 2m ago" in notes
+    assert "newest launches first" in notes and "biggest market caps first" in notes
+    assert {f["url"] for f in sink.frames} == {LAUNCHPAD + "/" + TOKEN, LAUNCHPAD + "?sort=newest", LAUNCHPAD + "?sort=marketCap"}
+    s._dig_step(FakePage(), {"step": "creator", "token": TOKEN, "text": "creator 0x1: fresh"})
+    f = sink.frames[-1]
+    assert f["idle"] is False and f["note"] == "creator 0x1: fresh" and f["focus"] == [110 / 1100, 205 / 690]
 
 
 def test_idle_reraises_when_the_page_is_gone():

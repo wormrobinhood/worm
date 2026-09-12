@@ -380,6 +380,16 @@ def test_page_talks_to_its_own_origin_only():
         assert "4671" not in text and "127.0.0.1" not in text and "localhost" not in text
 
 
+def test_page_says_when_the_worm_is_waiting():
+    """Both hot panels tell a viewer the state between digs: the screen's header chip and summary, the live
+    dig's subtitle, its waiting line under the last dig, and the empty state before the first one."""
+    html = (server.WEB / "index.html").read_text(encoding="utf-8")
+    assert html.count("waiting for the next graduation") >= 4
+    assert 'id="screen-state"' in html and 'id="dig-sub"' in html and 'id="digwait"' in html
+    assert "the last dig, while the worm waits for the next graduation" in html
+    assert "'last dig done'" not in html and ":'idle'}" not in html      # the old summaries of the two panels
+
+
 def test_docs_placeholders_are_all_filled(site):
     client = site[0]
     page = client.get("/docs").text

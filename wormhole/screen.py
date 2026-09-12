@@ -16,6 +16,7 @@ log = logging.getLogger("wormhole.screen")
 CLOSED_MARKERS = ("has been closed", "target closed")   # Playwright's wording when the page, context or browser is gone
 ALLOW = {"www.ponsfamily.com", "ponsfamily.com"}
 IDLE_EVERY = 30
+WAITING = "waiting for the next graduation"     # every idle caption starts with it, so a viewer knows the state at a glance
 VIEW = {"width": 1100, "height": 690}
 LAUNCHPAD = "https://www.ponsfamily.com/launchpad"
 NEWEST_LAUNCHES = LAUNCHPAD + "?sort=newest"      # the Explore section, newest first; the site keeps the sort in the URL
@@ -98,10 +99,12 @@ class Screen(threading.Thread):
         page.goto(url, wait_until="domcontentloaded", timeout=45000)
         page.wait_for_timeout(wait)
 
-    def _frame(self, page, note, focus=None):
+    def _frame(self, page, note, focus=None, idle=False):
+        """One frame to the page: the screenshot, a caption, where the worm's eye should go, and whether the
+        worm is between digs (the page then says it is waiting for the next graduation)."""
         raw = page.screenshot(type="jpeg", quality=45)
         self.hub.frame({"jpg": base64.b64encode(raw).decode(), "note": note[:160], "focus": focus,
-                        "url": page.url, "ts": int(time.time())})
+                        "url": page.url, "ts": int(time.time()), "idle": idle})
 
     def _focus(self, page, text, click=False):
         return self._focus_loc(page, page.get_by_text(text, exact=False).first, click)
@@ -152,7 +155,8 @@ class Screen(threading.Thread):
             log.info("screen step %s failed: %s", step, str(e)[:120])
 
     def _idle(self, page, last_dig):
-        """Three views, taken in turns: the newest graduation's page, the curve newest first, the curve biggest first."""
+        """Three views, taken in turns while the worm waits for the next graduation: the newest graduation's
+        page, the curve newest first, the curve biggest first. Every caption says so first."""
         self.idle_n += 1
         what = ("graduation", "newest", "biggest")[self.idle_n % 3]
         row = None
@@ -168,18 +172,18 @@ class Screen(threading.Thread):
                 label = f"{row['name']} (${row['symbol']})" if row and row.get("symbol") else token[:10]
                 when = _ago(row.get("grad_ts")) if row else ""
                 self._goto(page, f"{LAUNCHPAD}/{token}", 2500)
-                self._frame(page, f"idle: newest graduation · {label}" + (f" · graduated {when}" if when else ""),
-                            self._focus(page, "Market cap"))
+                self._frame(page, f"{WAITING} · the newest so far: {label}" + (f", graduated {when}" if when else ""),
+                            self._focus(page, "Market cap"), idle=True)
             elif what == "newest":
                 self._goto(page, NEWEST_LAUNCHES, 3000)
                 self._scroll_to_heading(page, "Explore")
-                self._frame(page, "idle: watching the curve, newest launches first, for the next graduation",
-                            self._focus_loc(page, page.get_by_role("tab", name="Newest")))
+                self._frame(page, f"{WAITING} · watching the curve, newest launches first",
+                            self._focus_loc(page, page.get_by_role("tab", name="Newest")), idle=True)
             else:
                 self._goto(page, BIGGEST_CURVES, 3000)
                 self._scroll_to_heading(page, "Explore")
-                self._frame(page, "idle: watching the curve, biggest market caps first: the next graduation comes from here",
-                            self._focus_loc(page, page.get_by_role("tab", name="Market cap")))
+                self._frame(page, f"{WAITING} · watching the curve, biggest market caps first: the next one comes from here",
+                            self._focus_loc(page, page.get_by_role("tab", name="Market cap")), idle=True)
         except Exception as e:
             if page_gone(page, e):
                 raise

@@ -246,9 +246,9 @@ tr.failed td{color:var(--bad)}
   <div class="disc" id="disc"></div>
 
   <div class="liverow" id="liveband">
-    <div class="panel hot screenp" data-panel="screen"><h2><span class="ttl">screen</span><small>live from the worm's own browser · the worm crawls to what it reads</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse screen"></button></h2>
+    <div class="panel hot screenp" data-panel="screen"><h2><span class="ttl">screen</span><small>live from the worm's own browser · the worm crawls to what it reads</small><span class="pstate" id="screen-state" hidden></span><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse screen"></button></h2>
       <div class="body"><div class="screen"><img id="screenimg" alt=""><canvas id="eye"></canvas></div><div class="shot" id="screennote">screen warming up…</div></div></div>
-    <div class="panel hot digp" data-panel="dig"><h2><span class="ttl">live dig</span><small>what the worm is inside right now</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse live dig"></button></h2>
+    <div class="panel hot digp" data-panel="dig"><h2><span class="ttl">live dig</span><small id="dig-sub">what the worm is inside right now</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse live dig"></button></h2>
         <div class="body"><div id="dig"><div class="empty">waiting for the next graduation…</div></div></div></div>
     <div class="panel logp" data-panel="log"><h2><span class="ttl">log</span><small>newest first · repeats counted</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse log"></button></h2>
         <div class="body"><ul class="log" id="log"></ul></div></div>
@@ -386,7 +386,8 @@ $('#feed').addEventListener('click',e=>{if(e.target.closest('a'))return;const c=
    worm is reading (the focus of the latest frame), circles it while it reads, and roams the page when there is
    nothing to look at. Same digits, same hood, grows with the same treasury. ---------- */
 let eyeFocus=null;
-function applyFrame(f){if(!f||!f.jpg)return;const img=$('#screenimg');img.src='data:image/jpeg;base64,'+f.jpg;$('#screennote').textContent=(f.note||'')+(f.url?'  ·  '+f.url.replace(/^https?:\/\//,'').slice(0,70):'');eyeFocus=f.focus||null;scout.arrived=false}
+let lastFrame=null;
+function applyFrame(f){if(!f||!f.jpg)return;lastFrame=f;const img=$('#screenimg');img.src='data:image/jpeg;base64,'+f.jpg;$('#screennote').textContent=(f.note||'')+(f.url?'  ·  '+f.url.replace(/^https?:\/\//,'').slice(0,70):'');eyeFocus=f.focus||null;scout.arrived=false}
 const eye=$('#eye'),scx=eye.getContext('2d'),NOTE_H=32;
 const scout={x:0,y:0,h:0,dir:1,trail:[],len:0,cell:4,digits:null,cols:0,rows:0,W:0,H:0,t:0,arrived:false,way:null,wayAt:0,orbit:0,mouse:null,last:0,drawn:0};
 eye.parentElement.addEventListener('mousemove',e=>{const r=eye.getBoundingClientRect();scout.mouse=[(e.clientX-r.left)*scout.W/r.width,(e.clientY-r.top)*scout.H/r.height]});
@@ -461,9 +462,16 @@ function applyScan(ev){if(!ev||!ev.step)return;if(ev.step==='start'||ev.token!==
   hood.mode=ev.step==='verdict'?'idle':'dig';clearTimeout(digIdleTimer);if(ev.step!=='verdict')digIdleTimer=setTimeout(()=>{hood.mode='idle'},90000);renderDig();updateBar()}
 function renderDig(){const el=$('#dig'),st=dig.steps;if(!dig.token){el.innerHTML='<div class="empty">waiting for the next graduation… one lands every few minutes.</div>';return}
   const head=st.start?st.start.data:{},next=STEPS.map(x=>x[0]).find(k=>!st[k]);
-  let html=`<div class="digtitle">${st.verdict?'last dig':'digging into'} <b>${esc(head.name||dig.token.slice(0,10))}</b> <span class="sym">$${esc(head.symbol||'?')}</span> <span class="meta">· ${esc(head.pair||'')} pair · graduated ${ago(head.grad_ts)}</span>${st.verdict?` <span class="badge-inline ${vcls(st.verdict.data.verdict)}">${num(st.verdict.data.score)} ${esc(st.verdict.data.verdict)}</span> <span class="meta">in ${num(st.verdict.data.seconds)}s</span>`:''}</div>`;
+  let html=`<div class="digtitle">${st.verdict?'last dig':'digging into'} <b>${esc(head.name||dig.token.slice(0,10))}</b> <span class="sym">$${esc(head.symbol||'?')}</span> <span class="meta" id="digago">${digAgo(head)}</span>${st.verdict?` <span class="badge-inline ${vcls(st.verdict.data.verdict)}">${num(st.verdict.data.score)} ${esc(st.verdict.data.verdict)}</span> <span class="meta">in ${num(st.verdict.data.seconds)}s</span>`:''}</div>`;
+  if(st.verdict)html+=`<div class="digwait" id="digwait"><span class="wdot"></span><span>${esc(waitText())}</span></div>`;
   html+='<ol class="steps">'+STEPS.map(([k,label])=>{const ev=st[k];const state=ev?'done':(k===next&&!st.verdict?'now':'todo');return `<li class="${state}"><span class="dot"></span>${label}${ev?`: <span class="meta">${esc(ev.text)}</span>`:''}</li>`}).join('')+'</ol>';
   html+='<canvas id="vision" height="170"></canvas>';el.innerHTML=html;drawVision()}
+/* the state both hot panels share: digging (a dig in progress, or one that just ended) or waiting for the next graduation */
+function digState(){const last=Math.max(0,...Object.values(dig.steps).map(e=>e.ts||0)),head=(dig.steps.start&&dig.steps.start.data)||{};
+  return {digging:!!dig.token&&!dig.steps.verdict&&(hood.mode==='dig'||Date.now()/1000-last<90),head,sym:head.symbol||String(dig.token||'').slice(0,8)}}
+function digAgo(head){return `· ${esc(head.pair||'')} pair · graduated ${ago(head.grad_ts)}`}
+function waitText(){const g=Number(((lastState||{}).stats||{}).grads_24h||0),gap=g>0?Math.max(1,Math.round(1440/g)):0;
+  return 'waiting for the next graduation'+(gap?` · about one every ${gap} min over the last day`:'')}
 function drawVision(){const c=$('#vision');if(!c)return;const ctx=c.getContext('2d');const W=c.width=c.clientWidth||600,H=c.height=170;ctx.clearRect(0,0,W,H);
   ctx.font='10px "IBM Plex Mono",ui-monospace,monospace';ctx.textBaseline='alphabetic';
   const hb=(dig.steps.holders&&dig.steps.holders.data.bubbles)||[],bw=W*0.5;
@@ -622,7 +630,7 @@ function renderSummaries(s){const tr=s.treasury||{},rw=s.runway||{},b=s.brain||{
     voice:`${(vo.entries||[]).filter(e=>e.ok).length} entries · writer ${vo.model||'stub'}`,
     log:`${(s.events||[]).length} events`,
     learning:`readiness ${num(rd.score??0)}% · ${b.resolved||0} verdicts checked · ${(s.lessons||[]).length} lessons`,
-    screen:'live from the worm\'s browser',dig:dig.token?(dig.steps.verdict?'last dig done':'digging'):'idle'};
+    screen:digState().digging?'digging':'waiting for the next graduation',dig:dig.token?(dig.steps.verdict?'last dig · waiting for the next graduation':'digging'):'waiting for the next graduation'};
   for(const k in S){const el=document.querySelector(`.panel[data-panel="${k}"]>h2 .sum`);if(el)el.textContent=S[k]}}
 const ORDER=['feed','wallet','trades','runway','brain','lab','paper','advisor','bad','causes','voice'],grid=$('#grid');let gridCols=0,placedAt=0,placedData=false,placeTimer=null;
 function colCount(){return matchMedia('(min-width:1280px)').matches?3:matchMedia('(min-width:900px)').matches?2:1}
@@ -635,8 +643,12 @@ function updateBar(){const s=lastState;if(!s)return;const ch=s.character||{},st=
   $('#sb-ready').textContent=num(rd.score??0)+'%';
   $('#sb-block').textContent=st.last_block==null?'…':String(st.last_block);
   const m=$('#sb-mode');m.textContent=s.live?'LIVE':'DEMO';m.className='mode'+(s.live?' on':'');
-  const last=Math.max(0,...Object.values(dig.steps).map(e=>e.ts||0)),digging=!!dig.token&&!dig.steps.verdict&&(hood.mode==='dig'||Date.now()/1000-last<90),head=(dig.steps.start&&dig.steps.start.data)||{};
-  const d=$('#sb-dig');d.hidden=!digging;if(digging)d.textContent='digging $'+(head.symbol||String(dig.token).slice(0,8))}
+  const {digging,head,sym}=digState();
+  const d=$('#sb-dig');d.hidden=!digging;if(digging)d.textContent='digging $'+sym;
+  const sc=$('#screen-state');sc.hidden=false;sc.textContent=digging?'digging $'+sym:matchMedia('(max-width:500px)').matches?'waiting for a graduation':'waiting for the next graduation';sc.classList.toggle('on',digging);
+  $('#dig-sub').textContent=!dig.token?'nothing dug yet, waiting for the first graduation':digging?'what the worm is inside right now':'the last dig, while the worm waits for the next graduation';
+  const w=$('#digwait');if(w)w.lastElementChild.textContent=waitText();
+  const a=$('#digago');if(a&&head.grad_ts)a.innerHTML=digAgo(head)}
 setInterval(updateBar,2000);
 new IntersectionObserver(es=>{sbar.classList.toggle('on',!es[0].isIntersecting)},{rootMargin:'-60px 0px 0px 0px'}).observe($('#top'));
 place(true);
