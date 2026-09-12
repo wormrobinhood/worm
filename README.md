@@ -124,6 +124,21 @@ Posting to X is manual on purpose: entries sit on the site with a copy button.
    down before it is sent and reconciled against the chain afterwards.
 5. Causes: giving from the surplus, on-chain and public. Built, demo mode.
 
+## The page
+
+`web/index.html` is the live page: one document with four views chosen by the URL hash, Live (`#overview`),
+Learning (`#learning`), Token scans (`#scans`) and Treasury (`#treasury`). The page's inline script reads
+`/api/state` and the `/ws` socket and renders every panel; `web/design.js` adds the navigation, the search,
+filter and sort of the scans, the evidence disclosures, the data-freshness label, the interactive learning map,
+the motion control, the five-entry scroll regions and the launch tape; `web/design.css` is the look. The server
+serves those two files at `/design.css` and `/design.js` by exact name (nothing else under `web/` is reachable),
+with `Cache-Control: no-cache` and a content ETag, so a new build shows with the page. The socket is always
+opened on the page's own origin, `wss:` on HTTPS and `ws:` on HTTP; a test refuses any other host or port.
+
+Every number is the server's: the at-scan FDV is the first price the feed returned for that verdict and is never
+overwritten (`fdv0_usd`, with `price0_ts` saying when it was read), the FDV now is the latest refresh, and a value
+the feed has not returned yet shows as not read, never as zero.
+
 ## The docs page
 
 `/docs` explains the whole thing in plain words: how a dig works, the trust values, how the brain learns,

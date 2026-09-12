@@ -346,10 +346,45 @@ def test_page_loads_only_origins_the_policy_allows():
     """Every resource the pages load outright (stylesheets, scripts, images, CSS url()) comes from an origin the
     policy allows: the fonts. Links a visitor may click are navigation, which the policy does not govern."""
     loads = re.compile(r'<(?:link|script|img|iframe|source)\b[^>]*?(?:href|src)="(https?://[^"]+)"|url\((?:"|\')?(https?://[^)"\']+)')
-    for page in ("index.html", "docs.html"):
+    for page in ("index.html", "docs.html", "design.css", "design.js"):
         html = (server.WEB / page).read_text(encoding="utf-8")
         for a, b in loads.findall(html):
             assert (a or b).startswith(("https://fonts.googleapis.com", "https://fonts.gstatic.com")), (page, a or b)
+
+
+def test_page_assets_are_served_by_exact_name_only(site):
+    """The stylesheet and the script the page links are served with their own types and the same nosniff header
+    as everything else, revalidated on every load; nothing else under web/ is reachable by name."""
+    client = site[0]
+    css = client.get("/design.css")
+    assert css.status_code == 200 and css.headers["content-type"].startswith("text/css")
+    assert css.headers["x-content-type-options"] == "nosniff" and css.headers["cache-control"] == "no-cache"
+    assert "content-security-policy" not in css.headers
+    js = client.get("/design.js")
+    assert js.status_code == 200 and js.headers["content-type"].startswith("application/javascript")
+    assert js.headers["cache-control"] == "no-cache" and "etag" in js.headers
+    assert client.get("/design.js", headers={"If-None-Match": js.headers["etag"]}).status_code == 304
+    for path in ("/index.html", "/docs.html", "/web/design.css", "/design.txt", "/design.css.bak", "/DESIGN.CSS"):
+        assert client.get(path).status_code == 404, path
+    page = client.get("/").text
+    assert 'href="/design.css"' in page and 'src="/design.js"' in page
+
+
+def test_page_talks_to_its_own_origin_only():
+    """The websocket is opened on the page's own host with the scheme that matches the page: no preview
+    exception, no fixed port, no loopback address anywhere in the page or its script."""
+    html = (server.WEB / "index.html").read_text(encoding="utf-8")
+    js = (server.WEB / "design.js").read_text(encoding="utf-8")
+    assert "(location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws'" in html
+    for text in (html, js):
+        assert "4671" not in text and "127.0.0.1" not in text and "localhost" not in text
+
+
+def test_docs_placeholders_are_all_filled(site):
+    client = site[0]
+    page = client.get("/docs").text
+    assert not re.search(r"\{\{[a-z_]+\}\}", page)
+    assert "IRL Worm" in page
 
 
 def test_healthz_reflects_the_indexer(site):

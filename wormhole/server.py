@@ -1,6 +1,7 @@
 """The live site: one page, a JSON snapshot, and a websocket that pushes fresh snapshots."""
 import asyncio
 import collections
+import hashlib
 from contextlib import asynccontextmanager
 import json
 import logging
@@ -24,12 +25,15 @@ from . import voice as V, trader as TR, giving as G, compute as CP, lab as LB, r
 
 log = logging.getLogger("wormhole.server")
 WEB = C.ROOT / "web"
+ASSET_TYPES = {"design.css": "text/css", "design.js": "application/javascript"}   # the only files under web/ served by name
 
 DISCLOSURE = {
     "real": "Every number on this page is read from Robinhood Chain or GeckoTerminal: launches, graduations, "
-            "curve buys, holders, swaps, prices.",
-    "not_real": "The verdicts are rules written by a person and re-weighted by outcomes. They are a screening aid, "
-                "not an audit and not advice. IRL Worm has bought nothing; the training book is paper trades that teach its exit rules.",
+            "curve buys, holders, swaps, prices. A score describes the assessment at scan time; what happened afterwards "
+            "is shown separately, and incomplete chain reads are marked.",
+    "not_real": "The verdicts are rules written by a person and re-weighted by outcomes: a screening aid, not an audit "
+                "and not advice. Paper trades and the demo treasury are simulated, the runway is a projection, "
+                "and IRL Worm has bought nothing.",
 }
 
 RESCAN_MAX = 100            # addresses waiting for a rescore before /api/rescan answers 429
@@ -515,6 +519,31 @@ def make_app(rpc, db, brain, paper, hub):
     @app.get("/logo.png")
     def logo():
         return FileResponse(WEB / "logo.png", media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
+
+    asset_tags = {}   # name -> ((mtime_ns, size), etag): the content hash, recomputed when the file changes
+
+    def asset(name, request):
+        """The page's stylesheet and script, each by its exact name: no directory is mounted, so nothing else under
+        web/ (or anywhere) is reachable. no-cache makes the browser revalidate on every page load, and a content
+        ETag answers 304 while the file is unchanged, so a new build shows with the page instead of after a cache."""
+        path = WEB / name
+        st = path.stat()
+        tag = asset_tags.get(name)
+        if not tag or tag[0] != (st.st_mtime_ns, st.st_size):
+            tag = ((st.st_mtime_ns, st.st_size), '"%s"' % hashlib.sha256(path.read_bytes()).hexdigest()[:32])
+            asset_tags[name] = tag
+        headers = {"Cache-Control": "no-cache", "ETag": tag[1]}
+        if request.headers.get("if-none-match", "").replace("W/", "").strip() == tag[1]:
+            return Response(status_code=304, headers=headers)
+        return FileResponse(path, media_type=ASSET_TYPES[name], headers=headers)
+
+    @app.get("/design.css")
+    def design_css(request: Request):
+        return asset("design.css", request)
+
+    @app.get("/design.js")
+    def design_js(request: Request):
+        return asset("design.js", request)
 
     @app.get("/healthz")
     def health():

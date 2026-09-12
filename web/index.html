@@ -212,8 +212,12 @@ tr.failed td{color:var(--bad)}
 @media(max-width:600px){.wrap{padding:6px 10px 60px}.panel>h2{padding:8px 10px}.panel .body{padding:8px 10px 10px}.card.compact{grid-template-columns:40px 1fr}.log li{grid-template-columns:64px minmax(0,1fr) auto}#feed{max-height:560px}.rp{grid-template-columns:minmax(90px,120px) 1fr 30px}}
 @media(prefers-reduced-motion:reduce){.ticker .run{animation:none;transform:none}.panel.hot,.live,.sbar #sb-dig,ol.steps li.now .dot{animation:none}html{scroll-behavior:auto}}
 </style>
+<link rel="stylesheet" href="/design.css">
 </head>
-<body>
+<body data-view="overview">
+<aside class="rail"><a class="rail-brand" href="#overview">IRL<span>WORM</span><small>CHAIN INTELLIGENCE</small></a><nav aria-label="Main navigation">
+<a href="#overview" data-view="overview">Live</a><a href="#learning" data-view="learning">Learning</a><a href="#scans" data-view="scans">Token scans</a><a href="#treasury" data-view="treasury">Treasury</a></nav><div class="rail-bottom"><span>ROBINHOOD CHAIN</span><a href="/docs">How it works ↗</a><button id="motion" type="button" aria-pressed="false">Pause animation</button></div></aside>
+<div class="topline"><span id="view-title">Live</span><div><span id="freshness" role="status">Connecting…</span><span id="mode-label">Mode loading</span></div></div>
 <canvas id="rain"></canvas>
 <div class="sbar" id="sbar"><a class="brand" href="#top">IRL WORM</a><span class="live"></span>
   <span class="it"><span class="l">stage</span><span id="sb-stage">—</span></span>
@@ -226,11 +230,11 @@ tr.failed td{color:var(--bad)}
 </div>
 <div class="wrap">
   <header class="mast" id="top">
-    <section class="hero"><canvas id="hood" width="900" height="380"></canvas></section>
+    <section class="hero"><canvas id="hood" width="900" height="380" role="img" aria-label="Interactive binary worm wearing its Robin Hood hat"></canvas></section>
     <div class="title">
       <h1>IRL WORM</h1>
       <div class="tag">internet money, real life impact</div>
-      <div class="sub">a small hooded worm on Robinhood Chain. It digs through every pons graduation, flags bad actors, and tells the community first. <a href="/docs">how it works, the fee split, the roadmap →</a></div>
+      <div class="sub">Your on-chain scout. Every graduation screened, every signal explained, every outcome tracked. <a href="/docs">how it works, the fee split, the roadmap →</a></div>
       <div class="stage" id="stage"><span class="live"></span>waking up…</div>
       <div class="bar"><i id="stagebar" style="width:0%"></i></div>
       <div class="meta" id="grow">grows with what it earns: the treasury it holds decides how long the worm is</div>
@@ -238,7 +242,7 @@ tr.failed td{color:var(--bad)}
   </header>
 
   <div class="synapse" id="synapse"></div>
-  <div class="stats" id="stats"></div>
+  <div class="stats" id="stats"></div><div id="overview-metrics"></div>
   <div class="disc" id="disc"></div>
 
   <div class="liverow" id="liveband">
@@ -255,7 +259,7 @@ tr.failed td{color:var(--bad)}
     <div class="meta" id="learnmeta" style="margin-top:10px"></div></div></section>
 
   <div id="grid">
-    <div class="panel" data-panel="feed"><h2><span class="ttl">graduations</span><small>newest first <span id="feedinfo"></span></small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse graduations"></button></h2><div class="body"><div id="feed"><div class="empty">reading the chain…</div></div></div></div>
+    <div class="panel" data-panel="feed"><h2><span class="ttl">graduations</span><small>newest first <span id="feedinfo"></span></small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse graduations"></button></h2><div class="body"><div class="scan-controls"><label>Find a token<input id="token-search" type="search" placeholder="Name, symbol or address" autocomplete="off"></label><label>Assessment<select id="verdict-filter"><option value="all">All assessments</option><option value="looks healthy">Looks healthy</option><option value="mixed">Mixed signals</option><option value="avoid">Avoid</option><option value="partial">Incomplete data</option></select></label><label>Sort by<select id="scan-sort"><option value="newest">Newest graduation</option><option value="score">Highest score</option><option value="risk">Lowest score</option></select></label></div><div id="scan-count" class="meta" aria-live="polite"></div><div id="feed"><div class="empty">reading the chain…</div></div></div></div>
     <div class="panel" data-panel="wallet"><h2><span class="ttl">wallet</span><small>its own money, in the open</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse wallet"></button></h2><div class="body"><div id="wallet"></div></div></div>
     <div class="panel" data-panel="trades"><h2><span class="ttl">trades</span><small>from the surplus only, hedged</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse trades"></button></h2><div class="body"><div id="trades"></div></div></div>
     <div class="panel" data-panel="runway"><h2><span class="ttl">runway</span><small>can it pay for itself?</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse runway"></button></h2><div class="body"><div id="runway"></div></div></div>
@@ -286,46 +290,53 @@ function weburl(u){u=(u||'').trim();return /^https?:\/\/[^\s"'<>]+$/i.test(u)?u:
 const rain=$('#rain'),rc=rain.getContext('2d');let drops=[];
 function sizeRain(){rain.width=innerWidth;rain.height=innerHeight;drops=Array.from({length:Math.floor(innerWidth/14)},()=>Math.random()*-60)}
 addEventListener('resize',sizeRain);sizeRain();
-setInterval(()=>{rc.fillStyle='rgba(0,0,0,0.14)';rc.fillRect(0,0,rain.width,rain.height);rc.font='12px ui-monospace,Menlo,monospace';
+setInterval(()=>{if(window.motionPaused)return;rc.fillStyle='rgba(0,0,0,0.14)';rc.fillRect(0,0,rain.width,rain.height);rc.font='12px ui-monospace,Menlo,monospace';
   for(let i=0;i<drops.length;i++){const y=drops[i];rc.fillStyle=Math.random()<.07?'#b6ffb6':'#00b32d';rc.fillText(Math.random()<.5?'0':'1',i*14,y*14);
     drops[i]=(y*14>rain.height&&Math.random()>.97)?0:y+1}},75);
 
 /* ---------- the worm: a cloud of 0 and 1 with depth. It wriggles, scatters around the mouse, and gets longer as it earns. ---------- */
 const cv=$('#hood'),cx=cv.getContext('2d');
 let hood={stage:0,cols:0,rows:0,cell:5,t:0,mouse:null,digits:null,mode:'idle',streaks:[]};
-function sizeWorm(){const w=Math.min(980,(document.querySelector('.hero').clientWidth||900)-8);hood.cell=w>640?5:4;hood.cols=Math.floor(w/hood.cell);hood.rows=Math.floor(hood.cols*0.46);
-  cv.width=hood.cols*hood.cell;cv.height=hood.rows*hood.cell;hood.digits=new Uint8Array(hood.cols*hood.rows);for(let i=0;i<hood.digits.length;i++)hood.digits[i]=Math.random()<.5?0:1}
+function sizeWorm(){const w=Math.min(980,(document.querySelector('.hero').clientWidth||590)-8);hood.cell=w>450?3.5:3;hood.cols=Math.floor(w/hood.cell);hood.rows=Math.floor(hood.cols*.46);const W=hood.cols*hood.cell,H=hood.rows*hood.cell,dpr=Math.min(window.devicePixelRatio||1,2);cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);cv.style.width=W+'px';cv.style.height=H+'px';cx.setTransform(dpr,0,0,dpr,0,0);hood.digits=new Uint8Array(hood.cols*hood.rows);for(let i=0;i<hood.digits.length;i++)hood.digits[i]=Math.random()<.5?0:1;drawHood(true)}
 function buildHood(stage){hood.stage=stage}
-cv.addEventListener('mousemove',e=>{const r=cv.getBoundingClientRect();hood.mouse=[(e.clientX-r.left)*cv.width/r.width,(e.clientY-r.top)*cv.height/r.height]});
-cv.addEventListener('mouseleave',()=>hood.mouse=null);
+cv.addEventListener('mousemove',e=>{const r=cv.getBoundingClientRect();hood.mouse=[(e.clientX-r.left)*(hood.cols*hood.cell)/r.width,(e.clientY-r.top)*(hood.rows*hood.cell)/r.height]});
+cv.addEventListener('mouseleave',()=>hood.mouse=null);cv.addEventListener('pointermove',e=>{const r=cv.getBoundingClientRect();hood.mouse=[(e.clientX-r.left)*(hood.cols*hood.cell)/r.width,(e.clientY-r.top)*(hood.rows*hood.cell)/r.height];if(window.motionPaused)drawHood(true)});cv.addEventListener('pointerleave',()=>hood.mouse=null);
 function layout(){const {cols,rows,cell,stage,t}=hood,W=cols*cell,H=rows*cell,n=9+stage*2,R=H*0.19,sp=R*0.60;
   const need=sp*(n-1)+R*2.8,sc=Math.min(1,(W-30)/need),r0=R*sc,s0=sp*sc;
   const hx=W/2+(s0*(n-1))/2-r0*0.1,ymid=H*0.52,amp=H*0.08*sc,segs=[];
   for(let i=0;i<n;i++){const x=hx-i*s0,y=ymid+amp*Math.sin(i*0.72-t*2.0)+(i?0:amp*0.15),r=r0*(i===0?1:0.90-0.52*(i/(n-1)));segs.push({x,y,r})}
   return {segs,r0}}
-function drawHood(){const {cols,rows,cell,digits}=hood;if(!cols)return;hood.t+=hood.mode==='dig'?0.06:0.028;
-  const {segs,r0}=layout(),hd=segs[0],hx=hd.x,hy=hd.y,m=hood.mouse;
-  const hoodc={x:hx-r0*0.10,y:hy-r0*0.30,r:r0*1.10,brim:hy-r0*0.20};
-  const tip={x0:hx-r0*0.02,y0:hy-r0*1.30,x1:hx+r0*1.30,y1:hy-r0*2.15};
-  const fe={x0:tip.x1,y0:tip.y1,x1:tip.x1+r0*0.5,y1:tip.y1-r0*0.4};
-  cx.clearRect(0,0,cv.width,cv.height);cx.font=`600 ${cell+1}px "IBM Plex Mono",ui-monospace,Menlo,monospace`;cx.textBaseline='top';
-  const minx=segs[segs.length-1].x-r0,maxx=fe.x1+cell*2,miny=fe.y1-cell*2,maxy=hy+r0*1.2;
-  for(let r=0;r<rows;r++){const py=r*cell+cell/2;if(py<miny||py>maxy)continue;
-    for(let q=0;q<cols;q++){const px=q*cell+cell/2;if(px<minx||px>maxx)continue;const i=r*cols+q;
-      let part=null,shade=0,lx=0,ly=0;
-      let bt=1;for(const s of segs){const dx=px-s.x,dy=py-s.y,t=Math.sqrt(dx*dx+dy*dy)/s.r;if(t<bt){bt=t;part='body';shade=1-t*t;lx=dx/s.r;ly=dy/s.r}}
-      {const dx=px-hoodc.x,dy=py-hoodc.y,t=Math.sqrt(dx*dx+dy*dy)/hoodc.r;if(t<1&&py<hoodc.brim){part='hood';shade=1-t*t;lx=dx/hoodc.r;ly=dy/hoodc.r}}
-      {const vx=tip.x1-tip.x0,vy=tip.y1-tip.y0,u=((px-tip.x0)*vx+(py-tip.y0)*vy)/(vx*vx+vy*vy);if(u>=0&&u<=1){const ex=tip.x0+u*vx-px,ey=tip.y0+u*vy-py,d=Math.sqrt(ex*ex+ey*ey),w=r0*0.40*(1-u)+cell*0.7;if(d<w){part='hood';shade=1-(d/w)*(d/w);lx=ex/w;ly=ey/w}}}
-      {const vx=fe.x1-fe.x0,vy=fe.y1-fe.y0,u=((px-fe.x0)*vx+(py-fe.y0)*vy)/(vx*vx+vy*vy);if(u>=0&&u<=1){const ex=fe.x0+u*vx-px,ey=fe.y0+u*vy-py;if(ex*ex+ey*ey<(cell*0.95)**2){part='feather';shade=1}}}
-      if(part==='body'){const ex=px-(hx+r0*0.40),ey=py-(hy-r0*0.02);if(ex*ex+ey*ey<(r0*0.15)**2)part=null}
-      if(!part)continue;
-      let b=0.22+0.62*shade+0.16*(-lx-ly);
-      if(m){const dx=px-m[0],dy=py-m[1],d=Math.sqrt(dx*dx+dy*dy);if(d<80)b+=0.55*(1-d/80)}
-      if(hood.mode==='dig'){b+=0.12;if(Math.random()<.06)digits[i]^=1}else if(Math.random()<.015)digits[i]^=1;
-      b=Math.max(.10,Math.min(1,b));
-      let ox=0,oy=0;if(m){const dx=px-m[0],dy=py-m[1],d=Math.sqrt(dx*dx+dy*dy);if(d<80&&d>0){const k=(1-d/80)*10;ox=dx/d*k;oy=dy/d*k}}
-      cx.fillStyle=part==='hood'?`rgba(200,255,205,${b})`:part==='feather'?`rgba(255,255,255,${b})`:`rgba(0,255,65,${b})`;
-      cx.fillText(digits[i],q*cell+ox,r*cell+oy)}}
+function drawHood(force=false){if(window.motionPaused&&!force)return;const {cols,rows,cell,digits}=hood;if(!cols)return;if(!window.motionPaused)hood.t+=hood.mode==='dig'?.043:.018;
+ const W=cols*cell,H=rows*cell,{segs,r0}=layout(),hd=segs[0],hx=hd.x,hy=hd.y,m=hood.mouse;
+ cx.clearRect(0,0,W,H);
+ const glow=cx.createRadialGradient(W*.54,H*.57,5,W*.54,H*.57,W*.43);glow.addColorStop(0,'rgba(20,165,81,.10)');glow.addColorStop(1,'rgba(0,0,0,0)');cx.fillStyle=glow;cx.fillRect(0,0,W,H);
+ const hat=[[-1.02,-.40],[-.84,-1.04],[-.22,-1.62],[.33,-1.42],[1.25,-1.08],[.73,-.68],[.95,-.34],[.13,-.16]];
+ function inside(x,y,p){let yes=false;for(let i=0,j=p.length-1;i<p.length;j=i++){let a=p[i],b=p[j];if((a[1]>y)!==(b[1]>y)&&x<(b[0]-a[0])*(y-a[1])/(b[1]-a[1])+a[0])yes=!yes}return yes}
+ cx.font=`500 ${cell*1.07}px "IBM Plex Mono",monospace`;cx.textBaseline='middle';
+ for(let row=0;row<rows;row++)for(let col=0;col<cols;col++){
+  const x=col*cell,y=row*cell,index=row*cols+col;let part='',light=0,nx=(x-hx)/r0,ny=(y-hy)/r0,segment=0;
+  let near=1;for(let i=0;i<segs.length;i++){const s=segs[i],dx=(x-s.x)/s.r,dy=(y-s.y)/s.r,d=Math.hypot(dx,dy);if(d<near){near=d;part='body';segment=i;light=.30+.48*Math.sqrt(1-d*d)+.25*(-dy)-.1*dx}}
+  if(part==='body'){
+   const wave=Math.pow(Math.max(0,Math.cos(segment*.75-hood.t*3)),14);light+=wave*.26;
+   if(near>.90)light+=.15;
+   // A rounded eye and a slight smile cut into the binary face.
+   const eye=Math.hypot(nx-.43,ny+.04);if(eye<.13){part=eye<.065?'eye':'';light=.95}
+   if(nx>.19&&nx<.72&&Math.abs(ny-(.39-.38*(nx-.2)*(nx-.2)))<.037)part='';
+  }
+  if(inside(nx,ny,hat)){part='hat';light=.4+.37*Math.max(0,1-Math.abs(nx+.35))+.13*(-ny)}
+  // Turned brim, deliberately wider than the crown.
+  if(nx>-1.09&&nx<1.02&&ny>-.42+nx*.065&&ny<-.20+nx*.065){part='brim';light=.8}
+  // A separate curved feather, anchored in the hat band.
+  const u=(-ny-.61)/1.67;if(u>=0&&u<=1){const center=-.36-.47*u+.13*Math.sin(u*Math.PI),width=.028+.115*Math.sin(u*Math.PI);if(Math.abs(nx-center)<width){part='feather';light=.75+.23*Math.sin(u*Math.PI)}}
+  if(!part)continue;
+  if(Math.random()<(hood.mode==='dig'?.025:.004)&&!window.motionPaused)digits[index]^=1;
+  let ox=0,oy=0;if(m){const dx=x-m[0],dy=y-m[1],d=Math.hypot(dx,dy);if(d<65){light+=.25*(1-d/65);if(d>0){ox=dx/d*(1-d/65)*3;oy=dy/d*(1-d/65)*3}}}
+  light=Math.max(.16,Math.min(1,light));
+  const rgb=part==='eye'?'213,255,230':part==='feather'?'222,222,146':part==='brim'?'126,200,106':part==='hat'?'155,222,137':'60,245,131';
+  cx.fillStyle=`rgba(${rgb},${light})`;cx.fillText(digits[index],x+ox,y+oy);
+ }
+ // Sparse electrical connections follow the existing segment geometry.
+ cx.lineWidth=.6;for(let i=1;i<segs.length-1;i++){const a=segs[i],b=segs[i+1];cx.strokeStyle='rgba(161,255,197,.19)';cx.beginPath();cx.moveTo(a.x,a.y-a.r*.32);cx.lineTo(b.x,b.y-b.r*.32);cx.stroke();if((i+Math.floor(hood.t*3))%5===0){cx.fillStyle='#bdffd7';cx.beginPath();cx.arc(a.x,a.y-a.r*.32,1.05,0,Math.PI*2);cx.fill()}}
 }
 addEventListener('resize',sizeWorm);sizeWorm();setInterval(drawHood,50);
 
@@ -355,11 +366,16 @@ function card(t,isNew){
   return `<div class="card v-${cls}${isNew?' new':''}" data-token="${esc(t.token)}"><div class="badge ${cls}"><b>${num(t.score)}</b><small>${esc(v)}</small></div><div>${title}<div class="chips">${chipHtml(allChips)}${out}</div><ul class="reasons">${reasons}</ul><div class="meta" style="margin-top:6px">${links}</div></div></div>`;
 }
 function renderFeed(feed,force){
-  const fkey=feed.map(t=>t.token+t.score+(t.outcome||'')+(t.change_pct==null?'':Math.round(t.change_pct))+((t.metrics||{}).fdv_usd||'')).join('|')+'#'+[...expanded].join(',');
-  if(!force&&fkey===window.__feedKey)return;window.__feedKey=fkey;lastFeed=feed;
-  $('#feed').innerHTML=feed.length?feed.map(t=>card(t,!first&&!seen.has(t.token))).join(''):'<div class="empty">no graduations scored yet. The backfill is running; the first cards land within a minute or two.</div>';
+  lastFeed=feed;const fkey=JSON.stringify([feed,[...expanded],window.scanQuery,window.scanFilter,window.scanSort]);
+  if(!force&&fkey===window.__feedKey)return;window.__feedKey=fkey;
+  const q=(window.scanQuery||'').toLowerCase();feed=feed.filter(t=>(!q||[t.name,t.symbol,t.token].some(x=>String(x||'').toLowerCase().includes(q)))&&(!window.scanFilter||window.scanFilter==='all'||(window.scanFilter==='partial'?t.partial:t.verdict===window.scanFilter)));
+  feed=[...feed].sort((a,b)=>window.scanSort==='score'?b.score-a.score:window.scanSort==='risk'?a.score-b.score:b.grad_ts-a.grad_ts);
+  $('#scan-count').textContent=`${feed.length} of ${lastFeed.length} recent scans · scores describe the assessment at scan time`;
+  const focusToken=document.activeElement?.closest?.('.scan-row')?.closest('.card')?.dataset.token;
+  $('#feed').innerHTML=feed.length?feed.map(t=>card(t,!first&&!seen.has(t.token))).join(''):lastFeed.length?'<div class="empty">No matching scans. Try another search or assessment filter.</div>':'<div class="empty">No scans yet. The backfill is running; the first cards land within a minute or two.</div>';
+  if(focusToken){const btn=[...document.querySelectorAll('#feed .card')].find(c=>c.dataset.token===focusToken)?.querySelector('.scan-row');if(btn)btn.focus({preventScroll:true})}
 }
-document.addEventListener('click',e=>{const b=e.target.closest('.copy');if(b){navigator.clipboard&&navigator.clipboard.writeText(b.dataset.text||'');b.textContent='copied';setTimeout(()=>b.textContent='copy',1500)}});
+document.addEventListener('click',async e=>{const b=e.target.closest('.copy');if(!b)return;try{await navigator.clipboard.writeText(b.dataset.text||'');b.textContent='Copied'}catch{b.textContent='Copy failed'}setTimeout(()=>b.textContent='copy',1500)});
 $('#feed').addEventListener('click',e=>{if(e.target.closest('a'))return;const c=e.target.closest('.card');if(!c)return;const t=c.dataset.token;expanded.has(t)?expanded.delete(t):expanded.add(t);renderFeed(lastFeed,true)});
 
 /* ---------- screen frames + the scout: the same worm, small, living inside the screen. It crawls to whatever the
@@ -378,7 +394,7 @@ function scoutResize(w,h){const k=scout.W?w/scout.W:0;eye.width=w;eye.height=h;s
 function scoutBack(back){const tr=scout.trail,want=scout.len-back;
   for(let i=tr.length-1;i>0;i--){const a=tr[i-1],b=tr[i];if(a.s<=want){const u=(want-a.s)/Math.max(1e-6,b.s-a.s);return [a.x+(b.x-a.x)*u,a.y+(b.y-a.y)*u]}}
   const a=tr[0]||{x:scout.x,y:scout.y,s:scout.len},gap=a.s-want;return [a.x-Math.cos(scout.h)*gap,a.y-Math.sin(scout.h)*gap]}
-function scoutTick(now){requestAnimationFrame(scoutTick);const box=eye.parentElement.getBoundingClientRect();if(!box.width||now-scout.drawn<30)return;
+function scoutTick(now){requestAnimationFrame(scoutTick);if(window.motionPaused)return;const box=eye.parentElement.getBoundingClientRect();if(!box.width||now-scout.drawn<30)return;
   const dt=Math.min(.05,(now-scout.last)/1000||.016);scout.last=now;scout.drawn=now;
   const w=Math.round(box.width),hh=Math.round(box.height);if(w!==scout.W||hh!==scout.H)scoutResize(w,hh);
   const {W,H,cell,cols,digits}=scout,stage=hood.stage||0,n=8+stage*2,r0=12+stage*.9,sp=r0*.62,dig=hood.mode==='dig';
@@ -429,7 +445,7 @@ function scoutTick(now){requestAnimationFrame(scoutTick);const box=eye.parentEle
     if(m){const dx=cxp-m[0],dy=cy-m[1],dm=Math.sqrt(dx*dx+dy*dy);if(dm<80&&dm>0){b+=.55*(1-dm/80);const k=(1-dm/80)*10;ox=dx/dm*k;oy=dy/dm*k}}
     if(dig){b+=.12;if(Math.random()<.06)digits[i]^=1}else if(Math.random()<.015)digits[i]^=1;
     b=Math.max(.1,Math.min(1,b));
-    scx.fillStyle=part==='hood'?`rgba(200,255,205,${b})`:part==='feather'?`rgba(255,255,255,${b})`:`rgba(0,255,65,${b})`;
+    scx.fillStyle=part==='hood'?`rgba(190,248,179,${b})`:part==='feather'?`rgba(236,218,149,${b})`:`rgba(81,242,137,${b})`;
     scx.fillText(digits[i],q*cell+ox,r*cell+oy)}}
 }
 requestAnimationFrame(scoutTick);
@@ -520,7 +536,7 @@ function render(s){
     +stat('creators flagged',sco.creators_flagged||0,'serial launchers or a rug on record')
     +`<div class="stat wide"><b>${num(rd.score??0)}%</b><span>readiness · real trades at ${num(rd.ready_at||80)}%</span><span class="rbar"><i style="width:${rd.score||0}%"></i></span></div>`+stat('block',st.last_block);
   const syn=synapse(st,vd,sco,rd);if(syn)$('#synapse').innerHTML=syn;
-  const dc=s.disclosure||{};$('#disc').innerHTML=`<span><b>what is real</b> ${esc(dc.real)}</span><span><b>what is not</b> ${esc(dc.not_real)}</span>`;
+  const dc=s.disclosure||{};$('#disc').innerHTML=`<div><b>Data &amp; assessments</b> ${esc(dc.real)}</div><div><b>Simulation &amp; estimates</b> ${esc(dc.not_real)}</div>`;
   const feed=s.feed||[];$('#feedinfo').textContent=feed.length?`· last ${feed.length}`:'';
   renderFeed(feed,false);
   feed.forEach(t=>seen.add(t.token));first=false;
@@ -540,20 +556,20 @@ function render(s){
     +((vo.entries||[]).filter(e=>e.ok).length?vo.entries.filter(e=>e.ok).slice(0,6).map(e=>`<div class="post"><button class="copy" data-text="${esc(e.text)}">copy</button>${esc(e.text)}<span class="meta">${esc(e.mood||'')} · ${ago(e.ts)} · ${esc(e.model||'')}</span></div>`).join(''):'<div class="empty">no entries yet</div>');
   const trd=s.trader||{},pos=trd.positions||[],tds=trd.trades||[];
   $('#trades').innerHTML=`<div class="meta" style="margin-bottom:8px">${esc(trd.policy||'')}. ${s.live?'':'Demo: real quotes and simulated swaps, nothing sent.'}</div>`
-    +(pos.length?`<table><tr><th>position</th><th class="r">size</th><th class="r">entry</th><th>state</th></tr>`+pos.slice(0,8).map(x=>`<tr><td>$${esc(x.symbol)} <span class="meta">${esc(x.mode)}</span></td><td class="r">$${Number(x.size_usd).toFixed(2)}</td><td class="r">${usd(x.entry_usd)}</td><td>${x.status==='open'?((x.recovered_usd||0)>0?'<span class="pos">cost back, free bag</span>':'open'):esc('closed: '+(x.reason||''))}</td></tr>`).join('')+'</table>':`<div class="empty">no positions. Locked until readiness reaches ${num(rd.ready_at||80)}%; then only "looks healthy" verdicts, from the surplus above the reserve.</div>`)
+    +(pos.length?`<table><tr><th>position</th><th class="r">size</th><th class="r">entry</th><th>state</th></tr>`+pos.slice(0,8).map(x=>`<tr><td>$${esc(x.symbol)} <span class="meta">${esc(x.mode)}</span></td><td class="r">$${Number(x.size_usd).toFixed(2)}</td><td class="r">${usd(x.entry_usd)}</td><td>${x.status==='open'?((x.recovered_usd||0)>0?'<span class="pos">initial cost recovered</span>':'open'):esc('closed: '+(x.reason||''))}</td></tr>`).join('')+'</table>':`<div class="empty">no positions. Locked until readiness reaches ${num(rd.ready_at||80)}%; then only "looks healthy" verdicts, from the surplus above the reserve.</div>`)
     +(tds.length?'<div class="meta" style="margin-top:8px">'+tds.slice(0,5).map(t=>`${ago(t.ts)} · ${esc(t.side)} $${esc(t.symbol)} $${Number(t.usd).toFixed(2)} · ${esc(t.note||'')}`).join('<br>')+'</div>':'');
   const gv=s.giving||{};
-  $('#causes').innerHTML=`<div class="meta">${esc(gv.rule||'')}. given so far $${(gv.given_total||0).toFixed(2)}</div>`+((gv.causes||[]).length?'<table style="margin-top:6px"><tr><th>cause</th><th>wallet</th><th class="r">weight</th></tr>'+gv.causes.map(c=>`<tr><td>${esc(c.name)}</td><td class="meta">${short(c.address)}</td><td class="r">${num(c.weight)}</td></tr>`).join('')+'</table>':'<div class="empty">no causes configured yet (WH_CAUSES)</div>');
+  $('#causes').innerHTML=`<div class="meta">${esc(gv.rule||'')}. given so far $${(gv.given_total||0).toFixed(2)}</div>`+((gv.causes||[]).length?'<table style="margin-top:6px"><tr><th>cause</th><th>wallet</th><th class="r">weight</th></tr>'+gv.causes.map(c=>`<tr><td>${esc(c.name)}</td><td class="meta">${short(c.address)}</td><td class="r">${num(c.weight)}</td></tr>`).join('')+'</table>':'<div class="empty">No causes selected yet.</div>');
   const rw=s.runway||{},sc=rw.scenarios||{};
   $('#runway').innerHTML=((rw.treasury_usd||0)<=0?`<div class="meta" style="margin-bottom:8px;color:var(--g)">not funded yet. The projection below is what a $0 treasury looks like against the planned bills; it starts meaning something once the wallet exists.</div>`:'')+`<div class="meta" style="margin-bottom:8px">treasury <b class="pos">$${(rw.treasury_usd||0).toFixed(2)}</b> · costs ~$${num(rw.cost_per_day_usd)}/day (compute $${num((rw.cost_parts||{}).compute)}, gas $${num((rw.cost_parts||{}).gas)}, bridge $${num((rw.cost_parts||{}).bridge)}) · income $${num(rw.income_per_day_usd)}/day${rw.income_measured?' measured':' (nothing measured yet)'}</div>
-    <table><tr><th>90-day scenario</th><th class="r">ends with</th><th class="r">runs out</th></tr>`+Object.entries(sc).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="r ${v.end_balance_usd>=0?'pos':'neg'}">$${num(v.end_balance_usd)}</td><td class="r">${v.runs_out_day?'day '+num(v.runs_out_day):'never'}</td></tr>`).join('')+`</table>
+    <table><tr><th>90-day scenario</th><th class="r">ends with</th><th class="r">runs out</th></tr>`+Object.entries(sc).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="r ${v.end_balance_usd>=0?'pos':'neg'}">$${num(v.end_balance_usd)}</td><td class="r">${v.runs_out_day!=null?'day '+num(v.runs_out_day):'beyond 90 days'}</td></tr>`).join('')+`</table>
     <div class="meta" style="margin-top:8px">reserve for ${num(rw.reserve_days)} days: $${num(rw.reserve_needed_usd)} · surplus <span class="${rw.surplus_usd>=0?'pos':'neg'}">$${num(rw.surplus_usd)}</span> · investing ${rw.can_invest?'<span class="pos">allowed from surplus</span>':'<span class="neg">locked until the reserve is covered</span>'} · compute budget $${num(rw.compute_budget_per_day_usd)}/day<br>rule: ${esc(rw.rule||'')}</div>`;
   const b=s.brain||{},rules=b.rules||[],cnt=b.counts||{};
   const sc2=b.scorecard||{},vs=['looks healthy','mixed','avoid'],os=['rugged','dumped','flat','grew','unknown'];
   const scoreTable=Object.keys(sc2).length?`<table style="margin-bottom:10px"><tr><th>verdict</th>${os.map(o=>`<th class="r">${o}</th>`).join('')}<th class="r">right?</th></tr>`+vs.filter(v=>sc2[v]).map(v=>{const row=sc2[v]||{},tot=Object.values(row).reduce((a,c)=>a+c,0),bad=(row.rugged||0)+(row.dumped||0),good=row.grew||0;const right=v==='avoid'?bad:v==='looks healthy'?good:null;return `<tr><td>${esc(v)}</td>${os.map(o=>`<td class="r">${row[o]||0}</td>`).join('')}<td class="r">${right==null?'—':Math.round(100*right/tot)+'%'}</td></tr>`}).join('')+'</table>':'';
   $('#brain').innerHTML=scoreTable+`<div class="meta" style="margin-bottom:8px">tracking ${b.tracked||0} verdicts · resolved ${b.resolved||0} · rugged ${cnt.rugged||0} · dumped ${cnt.dumped||0} · flat ${cnt.flat||0} · grew ${cnt.grew||0}. A rule moves by how surprising the outcome was against the base rate: warned before a token that went bad, it gains; reassured, it loses; up to 2% a lesson, bounded 0.5x to 1.5x.</div>
     <table><tr><th>rule</th><th>weight</th><th class="r">lift</th><th class="r">hit / miss</th></tr>`+rules.map(r=>`<tr><td title="${esc(r.about)}">${esc(r.id)}</td><td><span class="wt"><i style="width:${Math.round((r.weight-0.5)/1*100)}%"></i></span>${Number(r.weight).toFixed(2)}x</td><td class="r ${r.lift>1?'pos':r.lift!=null&&r.lift<1?'neg':'dim'}">${r.lift==null?'—':Number(r.lift).toFixed(1)+'x'}</td><td class="r">${num(r.hits)} / ${num(r.misses)}${r.hit_rate!=null?` (${num(r.hit_rate)}%)`:''}</td></tr>`).join('')+'</table>';
-  $('#ready').innerHTML=`<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:6px"><b style="font-size:34px;color:var(--g)">${num(rd.score??0)}%</b><span class="meta">${rd.ready?'<span class="pos">ready: real trades allowed, minimum size</span>':`real trades unlock at ${num(rd.ready_at||80)}%`}</span></div><span class="rbar big"><i style="width:${rd.score||0}%"></i></span>`
+  $('#ready').innerHTML=`<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:6px"><b style="font-size:34px;color:var(--g)">${num(rd.score??0)}%</b><span class="meta">${rd.ready?'<span class="pos">evidence threshold met</span>':`evidence threshold: ${num(rd.ready_at||80)} / 100`}</span></div><span class="rbar big"><i style="width:${rd.score||0}%"></i></span>`
     +(rd.parts||[]).map(pt=>`<div class="rp"><span class="lbl">${esc(pt.label)}</span><span class="rbar"><i style="width:${pt.score||0}%"></i></span><span class="r">${num(pt.score||0)}</span><div class="meta" style="grid-column:1/-1">${Math.round(((rd.weights||{})[pt.id]||0)*100)}% of the score · ${esc(pt.detail||'')}</div></div>`).join('')
     +`<div class="meta" style="margin-top:8px">next: ${esc(rd.next||'')}<br>${esc(rd.gate||'')}</div>`;
   const ls=s.lessons||[];
@@ -597,18 +613,7 @@ function renderSummaries(s){const tr=s.treasury||{},rw=s.runway||{},b=s.brain||{
   for(const k in S){const el=document.querySelector(`.panel[data-panel="${k}"]>h2 .sum`);if(el)el.textContent=S[k]}}
 const ORDER=['feed','wallet','trades','runway','brain','lab','paper','bad','causes','voice'],grid=$('#grid');let gridCols=0,placedAt=0,placedData=false,placeTimer=null;
 function colCount(){return matchMedia('(min-width:1280px)').matches?3:matchMedia('(min-width:900px)').matches?2:1}
-function place(force){const n=colCount(),cols=[...grid.children].filter(c=>c.classList.contains('col'));
-  if(!force&&n===gridCols&&cols.length===n){const hs=cols.map(c=>c.offsetHeight);if(Math.max(...hs)-Math.min(...hs)<340||Date.now()-placedAt<15000)return}
-  const panels=ORDER.map(k=>grid.querySelector(`.panel[data-panel="${k}"]`)).filter(Boolean);
-  const keep=panels.flatMap(p=>[...p.querySelectorAll('#feed,.body')].map(e=>[e,e.scrollTop,e.scrollLeft]));
-  const fresh=Array.from({length:n},()=>{const d=document.createElement('div');d.className='col';return d});
-  panels.forEach(p=>p.remove());grid.replaceChildren(...fresh);
-  const H=new Array(n).fill(0),C=Array.from({length:n},()=>[]);
-  for(const p of panels){let i=0;for(let j=1;j<n;j++)if(H[j]<H[i])i=j;fresh[i].appendChild(p);C[i].push(p);H[i]+=p.offsetHeight+14}
-  for(let k=0;k<4&&n>1;k++){const ti=H.indexOf(Math.max(...H));let best=null;
-    for(let si=0;si<n;si++)if(si!==ti)for(const a of C[ti].slice(1))for(const b of C[si].slice(1)){const d=a.offsetHeight-b.offsetHeight;if(d<=0)continue;const m=Math.max(H[ti]-d,H[si]+d);if(m<H[ti]&&(!best||m<best.m))best={m,a,b,si,d}}
-    if(!best)break;const {a,b,si,d}=best,na=a.nextSibling,nb=b.nextSibling;fresh[si].insertBefore(a,nb);fresh[ti].insertBefore(b,na);C[ti][C[ti].indexOf(a)]=b;C[si][C[si].indexOf(b)]=a;H[ti]-=d;H[si]+=d}
-  keep.forEach(([e,t,l])=>{e.scrollTop=t;e.scrollLeft=l});gridCols=n;placedAt=Date.now()}
+function place(force){}
 addEventListener('resize',()=>{clearTimeout(placeTimer);placeTimer=setTimeout(()=>place(colCount()!==gridCols),200)});
 const sbar=$('#sbar');
 function updateBar(){const s=lastState;if(!s)return;const ch=s.character||{},st=s.stats||{},rd=s.readiness||{};
@@ -622,10 +627,11 @@ function updateBar(){const s=lastState;if(!s)return;const ch=s.character||{},st=
 setInterval(updateBar,2000);
 new IntersectionObserver(es=>{sbar.classList.toggle('on',!es[0].isIntersecting)},{rootMargin:'-60px 0px 0px 0px'}).observe($('#top'));
 place(true);
-async function load(){try{const r=await fetch('/api/state');render(await r.json())}catch(e){}}
+async function load(){try{const r=await fetch('/api/state');if(!r.ok)throw new Error('unavailable');render(await r.json());window.lastReceived=Date.now();window.loadFailed=false}catch(e){window.loadFailed=true}if(window.updateFreshness)window.updateFreshness()}
 function connect(){const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
-  ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='state')render(m.data);else if(m.type==='scan')applyScan(m.data);else if(m.type==='frame')applyFrame(m.data)};ws.onclose=()=>setTimeout(connect,3000)}
+  ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='state'){render(m.data);window.lastReceived=Date.now();window.loadFailed=false}else if(m.type==='scan')applyScan(m.data);else if(m.type==='frame')applyFrame(m.data)};ws.onclose=()=>setTimeout(connect,3000)}
 load();connect();setInterval(load,20000);
 </script>
+<script src="/design.js"></script>
 </body>
 </html>
