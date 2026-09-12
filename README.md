@@ -106,6 +106,15 @@ Posting to X is manual on purpose: entries sit on the site with a copy button.
 the strategy lab, the readiness gate, the fee split, the runway policy, the token, security, and the roadmap.
 Set `WH_REPO_URL` once the public repository exists and the page links to it.
 
+## Tests
+
+Offline tests live in `tests/` and never touch the real wallet, `.env` values, the chain, or `data/`: the
+test setup swaps in a throwaway key and a temporary data folder before anything is imported.
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m pytest -q tests
+```
+
 ## Keeping secrets out of git
 
 The wallet key and every other secret live only in `.env`, which git ignores. Three hooks in
