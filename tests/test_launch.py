@@ -19,7 +19,7 @@ GOLDEN_CALLDATA_HASH = "bb9fa58bac0f443d719a2100a3c9627f476184235ad5e3ab7a9daa8c
 
 
 def fixed_params(wallet, **over):
-    p = {"name": "Worm", "symbol": "WORM", "logo": "https://example.invalid/logo.png", "description": "a small worm",
+    p = {"name": "Worm", "symbol": "WORM", "logo": "https://example.invalid/logo.png", "description": "a small hooded worm",
          "socials": ("https://x.com/w", "https://t.me/w", "", "https://example.invalid", ""), "creatorFeeRecipient": wallet,
          "creatorTaxBps": 100, "buybackEnabled": False}
     p.update(over)
