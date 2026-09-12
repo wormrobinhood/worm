@@ -8,7 +8,7 @@ COPY wormhole/ wormhole/
 COPY web/ web/
 COPY run.py .
 # Run as an unprivileged user: the screen renders pages influenced by strangers, with --no-sandbox.
-RUN useradd --create-home --shell /usr/sbin/nologin worm \
+RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin worm \
     && mkdir -p /data \
     && chown -R worm:worm /app /data /ms-playwright
 USER worm

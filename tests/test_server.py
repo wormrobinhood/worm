@@ -390,3 +390,19 @@ def test_pending_keeps_messages_and_drops_old_frames():
     for i in range(server.PENDING_HARD_MAX + 5):
         hub.notify("score", ADDR)                   # messages are never dropped for frames, only past the hard cap
     assert hub.pending.qsize() == server.PENDING_HARD_MAX
+
+
+def test_healthz_is_ok_while_the_first_backfill_runs(site):
+    """Railway's deploy health check must not fail during the catch-up backfill."""
+    import threading
+    client, hub, _ = site
+
+    class Idx:                      # stalled-looking timestamp, but the first backfill is still running
+        last_ok = time.time() - 3600
+        ready = threading.Event()
+
+    hub.indexer = Idx()
+    r = client.get("/healthz")
+    assert r.status_code == 200 and r.json()["catching_up"] is True
+    Idx.ready.set()
+    assert client.get("/healthz").status_code == 503
