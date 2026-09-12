@@ -15,9 +15,14 @@ What it refuses
     anything under data/ or .venv/, files over 5 MB
   * every value of the local .env (the real secrets on this machine), searched
     byte for byte in every file, binaries included
-  * secret shapes: 64-hex private keys unless allow-listed as a public hash,
-    PEM private keys, GitHub / OpenAI / Anthropic / Slack / AWS tokens,
-    quoted long values assigned to key/secret/password names, 12-word seed phrases
+  * secret shapes: 64-hex private keys (0x or 0X, also when split by underscores or
+    across a line break) unless allow-listed as a public hash, PEM private keys,
+    GitHub / OpenAI / Anthropic / Slack / AWS tokens, long values assigned to a
+    name that carries a secret (WH_SECRET, signer_pk, WALLET_KEY, api_key, token,
+    password, mnemonic, seed phrase, with any prefix or suffix), 43/44-character
+    base64 values assigned to such a name, 12-word seed phrases
+  * the same shapes inside binary files, read from their printable runs (a key in
+    PNG metadata is still a key)
   * personal details: every term in .leakcheck.local (git-ignored, one per line)
     in file contents, commit messages, author names, emails and the push URL,
     plus home-directory paths such as /Users/<name>/ or /home/<name>/
@@ -28,7 +33,7 @@ import os
 import re
 import subprocess
 import sys
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 
 def git(*args: str, inp: Optional[bytes] = None) -> bytes:
@@ -49,19 +54,40 @@ FORBIDDEN_SUFFIX = (".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".log", 
                     ".key", ".p12", ".pfx", ".jks", ".keystore", ".pyc")
 FORBIDDEN_NAMES = {".env", ".leakcheck.local", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"}
 
-TEXT_RULES = [
-    ("PEM private key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
-    ("GitHub token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})")),
-    ("OpenAI/Anthropic-style key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}")),
-    ("Slack token", re.compile(r"\bxox[abpr]-[A-Za-z0-9-]{10,}")),
-    ("AWS access key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("home directory path", re.compile(r"(?:/Users/|/home/|C:\\\\Users\\\\)(?!Shared\b)[A-Za-z0-9._-]+")),
+# A name that carries a secret, with any prefix or suffix: WH_SECRET, signer_pk, WALLET_KEY, PRIVATE_KEY,
+# api_key2, SEED_PHRASE. A bare "key" does not count (dict keys, cache keys); "_key" ending a compound name does.
+SECRET_NAME = (r"(?<![A-Za-z0-9])[A-Za-z0-9_.\-]*?(?:api[_-]?key|secret|private[_-]?key|passw(?:or)?d|mnemonic|"
+               r"seed[_-]?phrase|token|(?<![A-Za-z])pk(?![A-Za-z])|(?<=[A-Za-z0-9])[_-]key(?![A-Za-z]))[A-Za-z0-9_.\-]*")
+LONG_VALUE = r"[A-Za-z0-9+/=_.\-]{24,}"
+NOT_ADDRESS = r"(?!0x[0-9a-fA-F]{40}(?![A-Za-z0-9]))"      # a 40-hex address assigned to "token" is public
+
+
+def _mixed(value: str) -> bool:
+    """A random 32-byte key in base64 has lower case, upper case and digits; a long identifier rarely does."""
+    return (any(c.islower() for c in value) and any(c.isupper() for c in value) and any(c.isdigit() for c in value)
+            and len(set(value)) >= 12)
+
+
+TEXT_RULES: List[Tuple[str, "re.Pattern[str]", Optional[Callable[["re.Match[str]"], bool]]]] = [
+    ("PEM private key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), None),
+    ("GitHub token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), None),
+    ("OpenAI/Anthropic-style key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"), None),
+    ("Slack token", re.compile(r"\bxox[abpr]-[A-Za-z0-9-]{10,}"), None),
+    ("AWS access key", re.compile(r"\bAKIA[0-9A-Z]{16}\b"), None),
+    ("home directory path", re.compile(r"(?:/Users/|/home/|C:\\\\Users\\\\)(?!Shared\b)[A-Za-z0-9._-]+"), None),
     ("quoted secret assignment", re.compile(
-        r"(?i)\b(?:api[_-]?key|secret|private[_-]?key|passw(?:or)?d|mnemonic|seed[_-]?phrase)\b"
-        r"\s*[:=]\s*[\"'](?!0x[0-9a-fA-F]{40}[\"'])[A-Za-z0-9+/=_.\-]{24,}[\"']")),
+        r"(?i)" + SECRET_NAME + r"\s*[:=]\s*[\"']" + NOT_ADDRESS + LONG_VALUE + r"[\"']"), None),
+    ("secret assignment", re.compile(      # a whole KEY=value line, .env style, no quotes needed
+        r"(?im)^[ \t]*(?:export[ \t]+)?" + SECRET_NAME + r"[ \t]*=[ \t]*" + NOT_ADDRESS + LONG_VALUE + r"[ \t]*$"), None),
+    ("base64 secret assignment", re.compile(
+        r"(?i)" + SECRET_NAME + r"\s*[:=]\s*[\"']?(?P<v>[A-Za-z0-9+/_\-]{43}=?)(?![A-Za-z0-9+/=_\-])"),
+     lambda m: _mixed(m.group("v"))),
 ]
-HEX64 = re.compile(r"(?<![0-9a-zA-Z])(?:0x)?([0-9a-fA-F]{64})(?![0-9a-zA-Z])")
+HEX64 = re.compile(r"(?<![0-9a-zA-Z])(?:0[xX])?([0-9a-fA-F]{64})(?![0-9a-zA-Z])")
+# hex groups joined by single underscores (0xdead_beef_…) or by one line break with nothing else between them
+HEX_SPLIT = re.compile(r"(?<![0-9a-zA-Z])(?:0[xX])?[0-9a-fA-F]{2,}(?:(?:_|\r?\n)[0-9a-fA-F]{2,})+(?![0-9a-zA-Z_])")
 SHA_PREFIX = re.compile(r"sha(?:256|512)[:=]\s*$")
+PRINTABLE_RUN = re.compile(rb"[\x20-\x7e\t]{20,}")
 WORD = re.compile(r"[a-z]+")
 SEED_RUN = 12
 
@@ -117,24 +143,47 @@ class Rules:
             if t.encode() in low:
                 out.append("personal term '%s\u2026'" % t[:2])
         if b"\0" in data[:8000]:
-            return out  # binary: only the exact searches above apply
-        text = data.decode("utf-8", errors="ignore")
-        for name, rx in TEXT_RULES:
+            # binary: the exact searches above, then the text rules over its printable runs
+            runs = [m.group().decode("ascii") for m in PRINTABLE_RUN.finditer(data)]
+            out.extend(self._scan_text("\n".join(runs), path, "run %d in binary"))
+            return out
+        out.extend(self._scan_text(data.decode("utf-8", errors="ignore"), path, "line %d"))
+        return out
+
+    def _hex_public(self, hexval: str, text: str, start: int) -> bool:
+        """An allow-listed public hash, a sha256/sha512 pin, or a 0x000…/0xfff… style constant."""
+        return (hexval.lower() in self.allow or bool(SHA_PREFIX.search(text[max(0, start - 12):start]))
+                or len(set(hexval.lower())) <= 2)
+
+    def _scan_text(self, text: str, path: str, where: str) -> List[str]:
+        out: List[str] = []
+
+        def loc(pos: int) -> str:
+            return where % (text.count("\n", 0, pos) + 1)
+
+        for name, rx, check in TEXT_RULES:
             for m in rx.finditer(text):
-                out.append("%s: line %d, %s\u2026 (%d chars)" % (name, text.count("\n", 0, m.start()) + 1, m.group(0)[:6], len(m.group(0))))
+                if check and not check(m):
+                    continue
+                out.append("%s: %s, %s\u2026 (%d chars)" % (name, loc(m.start()), m.group(0)[:6], len(m.group(0))))
         for m in HEX64.finditer(text):
-            if m.group(1).lower() in self.allow or SHA_PREFIX.search(text[max(0, m.start() - 12):m.start()]):
+            if self._hex_public(m.group(1), text, m.start()):
                 continue
-            if len(set(m.group(1).lower())) <= 2:
-                continue  # 0x000…/0xfff… style constants
-            out.append("64-hex value that may be a private key: line %d, %s\u2026 (add to scripts/leakcheck_allow.txt if it is a public hash)"
-                       % (text.count("\n", 0, m.start()) + 1, m.group(0)[:8]))
+            out.append("64-hex value that may be a private key: %s, %s\u2026 (add to scripts/leakcheck_allow.txt if it is a public hash)"
+                       % (loc(m.start()), m.group(0)[:8]))
+        for m in HEX_SPLIT.finditer(text):
+            joined = re.sub(r"[_\r\n]", "", m.group(0))
+            joined = joined[2:] if joined[:2].lower() == "0x" else joined
+            if len(joined) != 64 or self._hex_public(joined, text, m.start()):
+                continue
+            out.append("64-hex value split by underscores or a line break that may be a private key: %s, %s\u2026"
+                       " (add the joined value to scripts/leakcheck_allow.txt if it is a public hash)" % (loc(m.start()), m.group(0)[:8]))
         if self.words and not path.endswith("bip39_english.txt"):
             run = 0
             for m in WORD.finditer(text.lower()):
                 run = run + 1 if m.group() in self.words else 0
                 if run >= SEED_RUN:
-                    out.append("possible seed phrase near line %d" % (text.count("\n", 0, m.start()) + 1))
+                    out.append("possible seed phrase near %s" % loc(m.start()))
                     break
         return out
 

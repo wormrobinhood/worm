@@ -3,3 +3,12 @@
 # a keccak of a known signature, a block hash).
 # Uniswap v4 PoolManager Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)
 0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f
+# pons V2 factory event topics (keccak of the event signatures), pinned in tests/test_chain.py
+0x8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607
+0x0a44ef75df69c534f43cd6c1aa3ef8983065fe5fe79ef9e79f6494e6f258c259
+# Base USDC EIP-712 DOMAIN_SEPARATOR(), read from chain 8453, pinned in tests/test_compute.py
+0x02fa7265e7c5d81118673727957699e4d68f74cd74b7db77da710fe8a2c7834f
+# r-half of a golden signature made with the test-only key 0x00..01 (a signature, not a key), tests/test_compute.py
+0xeaf6a45f9460dd08a88943523125561f33be47dff2e559ee25d175e3ef6286fe
+# keccak of the golden launch calldata built from public constants, tests/test_launch.py
+bb9fa58bac0f443d719a2100a3c9627f476184235ad5e3ab7a9daa8c4ea23267

@@ -4,28 +4,35 @@
 [pons](https://www.ponsfamily.com/launchpad) graduation, looks for bad actors, tells the community
 first, and grows longer with the treasury it holds.
 
-Phase 1: read-only signals. Phase 2 (in progress): its own wallet, its own token $WORM on pons, fee claiming, and a 20% forward to its creator. Nothing is signed unless `WH_LIVE=1`.
+Everything from scouting to trading is built and runs in demo mode: its own wallet, its own token $WORM on pons, fee claiming, a 20% forward to its creator, compute paid from its own balance, a strategy lab, a readiness gate and giving. Nothing is signed unless `WH_LIVE=1`. Five independent code audits (chain indexer, scoring and learning, trading lab, money paths, server and web) were run before launch; their fixes shipped with an offline test suite of 300+ tests.
 
 ## What it does
 
 - **Indexes pons V2** straight from the public RPC: `TokenLaunched` and `PoolGraduated` events on the
   factory, kept for 72 hours so creator history means something.
-- **Scores every graduation** with named rules: creator history, creator tax, snipe-window buys, unique
-  buyers, the creator buying its own curve, top-10 holder concentration, the creator's current holding,
-  trades after graduation, socials, and launch-to-graduation pace. Every point is explained on the card.
-- **Learns from outcomes.** Each verdict is checked at 1h, 6h and 24h. A rule that warned before a rug
-  gains 2% weight; one that reassured before a rug loses 2%. Weights stay between 0.5x and 1.5x.
+- **Scores every graduation** with named rules: creator history, the creator's rug record, creator tax,
+  snipe-window buys, unique buyers (dust buys do not count), the creator buying its own curve, top-10 holder
+  concentration, the creator's current holding, trades after graduation, missing socials, and
+  launch-to-graduation pace. Every point is explained on the card. Three hard signals demote a healthy
+  verdict to mixed; a verdict on incomplete chain reads can never be healthy and is re-checked.
+- **Learns from outcomes.** Each verdict is checked at 1h, 6h and 24h (a rug needs two readings 5 minutes
+  apart at -80%, or the 24h check; grew is +100%). Rules are re-weighted against the base rate: a rule that
+  warned before an unusually bad outcome gains, one that reassured loses, up to 2% a lesson; weights stay
+  between 0.5x and 1.5x, and each rule shows its lift.
 - **Trust value per creator**, shown on cards and in the bad-actors table.
 - **Paper book**: what it would have bought at $10 a token, marked to market. No real money.
 - **Strategy lab**: every candidate scoring 60 or more is traded on paper by 24 arms at once (8 exit
-  policies × entry delays of 0, 30 and 60 minutes) on the same sampled price path for 48 hours, with 3%
-  round-trip costs. Arms keep a running net return per dollar risked. The best arm with at least 10
-  cases becomes the policy the paper book and the trader use; one position in ten explores another
-  arm. Until then the default is `costout_1.5x@0m`: at +50% sell two thirds (the cost comes back),
-  trail the rest 40% below its peak, cut at -35% before that, never hold past 48 hours.
-- **Runway**: measures income from the treasury, estimates the planned bills (compute, gas, bridge) and
-  projects 90 days under three scenarios. Rule: keep a 90-day reserve, spend on compute at most half of
-  what it earns, invest only from the surplus.
+  policies × entry delays of 0, 30 and 60 minutes) on the same sampled price path for 48 hours, with each
+  token's own costs (creator tax + curve fee + 1% slippage a side). Arms keep a running net return per
+  dollar risked. An arm needs 30 cases, a lower confidence bound above zero and a mean above the default's
+  to become the policy the paper book and the trader use; exploration is off (`WH_LAB_EXPLORE`). Until
+  then the default is `costout_1.5x@0m`: at +50% sell two thirds (the cost comes back), trail the rest 40%
+  below its peak, cut at -35% before that, never hold past 48 hours.
+- **Readiness**: one evidence-only number (exit rule proven, warnings right against the base rate, runway,
+  surplus) that has to reach 80 before the trader may buy; demo money counts for nothing.
+- **Runway**: measures income from claimed fees in the ledger, estimates the planned bills (compute, gas,
+  bridge) and projects 90 days under three scenarios. Rule: keep a 90-day reserve, spend on compute at most
+  half of what it earns, invest only from the surplus.
 - **Live page** in green on black, the worm drawn in 0 and 1. Its screen panel streams the worm's own
   browser: every dig step by step and, when idle, the newest graduation, the launchpad's newest launches and
   the curves with the biggest market caps, which is where the next graduation comes from (the launchpad's own
@@ -41,8 +48,13 @@ python run.py                 # http://127.0.0.1:4670
 python run.py --once 5        # backfill, score the 5 newest graduations, print them, exit
 ```
 
-Optional environment (see `.env.example`): `WH_WALLET` and `WH_BASE_WALLET` make the worm grow with real
-balances; `WH_DEMO_TREASURY` fakes a treasury to look at the stages.
+Optional environment (see `.env.example`): `WH_DEMO_TREASURY` fakes a treasury to look at the growth stages
+(it never counts for runway, readiness, giving or trades).
+
+Deploying: the image declares `VOLUME ["/data"]` and sets `WH_DATA_DIR=/data`; on Railway mount a persistent
+volume at `/data`, otherwise every redeploy starts from an empty database. The container runs as user `worm`.
+`/healthz` answers 503 once the indexer has not advanced for 3 minutes, and the process exits after 15 minutes
+of stall so the host restarts it.
 
 ## Phase 2 commands
 
@@ -53,6 +65,11 @@ python -m wormhole.logo              # render web/logo.png (the token logo)
 python -m wormhole.launch            # dry run of the $WORM launch on pons (simulated, nothing sent)
 WH_LIVE=1 python -m wormhole.launch --live   # the real launch: 0.0005 ETH fee + gas
 ```
+
+The launch refuses to run unpinned (when the factory's economics preview fails) unless `--unpinned` is given,
+writes `WH_TOKEN_PENDING_TX` to `.env` at broadcast and refuses a second launch while it is set, then writes
+`WH_TOKEN` on success. Every send goes through one locked sender that computes the hash locally, never
+re-broadcasts blindly, and records a pending ledger row before waiting for the receipt.
 
 Token settings live in `.env`: `WH_TOKEN_NAME`, `WH_TOKEN_SYMBOL`, `WH_TOKEN_X`, `WH_TOKEN_TELEGRAM`, `WH_CREATOR_TAX_BPS`
 (default 100 = 1%), `WH_SITE_URL` (logo and website links). `WH_OWNER_WALLET` receives `WH_OWNER_SHARE` (default 0.20)
@@ -85,6 +102,10 @@ fund the wallet to make the same code sign and send. Phase 3 to 5 settings:
 | `WH_VOICE_MODEL` | `stub` (free templates), `venice:<model>` (its own balance), `anthropic:<model>` (ANTHROPIC_API_KEY), `openai:<model>` (WH_LLM_BASE_URL + WH_LLM_API_KEY) |
 | `WH_VOICE_EVERY_MIN` | minutes between journal entries (120) |
 | `WH_TOPUP_USD`, `WH_TOPUP_BELOW_USD` | compute top-up size and threshold at Venice (5, 1) |
+| `WH_TOPUP_COOLDOWN_S`, `WH_TOPUP_MAX_PER_DAY`, `WH_TOPUP_ALWAYS` | at most one top-up per 6 h and two a day (21600, 2); top-ups only happen while the journal runs on Venice unless `WH_TOPUP_ALWAYS=1` |
+| `WH_LAB_MIN_N`, `WH_LAB_LCB_Z`, `WH_LAB_EXPLORE` | cases an exit rule needs (30), the lower-bound factor (1.5), exploration share (0) |
+| `WH_READY_AT` | readiness needed before real trades (80) |
+| `WH_RESCAN_TOKEN` | lets a remote caller use `/api/rescan/<token>` by sending the header `X-Rescan-Token`; unset, only loopback clients may rescan (the queue is capped at 100 and an address is not queued twice within 10 minutes) |
 | `WH_BUY_MIN_SCORE`, `WH_MAX_POSITION_USD`, `WH_MAX_OPEN`, `WH_MAX_DAILY_USD` | trader limits (70, 10, 5, 30) |
 | `WH_CAUSES`, `WH_GIVE_SHARE` | `Name\|0xaddr\|weight,...` and the share of the surplus given every 30 days (0.10) |
 | `WH_DEMO_TREASURY` | pretend treasury so the growth, runway, trader and giving logic can be watched before funding |
@@ -96,8 +117,9 @@ Posting to X is manual on purpose: entries sit on the site with a copy button.
 1. Signals and the live page (this).
 2. Its own token on pons, paired with USDG, so creator fees fund it.
 3. The voice: journal entries from telemetry, checked like the fly's; compute paid from its own Venice balance. Built, demo mode.
-4. Buys from the surplus above the 90-day reserve with hedged exits, quoted and simulated on Uniswap v4. Built, demo mode;
-   live USDG-quoted buys and live sells still need the Permit2 approval step.
+4. Buys from the surplus above the 90-day reserve with lab-chosen exits, quoted and simulated on Uniswap v4. Built, demo mode;
+   real buys stay off until real sells exist (the Permit2 approval step and the exit path), and every buy is written
+   down before it is sent and reconciled against the chain afterwards.
 5. Causes: giving from the surplus, on-chain and public. Built, demo mode.
 
 ## The docs page

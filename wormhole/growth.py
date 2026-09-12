@@ -1,4 +1,8 @@
-"""How big IRL Worm is. The character grows with the treasury it actually holds."""
+"""How big IRL Worm is. The character grows with the treasury it actually holds.
+
+WH_DEMO_TREASURY adds pretend money so the stages can be looked at before funding. It counts for the
+character only: "usd" is what the worm displays (demo included), "usd_real" is real balances alone and
+is the only number any money decision (runway, compute, giving, trading) may use."""
 import logging
 import os
 import time
@@ -14,15 +18,25 @@ STAGES = [(0, "hatchling"), (20, "tiny"), (100, "small"), (500, "growing"), (200
 _cache = (0, None)
 
 
+def demo_treasury():
+    """The pretend treasury from WH_DEMO_TREASURY, or 0.0 when unset, empty, zero or not a number."""
+    raw = os.environ.get("WH_DEMO_TREASURY", "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else 0.0
+    except ValueError:
+        log.warning("WH_DEMO_TREASURY=%r is not a number; ignored", raw)
+        return 0.0
+
+
 def treasury(rpc):
     """USD value of the wallets the agent owns. Cached one minute. $0 when no wallet is configured."""
     global _cache
     if time.time() - _cache[0] < 60 and _cache[1]:
         return _cache[1]
     parts = {}
-    demo = os.environ.get("WH_DEMO_TREASURY")
+    demo = demo_treasury()
     if demo:
-        parts["demo"] = float(demo)
+        parts["demo"] = demo
     if C.WALLET:
         try:
             wei = int(rpc.call("eth_getBalance", [C.WALLET, "latest"]), 16)
@@ -39,12 +53,14 @@ def treasury(rpc):
         except Exception as e:
             log.info("base treasury read failed: %s", e)
     usd = round(sum(parts.values()), 2)
+    usd_real = round(sum(v for k, v in parts.items() if k != "demo"), 2)
     stage = 0
     for i, (thr, _) in enumerate(STAGES):
         if usd >= thr:
             stage = i
     nxt = STAGES[stage + 1][0] if stage + 1 < len(STAGES) else None
-    out = {"usd": usd, "parts": parts, "stage": stage, "stage_name": STAGES[stage][1], "stages": len(STAGES), "demo": bool(demo),
+    out = {"usd": usd, "usd_real": usd_real, "parts": parts, "stage": stage, "stage_name": STAGES[stage][1],
+           "stages": len(STAGES), "demo": demo > 0,
            "next_usd": nxt, "wallet": C.WALLET or None, "base_wallet": C.BASE_WALLET or None}
     _cache = (time.time(), out)
     return out

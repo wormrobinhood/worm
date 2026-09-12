@@ -7,8 +7,11 @@ data/
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+tests/
 .git/
 .githooks/
 .claude/
+.DS_Store
 *.db
 *.log

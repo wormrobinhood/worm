@@ -1,20 +1,28 @@
 """Financial self-sufficiency: measure what comes in, estimate what goes out, project 90 days.
 
 Phase 1 spends nothing, so the costs below are the planned phase-3 bills (narrator compute on
-Surplus, gas on Robinhood Chain, bridge fees to Base). Income is measured from hourly treasury
-samples once a wallet exists. The policy is simple and written down: keep a 90-day reserve,
-spend on compute at most half of what it earns, invest only from the surplus above the reserve."""
+Surplus, gas on Robinhood Chain, bridge fees to Base). Income is what the worm actually claimed:
+the ledger's 'claim' rows (USDG creator fees) over the last week, per day. Treasury balance samples
+are kept for the chart only; a balance moves with deposits, ETH's price and the worm's own buys, none
+of which is income. The policy is simple and written down: keep a 90-day reserve, spend on compute at
+most half of what it earns, invest only from the surplus above the reserve."""
 import os
 import time
+
+from . import treasury as T
 
 COMPUTE_USD_DAY = float(os.environ.get("WH_COMPUTE_USD_DAY", "0.75"))
 GAS_USD_DAY = float(os.environ.get("WH_GAS_USD_DAY", "0.10"))
 BRIDGE_USD_MONTH = float(os.environ.get("WH_BRIDGE_USD_MONTH", "0.20"))
 RESERVE_DAYS = 90
 HORIZON = 90
+INCOME_WINDOW_DAYS = 7
 
 
-def sample(db, usd):
+def sample(db, usd, demo=False):
+    """One treasury balance an hour, for the chart. A pretend (demo) treasury is not sampled."""
+    if demo:
+        return
     last = db.one("SELECT ts FROM samples ORDER BY ts DESC LIMIT 1")
     if last and time.time() - last["ts"] < 3600:
         return
@@ -22,10 +30,23 @@ def sample(db, usd):
 
 
 def net_flow_per_day(db):
+    """Change of the sampled treasury balance per day over the last week: chart only, not income."""
     rows = db.q("SELECT ts, usd FROM samples WHERE ts>=? ORDER BY ts", (int(time.time()) - 7 * 86400,))
     if len(rows) < 2 or rows[-1]["ts"] - rows[0]["ts"] < 3600:
         return None
     return (rows[-1]["usd"] - rows[0]["usd"]) / ((rows[-1]["ts"] - rows[0]["ts"]) / 86400)
+
+
+def income_per_day(db, days=INCOME_WINDOW_DAYS):
+    """Claimed creator fees per day: the ledger's 'claim' rows in the window divided by the days since
+    the first of them. None until the first claim in the window is a day old (one claim says nothing
+    about a rate)."""
+    T.ensure_tables(db)
+    now = time.time()
+    r = db.one("SELECT COALESCE(SUM(amount),0) s, MIN(ts) t FROM ledger WHERE kind='claim' AND ts>=?", (int(now) - days * 86400,))
+    if not r or not r["t"] or now - r["t"] < 86400:
+        return None
+    return r["s"] / ((now - r["t"]) / 86400)
 
 
 def _run(balance, income, cost, days=HORIZON):
@@ -39,8 +60,9 @@ def _run(balance, income, cost, days=HORIZON):
 
 def projection(db, treasury_usd):
     cost_day = COMPUTE_USD_DAY + GAS_USD_DAY + BRIDGE_USD_MONTH / 30
-    measured = net_flow_per_day(db)
+    measured = income_per_day(db)
     income = max(0.0, measured) if measured is not None else 0.0
+    flow = net_flow_per_day(db)
     reserve = cost_day * RESERVE_DAYS
     surplus = treasury_usd - reserve
     compute_budget = COMPUTE_USD_DAY if income == 0 else min(COMPUTE_USD_DAY, max(0.10, 0.5 * income))
@@ -50,6 +72,8 @@ def projection(db, treasury_usd):
         "cost_parts": {"compute": COMPUTE_USD_DAY, "gas": GAS_USD_DAY, "bridge": round(BRIDGE_USD_MONTH / 30, 3)},
         "income_per_day_usd": round(income, 3),
         "income_measured": measured is not None,
+        "income_window_days": INCOME_WINDOW_DAYS,
+        "balance_change_per_day_usd": round(flow, 3) if flow is not None else None,   # chart only
         "runway_days_no_income": round(treasury_usd / cost_day, 1) if cost_day else None,
         "scenarios": {
             "no income": _run(treasury_usd, 0.0, cost_day),

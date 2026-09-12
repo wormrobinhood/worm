@@ -31,17 +31,20 @@ _SYMBOL_CACHE = {C.ZERO: "ETH", C.USDG: "USDG", C.WETH: "WETH"}
 
 
 def pair_symbols(rpc, addrs):
-    """Symbol for each pair token address, cached."""
+    """Symbol for each pair token address, cached (24 chars at most). A read that failed is shown as the
+    address prefix and asked again next time; the fallback is never cached."""
     need = [a for a in set(addrs) if a not in _SYMBOL_CACHE]
     if need:
         res = batch_calls(rpc, [(a, "symbol()", ("string",), (), ()) for a in need])
         for a, s in zip(need, res):
-            _SYMBOL_CACHE[a] = s if isinstance(s, str) and s else a[:8]
-    return {a: _SYMBOL_CACHE.get(a, a[:8]) for a in addrs}
+            if isinstance(s, str) and s:
+                _SYMBOL_CACHE[a] = s[:24]
+    return {a: _SYMBOL_CACHE.get(a) or a[:8] for a in addrs}
 
 
 def token_metadata(rpc, tokens, with_curve=None):
-    """name, symbol, logo, description, socials for each token; creator tax and fee bps from its curve."""
+    """name, symbol, logo, description, socials for each token; creator tax and fee bps from its curve.
+    A read that failed is None, never '' or 0: the caller keeps what it had and can ask again."""
     tokens = list(tokens)
     items = []
     for t in tokens:
@@ -52,10 +55,10 @@ def token_metadata(rpc, tokens, with_curve=None):
     out = {}
     for i, t in enumerate(tokens):
         name, symbol, logo, desc, soc = res[i * 5:(i + 1) * 5]
-        soc = soc or ("", "", "", "", "")
-        out[t] = {"name": name or "", "symbol": symbol or "", "logo": logo or "", "description": desc or "",
-                  "twitter": soc[0] or "", "telegram": soc[1] or "", "discord": soc[2] or "",
-                  "website": soc[3] or "", "farcaster": soc[4] or ""}
+        if not isinstance(soc, (tuple, list)) or len(soc) < 5:
+            soc = (None,) * 5
+        out[t] = {"name": name, "symbol": symbol, "logo": logo, "description": desc,
+                  "twitter": soc[0], "telegram": soc[1], "discord": soc[2], "website": soc[3], "farcaster": soc[4]}
     if with_curve:
         curves = [with_curve[t] for t in tokens]
         citems = []
@@ -65,8 +68,9 @@ def token_metadata(rpc, tokens, with_curve=None):
         cres = batch_calls(rpc, citems)
         for i, t in enumerate(tokens):
             tax, fee, bb = cres[i * 3:(i + 1) * 3]
-            out[t].update({"creator_tax_bps": int(tax or 0), "curve_fee_bps": int(fee or 0),
-                           "buyback": bool(bb)})
+            out[t].update({"creator_tax_bps": None if tax is None else int(tax),
+                           "curve_fee_bps": None if fee is None else int(fee),
+                           "buyback": None if bb is None else bool(bb)})
     return out
 
 

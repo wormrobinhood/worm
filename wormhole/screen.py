@@ -13,12 +13,26 @@ import time
 from urllib.parse import urlparse
 
 log = logging.getLogger("wormhole.screen")
+CLOSED_MARKERS = ("has been closed", "target closed")   # Playwright's wording when the page, context or browser is gone
 ALLOW = {"www.ponsfamily.com", "ponsfamily.com"}
 IDLE_EVERY = 30
 VIEW = {"width": 1100, "height": 690}
 LAUNCHPAD = "https://www.ponsfamily.com/launchpad"
 NEWEST_LAUNCHES = LAUNCHPAD + "?sort=newest"      # the Explore section, newest first; the site keeps the sort in the URL
 BIGGEST_CURVES = LAUNCHPAD + "?sort=marketCap"    # the Explore section by market cap: closest to the graduation threshold
+
+
+def page_gone(page, exc):
+    """True when the page, its context or the browser behind it is gone: the page says it is closed, or the
+    error reads like Playwright's "Target page, context or browser has been closed". A step that fails this
+    way must end the session (run() then starts a fresh browser) instead of logging the same failure forever."""
+    try:
+        if page.is_closed():
+            return True
+    except Exception:
+        return True
+    text = str(exc).lower()
+    return any(m in text for m in CLOSED_MARKERS)
 
 
 def _ago(ts):
@@ -53,7 +67,7 @@ class Screen(threading.Thread):
             try:
                 self._session(sync_playwright)
             except Exception as e:
-                log.warning("screen session died: %s", str(e)[:200])
+                log.warning("screen session died, restarting in 10 s: %s", str(e)[:200])
                 time.sleep(10)
 
     def _session(self, sync_playwright):
@@ -133,6 +147,8 @@ class Screen(threading.Thread):
             elif step == "verdict":
                 self._frame(page, ev["text"])
         except Exception as e:
+            if page_gone(page, e):
+                raise
             log.info("screen step %s failed: %s", step, str(e)[:120])
 
     def _idle(self, page, last_dig):
@@ -165,4 +181,6 @@ class Screen(threading.Thread):
                 self._frame(page, "idle: watching the curve, biggest market caps first: the next graduation comes from here",
                             self._focus_loc(page, page.get_by_role("tab", name="Market cap")))
         except Exception as e:
+            if page_gone(page, e):
+                raise
             log.info("idle failed: %s", str(e)[:120])

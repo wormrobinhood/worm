@@ -1,5 +1,6 @@
 """A small JSON-RPC client and ABI helpers. No web3 dependency, just requests + eth_abi."""
 import logging
+import re
 import threading
 import time
 
@@ -9,6 +10,8 @@ from eth_utils import keccak
 
 log = logging.getLogger("wormhole.chain")
 
+MIN_CHUNK = 500      # get_logs never shrinks a window below this; at the floor the error surfaces to the caller
+
 
 class RpcError(Exception):
     pass
@@ -16,12 +19,20 @@ class RpcError(Exception):
 
 def _is_rate_limit(msg):
     m = msg.lower()
-    return "429" in m or "too many requests" in m or "rate limit" in m
+    return bool(re.search(r"\b429\b", m)) or "too many requests" in m or "rate limit" in m
 
 
 def _is_range_error(msg):
+    """The node refused the window (too many logs, too many blocks, took too long): worth a smaller one."""
     m = msg.lower()
-    return "exceeds limit" in m or "timed out" in m or "too many" in m or "block range" in m
+    return not _is_rate_limit(m) and ("exceeds limit" in m or "timed out" in m or "too many results" in m
+                                      or "block range" in m or "more than" in m)
+
+
+def _is_deterministic(err):
+    """An execution revert or a malformed request: asking again returns the same answer."""
+    code = err.get("code") if isinstance(err, dict) else None
+    return code in (3, -32600, -32601, -32602) or "execution reverted" in str(err).lower()
 
 
 class Rpc:
@@ -49,6 +60,9 @@ class Rpc:
             return self._id
 
     def call(self, method, params, retries=4):
+        """One JSON-RPC call. Rate limits back off (1.5, 3, 6 s...), transport errors retry, a revert or a
+        refused window raises at once so the caller can decide, and a body without result or error is
+        retried like a transport error."""
         payload = {"jsonrpc": "2.0", "id": self._next(), "method": method, "params": params}
         last = None
         for i in range(retries):
@@ -56,30 +70,36 @@ class Rpc:
             try:
                 r = self.s.post(self.url, json=payload, timeout=self.timeout)
                 if r.status_code == 429:
-                    last = RpcError("429 Too Many Requests")
+                    last = RpcError(f"{method}: 429 Too Many Requests")
                     time.sleep(1.5 * (2 ** i))
                     continue
                 j = r.json()
-                if "error" in j:
-                    err = RpcError(f"{method}: {j['error']}")
-                    if _is_range_error(str(j["error"])):
-                        raise err
-                    last = err
-                    if _is_rate_limit(str(j["error"])):
-                        time.sleep(1.5 * (2 ** i))
-                        continue
-                else:
-                    return j["result"]
-            except RpcError:
-                raise
             except (requests.RequestException, ValueError) as e:
                 last = e
+                time.sleep(0.7 * (i + 1))
+                continue
+            if not isinstance(j, dict):
+                last = RpcError(f"{method}: malformed body {str(j)[:80]}")
+            elif "error" in j:
+                msg = str(j["error"])
+                if _is_rate_limit(msg):                   # first: "Too Many Requests" is not a range error
+                    last = RpcError(f"{method}: {msg}")
+                    time.sleep(1.5 * (2 ** i))
+                    continue
+                err = RpcError(f"{method}: {msg}")
+                if _is_range_error(msg) or _is_deterministic(j["error"]):
+                    raise err
+                last = err
+            elif "result" in j:
+                return j["result"]
+            else:
+                last = RpcError(f"{method}: malformed body {str(j)[:80]}")
             time.sleep(0.7 * (i + 1))
         raise RpcError(f"{method} failed after {retries} tries: {last}")
 
     def batch(self, calls, chunk=25):
         """calls: list of (method, params). Returns results in order, None where a call failed.
-        A rejected batch is split in half and retried, down to single calls."""
+        Only a batch the node rejects as a whole is split in half and retried, down to single calls."""
         out = []
         for i in range(0, len(calls), chunk):
             out.extend(self._batch_part(calls[i:i + chunk]))
@@ -96,21 +116,25 @@ class Rpc:
                     time.sleep(1.5 * (2 ** attempt))
                     continue
                 js = r.json()
-                if isinstance(js, dict) and _is_rate_limit(str(js.get("error", ""))):
-                    js = None
-                    time.sleep(1.5 * (2 ** attempt))
-                    continue
-                break
             except (requests.RequestException, ValueError):
                 time.sleep(0.8 * (attempt + 1))
-        ok = isinstance(js, list) and len(js) == len(part) and all(isinstance(x, dict) and "result" in x for x in js)
-        if ok:
-            res = {x["id"]: x["result"] for x in js}
-            return [res.get(k + 1) for k in range(len(part))]
+                continue
+            if isinstance(js, dict) and _is_rate_limit(str(js.get("error", ""))):
+                js = None
+                time.sleep(1.5 * (2 ** attempt))
+                continue
+            break
+        if isinstance(js, list) and len(js) == len(part):
+            # a per-item error (a revert, a missing block) is an answer: None for that item only
+            res = {x.get("id"): x for x in js if isinstance(x, dict)}
+            return [res.get(k + 1, {}).get("result") for k in range(len(part))]
+        if js is None:                         # transport or rate limit exhausted: splitting would only multiply posts
+            log.info("batch of %d calls got no answer", len(part))
+            return [None] * len(part)
         if len(part) == 1:
             log.info("batch call failed: %s", str(js)[:160])
             return [None]
-        mid = len(part) // 2
+        mid = len(part) // 2                   # only a batch rejected as a whole is split
         return self._batch_part(part[:mid]) + self._batch_part(part[mid:])
 
     def block_number(self):
@@ -124,7 +148,7 @@ class Rpc:
         return int(b["timestamp"], 16) if b else None
 
     def block_timestamps(self, numbers):
-        """Exact timestamps for a set of blocks, batched."""
+        """Exact timestamps for a set of blocks, batched. None for a block the node did not answer."""
         nums = sorted(set(numbers))
         res = self.batch([("eth_getBlockByNumber", [hex(n), False]) for n in nums])
         return {n: (int(b["timestamp"], 16) if b else None) for n, b in zip(nums, res)}
@@ -133,7 +157,9 @@ class Rpc:
         return self.call("eth_call", [{"to": to, "data": data}, block])
 
     def get_logs(self, address, topics, from_block, to_block, chunk=150_000, cap=None):
-        """Yield logs over a range, shrinking the chunk when the node refuses a window."""
+        """Yield logs over a range. A window the node refuses is quartered, never below MIN_CHUNK (there the
+        error surfaces, so the caller's own retry applies); after a success the window grows back."""
+        full = chunk
         start = from_block
         seen = 0
         while start <= to_block:
@@ -142,8 +168,8 @@ class Rpc:
                 logs = self.call("eth_getLogs", [{"fromBlock": hex(start), "toBlock": hex(end),
                                                   "address": address, "topics": topics}])
             except RpcError as e:
-                if _is_range_error(str(e)) and end > start:
-                    chunk = max(500, (end - start + 1) // 4)
+                if _is_range_error(str(e)) and end > start and chunk > MIN_CHUNK:
+                    chunk = max(MIN_CHUNK, (end - start + 1) // 4)
                     continue
                 raise
             for l in logs:
@@ -152,8 +178,8 @@ class Rpc:
             if cap is not None and seen >= cap:
                 return
             start = end + 1
-            if chunk < 150_000:
-                chunk = min(150_000, chunk * 2)
+            if chunk < full:
+                chunk = min(full, chunk * 2)
 
 
 # ---- ABI helpers -----------------------------------------------------------
@@ -195,7 +221,7 @@ class Event:
             elif t.startswith("uint"):
                 out[n] = int(raw, 16)
             elif t.startswith("int"):
-                out[n] = _signed(int(raw, 16), int(t[3:] or 256))
+                out[n] = _signed(int(raw, 16), 256)      # a topic is sign-extended to 32 bytes whatever the width
             else:
                 out[n] = raw.lower()
         if self.data:

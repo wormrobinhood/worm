@@ -1,13 +1,17 @@
 """Launch the worm's own token on pons V2, paired with USDG. Dry run by default.
 
-  python -m wormhole.launch            dry run: encode, simulate with eth_call, show the predicted addresses
-  python -m wormhole.launch --live     send it (needs WH_LIVE=1 and ETH in the wallet)
+  python -m wormhole.launch                dry run: encode, simulate with eth_call, show the predicted addresses
+  python -m wormhole.launch --live         send it (needs WH_LIVE=1 and ETH in the wallet)
+  python -m wormhole.launch --live --unpinned   send even if the factory's economics preview cannot be read
 
 Everything about the token lives on-chain in the launch call: name, ticker, logo link, description,
 socials, creator fee recipient (the worm's wallet), creator tax. Limits enforced by pons's deployer:
-name 64, symbol 16, logo 512, description 2048, each social 256 bytes."""
+name 64, symbol 16, logo 512, description 2048, each social 256 bytes.
+
+One launch only. The moment the node has the transaction its hash is written to .env as
+WH_TOKEN_PENDING_TX; a second run refuses while that line exists, so a lost receipt can never turn
+into a second $WORM. On success WH_TOKEN replaces it."""
 import argparse
-import json
 import os
 import time
 
@@ -15,13 +19,14 @@ from eth_abi import decode, encode
 from eth_utils import keccak
 
 from . import config as C
-from .chain import Rpc, call_data, call_fn, selector
+from .chain import Rpc, RpcError, call_fn, selector
 from .pons import TOKEN_LAUNCHED
-from .wallet import account
+from .wallet import account, update_env
 
 TOKEN_PARAMS_T = "(string,string,string,string,(string,string,string,string,string),address,uint16,bool,bytes32,bytes32)"
 LAUNCH_SIG = f"launchToken({TOKEN_PARAMS_T},uint256,address)"
 LIMITS = {"name": 64, "symbol": 16, "logo": 512, "description": 2048, "social": 256}
+GAS_FLOOR = 4_500_000        # a real launch+buy used 3.85M; the estimate (+30%) is used when it is higher
 
 DEFAULT_DESCRIPTION = (
     "Worm is a small hooded worm that lives at IRL Worm on Robinhood Chain. It digs through every pons "
@@ -51,18 +56,33 @@ def params(wallet):
     return p
 
 
-def encode_call(rpc, p, wallet):
+def economics_pin(rpc, unpinned=False):
+    """The factory's previewLaunchEconomics hash: the launch reverts if the owner changes the terms
+    (supply, curve fee, pool fee tier, threshold) between this read and the send. A zero pin waives
+    that check, so a failed read is fatal unless --unpinned says otherwise."""
     try:
         econ = call_fn(rpc, C.FACTORY, "previewLaunchEconomics(uint256,address)", ("bytes32",),
                        ("uint256", "address"), (0, C.USDG))
-    except Exception:
+    except Exception as e:
         econ = None
-    econ = econ or b"\x00" * 32
-    salt = keccak(text=f"irl-wormhole:{p['symbol']}:{wallet}:{int(time.time())}")
+        print("economics ", f"preview failed: {str(e)[:120]}")
+    if econ is None:
+        if not unpinned:
+            raise SystemExit("previewLaunchEconomics failed; refusing to launch unpinned (pass --unpinned to waive the check)")
+        return b"\x00" * 32
+    return econ
+
+
+def calldata(p, econ, salt):
     tup = (p["name"], p["symbol"], p["logo"], p["description"], tuple(p["socials"]), p["creatorFeeRecipient"],
            p["creatorTaxBps"], p["buybackEnabled"], econ, salt)
-    data = selector(LAUNCH_SIG) + encode([TOKEN_PARAMS_T, "uint256", "address"], [tup, 0, C.USDG]).hex()
-    return data, econ, salt
+    return selector(LAUNCH_SIG) + encode([TOKEN_PARAMS_T, "uint256", "address"], [tup, 0, C.USDG]).hex()
+
+
+def encode_call(rpc, p, wallet, unpinned=False):
+    econ = economics_pin(rpc, unpinned)
+    salt = keccak(text=f"irl-wormhole:{p['symbol']}:{wallet}:{int(time.time())}")
+    return calldata(p, econ, salt), econ, salt
 
 
 def launch_fee(rpc):
@@ -81,16 +101,43 @@ def dry_run(rpc, wallet, data, fee):
     return (token, curve), None
 
 
-def main():
+def launched_token(rc):
+    """The token address from the factory's TokenLaunched log in a receipt, or None."""
+    for lg in rc.get("logs", []):
+        if lg["address"].lower() == C.FACTORY and lg["topics"][0] == TOKEN_LAUNCHED.topic:
+            return TOKEN_LAUNCHED.decode(lg)["token"]
+    return None
+
+
+def refuse_if_done(live):
+    """A launch in flight or a token already set: refuse to send, explain in a dry run."""
+    pending = os.environ.get("WH_TOKEN_PENDING_TX", "").strip()
+    if pending:
+        msg = (f"a launch is already in flight: WH_TOKEN_PENDING_TX={pending}. Check it on the explorer "
+               f"(https://robinhoodchain.blockscout.com/tx/{pending}); then either set WH_TOKEN=<token> and "
+               "remove the pending line from .env, or remove the line to try again.")
+        if live:
+            raise SystemExit(msg)
+        print("NOTE      ", msg)
+    if C.TOKEN:
+        msg = f"WH_TOKEN={C.TOKEN} is already set: the worm has its token. Remove the line from .env to launch another."
+        if live:
+            raise SystemExit(msg)
+        print("NOTE      ", msg)
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true", help="send the launch transaction")
-    a = ap.parse_args()
+    ap.add_argument("--unpinned", action="store_true", help="launch even if previewLaunchEconomics cannot be read")
+    a = ap.parse_args(argv)
+    refuse_if_done(a.live)
     rpc = Rpc(C.RPC)
     acct = account()
     wallet = acct.address
     p = params(wallet)
     fee = launch_fee(rpc)
-    data, econ, salt = encode_call(rpc, p, wallet)
+    data, econ, salt = encode_call(rpc, p, wallet, a.unpinned)
     print("token     ", p["name"], f"(${p['symbol']})")
     print("logo      ", p["logo"])
     print("website   ", p["socials"][3], "| x:", p["socials"][0] or "-", "| telegram:", p["socials"][1] or "-")
@@ -110,15 +157,24 @@ def main():
     if err:
         raise SystemExit("refusing to send: the dry run failed")
     from .tx import send_tx
-    h, rc = send_tx(rpc, acct, C.FACTORY, data, value=fee, gas=4_500_000, say=print)
-    token = None
-    for lg in rc.get("logs", []):
-        if lg["address"].lower() == C.FACTORY and lg["topics"][0] == TOKEN_LAUNCHED.topic:
-            token = TOKEN_LAUNCHED.decode(lg)["token"]
-    if rc.get("status") != "0x1" or not token:
-        raise SystemExit("launch reverted or no TokenLaunched event; check the tx on the explorer")
-    with open(C.ROOT / ".env", "a") as f:
-        f.write(f"WH_TOKEN={token}\n")
+
+    def note_pending(h):
+        update_env({"WH_TOKEN_PENDING_TX": h})
+        print("pending   ", f"WH_TOKEN_PENDING_TX={h} written to .env; it goes away once the receipt confirms")
+
+    try:
+        h, rc = send_tx(rpc, acct, C.FACTORY, data, value=fee, gas=None, gas_floor=GAS_FLOOR, say=print, on_broadcast=note_pending)
+    except RpcError as e:
+        raise SystemExit(f"{e}\nThe pending line stays in .env. Check the explorer; then set WH_TOKEN=<token> and remove "
+                         "WH_TOKEN_PENDING_TX, or remove the line to try again.")
+    token = launched_token(rc)
+    if rc.get("status") != "0x1":
+        update_env(remove=["WH_TOKEN_PENDING_TX"])
+        raise SystemExit(f"launch reverted: https://robinhoodchain.blockscout.com/tx/{h} (fee refunded, gas spent; nothing pending)")
+    if not token:
+        raise SystemExit(f"mined but no TokenLaunched event: check https://robinhoodchain.blockscout.com/tx/{h}; "
+                         "the pending line stays in .env until you set WH_TOKEN or remove it")
+    update_env({"WH_TOKEN": token}, remove=["WH_TOKEN_PENDING_TX"])
     print("\nLAUNCHED", p["name"], f"(${p['symbol']})", "token", token)
     print("page      ", f"https://www.ponsfamily.com/launchpad/{token}")
     print("tx        ", f"https://robinhoodchain.blockscout.com/tx/{h}")

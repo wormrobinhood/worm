@@ -2,24 +2,53 @@
 import os
 from pathlib import Path
 
+from eth_utils import is_address, is_checksum_address
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def valid_address(a):
+    """A 20-byte hex address. A mixed-case one must carry a correct EIP-55 checksum: that is where a
+    typo shows up (eth_utils.is_address alone lets a wrong checksum through)."""
+    if not isinstance(a, str) or not is_address(a):
+        return False
+    hexpart = a[2:]
+    return hexpart == hexpart.lower() or hexpart == hexpart.upper() or is_checksum_address(a)
+
+
+def parse_dotenv(text):
+    """KEY=VALUE lines from a .env file. Blank lines and # comments are skipped, an inline " # comment"
+    is dropped, surrounding quotes are removed, and when a key appears twice the last line wins."""
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.split(" #", 1)[0].strip().strip('"').strip("'")
+    return out
+
+
 def _load_dotenv(path):
-    """KEY=VALUE lines from .env become defaults for the environment (the environment wins)."""
+    """Values from .env become defaults for the environment (the environment wins). The one exception
+    is WH_SECRET: it is returned to the caller and never put in the environment, so child processes
+    (the Playwright driver, Chromium) cannot inherit it."""
     try:
-        for line in path.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        vals = parse_dotenv(path.read_text())
     except FileNotFoundError:
-        pass
+        return ""
+    secret = vals.pop("WH_SECRET", "")
+    for k, v in vals.items():
+        os.environ.setdefault(k, v)
+    return secret
 
 
-_load_dotenv(ROOT / ".env")
+_file_secret = _load_dotenv(ROOT / ".env")
 DATA_DIR = Path(os.environ.get("WH_DATA_DIR", ROOT / "data"))
 DB_PATH = DATA_DIR / "wormhole.db"
+if os.environ.get("WH_DATA_DIR") and not os.path.ismount(DATA_DIR):
+    import logging
+    logging.getLogger("wormhole.config").warning("WH_DATA_DIR=%s is not a mount point: the database will not survive a redeploy", DATA_DIR)
 
 RPC = os.environ.get("WH_RPC", "https://rpc.mainnet.chain.robinhood.com")
 CHAIN_ID = 4663
@@ -48,7 +77,7 @@ DEAD = "0x000000000000000000000000000000000000dead"
 INFRA = {FACTORY, HOOK, PONS_ROUTER, LOCKER, BUYBACK_VAULT, FEE_ESCROW,
          POOL_MANAGER, UNIVERSAL_ROUTER, POSITION_MANAGER, PERMIT2, ZERO, DEAD}
 
-BLOCK_TIME = 0.1025                      # seconds per block, measured
+BLOCK_TIME = 0.10125                    # seconds per block, mean over 2.69M blocks; the indexer re-measures at start
 BLOCKS_PER_HOUR = int(3600 / BLOCK_TIME)
 BACKFILL_HOURS = float(os.environ.get("WH_BACKFILL_HOURS", "72"))   # launches kept for creator history
 SCORE_HOURS = float(os.environ.get("WH_SCORE_HOURS", "4"))          # graduations scored at startup
@@ -68,7 +97,11 @@ PAPER_STOP_LOSS = -0.5       # -50%
 PAPER_MAX_AGE_S = 24 * 3600
 
 # The worm's own key (phase 2). One secp256k1 key, same address on Robinhood Chain and Base.
-SECRET = os.environ.get("WH_SECRET", "").strip()
+# The environment wins over .env when the variable is present, even empty. It is popped, not read:
+# after this line no process started from here carries the key in its environment.
+_env_secret = os.environ.pop("WH_SECRET", None)
+SECRET = (_file_secret if _env_secret is None else _env_secret).strip()
+del _file_secret, _env_secret
 
 
 def _addr_from_secret():
@@ -78,9 +111,25 @@ def _addr_from_secret():
     return Account.from_key(SECRET).address.lower()
 
 
-WALLET = (os.environ.get("WH_WALLET") or _addr_from_secret()).lower()
+def check_addresses(wallet_env, signer, owner):
+    """The address checks that stop the process at startup instead of failing every cycle later:
+    a WH_WALLET that is not the signer's address would read one wallet and send from another; a
+    malformed WH_OWNER_WALLET would make every forward fail while claims go on."""
+    if wallet_env and not valid_address(wallet_env):
+        raise SystemExit("WH_WALLET is not an address")
+    if wallet_env and signer and wallet_env.lower() != signer.lower():
+        raise SystemExit("WH_WALLET is not the address of WH_SECRET: remove one of them")
+    if owner and not valid_address(owner):
+        raise SystemExit("WH_OWNER_WALLET is not an address")
+
+
+_signer = _addr_from_secret()
+_wallet_env = os.environ.get("WH_WALLET", "").strip()
+_owner_env = os.environ.get("WH_OWNER_WALLET", "").strip()
+check_addresses(_wallet_env, _signer, _owner_env)
+WALLET = (_wallet_env or _signer).lower()
 BASE_WALLET = (os.environ.get("WH_BASE_WALLET") or WALLET).lower()
-OWNER_WALLET = os.environ.get("WH_OWNER_WALLET", "").lower()     # owner wallet: receives 20% of income
+OWNER_WALLET = _owner_env.lower()                                    # owner wallet: receives 20% of income
 OWNER_SHARE = float(os.environ.get("WH_OWNER_SHARE", "0.20"))
 LIVE = os.environ.get("WH_LIVE", "0") == "1"                         # nothing is ever signed unless 1
 SITE_URL = os.environ.get("WH_SITE_URL", "http://127.0.0.1:4670").rstrip("/")

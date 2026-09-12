@@ -1,1 +1,2 @@
 pytest>=8
+httpx2>=2      # FastAPI's TestClient (starlette.testclient) imports httpx2

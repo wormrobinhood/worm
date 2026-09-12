@@ -11,7 +11,7 @@ import time
 
 from wormhole import config as C
 from wormhole.chain import Rpc
-from wormhole.db import DB
+from wormhole.db import DB, prune_launches
 from wormhole.indexer import Indexer
 from wormhole.learn import Brain
 from wormhole.paper import Paper
@@ -53,8 +53,14 @@ def build():
     return rpc, db, brain, scorer, paper, hub, screen, acct
 
 
-def score_one(token, db, scorer, brain, paper, hub, label):
+RETRY_S = 600          # a token scored on incomplete data, or whose scoring crashed, is looked at again
+MAX_TRIES = 3
+
+
+def score_one(token, db, scorer, brain, paper, hub, label, requeue=None, tries=1):
     try:
+        if hasattr(hub, "mark_scoring"):
+            hub.mark_scoring(token)
         r = scorer.score(token)
         if not r:
             return None
@@ -64,10 +70,14 @@ def score_one(token, db, scorer, brain, paper, hub, label):
                      + (" (partial data)" if r["metrics"].get("partial") else ""), token)
         hub.notify("score", token)
         log.info("scored %s -> %s [%s] in %ss", label(token), r["verdict"], r["score"], r["metrics"].get("scored_in_s"))
+        if r.get("retry") and requeue and tries < MAX_TRIES:
+            requeue(token, tries + 1)
         return r
     except Exception as e:
         log.exception("scoring %s failed: %s", token[:10], e)
         db.add_event("error", f"scoring {token[:10]} failed: {str(e)[:120]}", token)
+        if requeue and tries < MAX_TRIES:
+            requeue(token, tries + 1)
         return None
 
 
@@ -85,6 +95,10 @@ def main():
     work = queue.Queue()
     idx = Indexer(rpc, db, on_graduation=work.put, on_launch=lambda t: hub.notify("launch", t))
     hub.rescan = work.put
+    hub.indexer = idx
+
+    def requeue(token, tries):
+        threading.Timer(RETRY_S, work.put, [(token, tries)]).start()
 
     if a.once:
         idx.backfill()
@@ -101,7 +115,14 @@ def main():
         return
 
     def pipeline():
-        idx.backfill()
+        while True:                                   # a node hiccup during catch-up must not kill indexing for good
+            try:
+                idx.backfill()
+                break
+            except Exception as e:
+                log.exception("backfill failed, retry in 30s: %s", e)
+                db.add_event("error", f"backfill failed: {str(e)[:120]}")
+                time.sleep(30)
         cutoff = int(time.time()) - int(C.SCORE_HOURS * 3600)
         for r in db.q("SELECT token FROM launches WHERE graduated=1 AND grad_ts>=? AND token NOT IN"
                       " (SELECT token FROM scores) ORDER BY grad_block DESC", (cutoff,)):
@@ -110,8 +131,18 @@ def main():
 
     def worker():
         while True:
-            token = work.get()
-            score_one(token, db, scorer, brain, paper, hub, idx.label)
+            item = work.get()
+            token, tries = item if isinstance(item, tuple) else (item, 1)
+            score_one(token, db, scorer, brain, paper, hub, idx.label, requeue, tries)
+
+    def watchdog():
+        """If the indexer has not advanced for 15 minutes, exit so the host restarts the process."""
+        while True:
+            time.sleep(60)
+            last_ok = getattr(idx, "last_ok", None)
+            if idx.ready.is_set() and last_ok and time.time() - last_ok > 900:
+                log.error("indexer stalled for 15 min, exiting for a restart")
+                os._exit(3)
 
     def marker():
         time.sleep(45)
@@ -121,40 +152,63 @@ def main():
                 voice.cycle(db, force=True)
         except Exception as e:
             log.warning("first journal entry failed: %s", e)
+        cycle_n = 0
         while True:
-            try:
-                refresh_scored(db)
-                lab.tick(db)
-                paper.retry_pending()
-                paper.mark()
-                brain.check()
-                budget.sample(db, treasury(rpc)["usd"])
-                T.cycle(rpc, db, acct)
-                tre = treasury(rpc)
-                rw = projection(db, tre["usd"])
+            cycle_n += 1
+            box = {}                                  # what the money stages share, real money only
+
+            def books():
+                tre = box["tre"] = treasury(rpc)
+                budget.sample(db, tre["usd_real"], bool(tre.get("demo")))
+                box["rw"] = projection(db, tre["usd_real"])
+
+            def compute_stage():
+                tre, rw = box["tre"], box["rw"]
                 try:
                     from wormhole.wallet import balances
                     usdc = balances(C.WALLET).get("usdc_base") if C.WALLET else None
                 except Exception:
                     usdc = None
-                compute.plan(db, acct, usdc, rw.get("can_invest") or (tre["usd"] > 0), C.LIVE)
+                compute.plan(db, acct, usdc, rw.get("can_invest") or (tre["usd_real"] > 0), C.LIVE,
+                             budget_per_day=rw.get("compute_budget_per_day_usd"))
+
+            def entries():
+                tre, rw = box["tre"], box["rw"]
                 rd = readiness.compute(brain.summary(), lab.summary(db), rw, bool(tre.get("demo")), trader.MAX_POSITION_USD)
                 trader.decide(rpc, db, rw, C.LIVE, acct, rd)
-                trader.mark(rpc, db, C.LIVE, acct)
-                giving.cycle(rpc, db, acct, rw, C.LIVE)
-                voice.cycle(db, extra={"stage": tre.get("stage_name"), "treasury_usd": tre.get("usd")})
-                hub.notify("mark")
-            except Exception as e:
-                log.warning("mark failed: %s", e)
+
+            def housekeeping():
+                if cycle_n % 12 == 1:                 # once an hour
+                    prune_launches(db)
+                    if hasattr(idx, "refetch_metadata"):
+                        idx.refetch_metadata()
+
+            # exits and bookkeeping run before entries; every stage is isolated so one failure cannot skip the rest
+            stages = [("prices", lambda: refresh_scored(db)), ("lab", lambda: lab.tick(db)),
+                      ("paper", paper.retry_pending), ("paper mark", paper.mark), ("brain", brain.check),
+                      ("exits", lambda: trader.mark(rpc, db, C.LIVE, acct)), ("treasury", lambda: T.cycle(rpc, db, acct)),
+                      ("books", books), ("compute", compute_stage), ("entries", entries),
+                      ("giving", lambda: giving.cycle(rpc, db, acct, box["rw"], C.LIVE and not box["tre"].get("demo"))),
+                      ("voice", lambda: voice.cycle(db, extra={"stage": box["tre"].get("stage_name"), "treasury_usd": box["tre"].get("usd_real")})),
+                      ("housekeeping", housekeeping)]
+            for name, fn in stages:
+                try:
+                    fn()
+                except KeyError as e:
+                    log.warning("%s skipped: books did not run (%s)", name, e)
+                except Exception as e:
+                    log.warning("%s failed: %s", name, e)
+            hub.notify("mark")
             time.sleep(C.MARK_EVERY_S)
 
-    for fn in (pipeline, worker, marker):
+    for fn in (pipeline, worker, marker, watchdog):
         threading.Thread(target=fn, daemon=True, name=fn.__name__).start()
     if screen:
         screen.start()
 
     import uvicorn
-    uvicorn.run(make_app(rpc, db, brain, paper, hub), host=a.host, port=a.port, log_level="warning")
+    # proxy_headers=False: request.client.host is the real TCP peer, never a spoofable X-Forwarded-For
+    uvicorn.run(make_app(rpc, db, brain, paper, hub), host=a.host, port=a.port, log_level="warning", proxy_headers=False)
 
 
 if __name__ == "__main__":

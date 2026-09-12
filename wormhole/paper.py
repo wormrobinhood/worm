@@ -1,7 +1,9 @@
 """A paper book: what the worm would have bought, marked to market, exits chosen by the strategy lab.
-No real money. Every position records which arm it runs so the lab's choice can be judged later."""
+No real money. Every position records which arm it runs and the token's own per-side cost (creator
+tax + curve fee + slippage) so the book and the lab agree on what a trade would have cost."""
 import json
 import logging
+import threading
 import time
 
 from . import config as C
@@ -9,22 +11,32 @@ from . import lab
 from .prices import token_prices
 
 log = logging.getLogger("wormhole.paper")
-COST = lab.FEE          # per side
+COST = lab.FEE          # per side, for positions opened before costs were stored per token
 
 
 class Paper:
     def __init__(self, db):
         self.db = db
+        self._lock = threading.Lock()        # consider() runs from the scoring worker and the marker at once
         for col in ("qty_left REAL", "recovered_usd REAL DEFAULT 0", "peak_usd REAL", "realized_usd REAL DEFAULT 0",
-                    "policy TEXT", "tp_done TEXT", "trail_on INTEGER DEFAULT 0"):
+                    "policy TEXT", "tp_done TEXT", "trail_on INTEGER DEFAULT 0", "cost REAL"):
             try:
                 db.x(f"ALTER TABLE paper ADD COLUMN {col}")
             except Exception:
                 pass
+        # one row per token: drop duplicates from the old race (keep the first), then enforce it
+        db.x("DELETE FROM paper WHERE id NOT IN (SELECT MIN(id) FROM paper GROUP BY token)")
+        db.x("CREATE UNIQUE INDEX IF NOT EXISTS paper_token ON paper(token)")
         db.x("CREATE TABLE IF NOT EXISTS intents(token TEXT PRIMARY KEY, arm TEXT, ts INTEGER, scored_at INTEGER, score INTEGER)")
 
     def consider(self, token, result):
-        if result["score"] < C.PAPER_MIN_SCORE or self.db.one("SELECT 1 FROM paper WHERE token=?", (token,)):
+        with self._lock:
+            self._consider(token, result)
+
+    def _consider(self, token, result):
+        if result["score"] < C.PAPER_MIN_SCORE or (result.get("metrics") or {}).get("partial"):
+            return
+        if self.db.one("SELECT 1 FROM paper WHERE token=?", (token,)):
             return
         it = self.db.one("SELECT * FROM intents WHERE token=?", (token,))
         if not it:
@@ -45,15 +57,19 @@ class Paper:
         if not price:
             self.db.add_event("paper", f"would paper-buy ${sym} (score {result['score']}) but it has no price yet", token)
             return
-        qty = C.PAPER_SIZE_USD / price / (1 + COST)
-        self.db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,last_usd,qty_left,peak_usd,realized_usd,policy,tp_done,trail_on)"
-                  " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                  (token, sym, int(time.time()), price, C.PAPER_SIZE_USD, qty, "open", price, qty, price, 0.0, it["arm"], "[]", 0))
-        self.db.add_event("paper", f"paper buy: ${C.PAPER_SIZE_USD:.0f} of ${sym} at ${price:.6g} (score {result['score']}, arm {it['arm']})", token)
+        cost = lab.token_cost(self.db, token)
+        qty = C.PAPER_SIZE_USD / price / (1 + cost)
+        before = self.db.one("SELECT COUNT(*) n FROM paper")["n"]
+        self.db.x("INSERT OR IGNORE INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,last_usd,qty_left,peak_usd,realized_usd,policy,tp_done,trail_on,cost)"
+                  " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  (token, sym, int(time.time()), price, C.PAPER_SIZE_USD, qty, "open", price, qty, price, 0.0, it["arm"], "[]", 0, cost))
+        if self.db.one("SELECT COUNT(*) n FROM paper")["n"] == before:
+            return                                   # another process got there first
+        self.db.add_event("paper", f"paper buy: ${C.PAPER_SIZE_USD:.0f} of ${sym} at ${price:.6g} (score {result['score']}, arm {it['arm']}, cost {cost * 100:.1f}%/side)", token)
 
     def retry_pending(self):
         """Delayed arms and tokens that had no price at verdict time."""
-        rows = self.db.q("SELECT s.token, s.score, s.verdict, s.metrics FROM scores s WHERE s.score>=? AND s.scored_at>=?"
+        rows = self.db.q("SELECT s.token, s.score, s.verdict, s.metrics FROM scores s WHERE s.score>=? AND s.scored_at>=? AND s.partial=0"
                          " AND s.token NOT IN (SELECT token FROM paper)", (C.PAPER_MIN_SCORE, int(time.time()) - 3 * 3600))
         for r in rows:
             try:
@@ -70,19 +86,20 @@ class Paper:
         now = int(time.time())
         for p in opens:
             px = (prices.get(p["token"]) or {}).get("price_usd")
-            if not px:
+            if not px or not p["entry_usd"] or not p["qty"]:
                 continue
+            cost = p["cost"] if p.get("cost") is not None else COST
             policy, _ = lab.parse_arm(p["policy"] or lab.DEFAULT)
             st = {"entry": p["entry_usd"], "entry_ts": p["opened_ts"], "qty_left": (p["qty_left"] if p["qty_left"] is not None else p["qty"]) / p["qty"],
                   "tp_done": json.loads(p["tp_done"] or "[]"), "peak": max(p["peak_usd"] or 0, px), "trail_on": bool(p["trail_on"])}
             realized = p["realized_usd"] or 0.0
-            sold_any = False
+            last_why = None
             frac, why = lab.exit_step(policy, st, px, now)
             while frac > 0:
-                usd = frac * p["qty"] * px * (1 - COST)
+                usd = frac * p["qty"] * px * (1 - cost)
                 realized += usd
                 st["qty_left"] -= frac
-                sold_any = True
+                last_why = why
                 self.db.add_event("paper", f"paper sell: {frac * 100:.0f}% of ${p['symbol']} at {px / p['entry_usd']:.2f}x ({why}), +${usd:.2f}", p["token"])
                 frac, why = lab.exit_step(policy, st, px, now) if st["qty_left"] > 1e-9 else (0, None)
             qty_left = max(0.0, st["qty_left"]) * p["qty"]
@@ -92,9 +109,9 @@ class Paper:
                       " status=?, closed_ts=?, exit_usd=?, pnl_usd=?, reason=? WHERE id=?",
                       (px, st["peak"], qty_left, json.dumps(st["tp_done"]), 1 if st["trail_on"] else 0, realized,
                        realized if st["tp_done"] else 0, "closed" if closed else "open", now if closed else None,
-                       px if closed else None, pnl, why if closed else None, p["id"]))
+                       px if closed else None, pnl, last_why if closed else None, p["id"]))
             if closed:
-                self.db.add_event("paper", f"paper close: ${p['symbol']} pnl ${pnl:+.2f} ({why}, arm {p['policy']})", p["token"])
+                self.db.add_event("paper", f"paper close: ${p['symbol']} pnl ${pnl:+.2f} ({last_why}, arm {p['policy']})", p["token"])
 
     def summary(self):
         opens = self.db.q("SELECT * FROM paper WHERE status='open' ORDER BY opened_ts DESC")
@@ -102,7 +119,8 @@ class Paper:
         unreal = 0.0
         for p in opens:
             qty_left = p["qty_left"] if p["qty_left"] is not None else p["qty"]
-            value = qty_left * (p["last_usd"] or p["entry_usd"]) * (1 - COST)
+            cost = p["cost"] if p.get("cost") is not None else COST
+            value = qty_left * (p["last_usd"] or p["entry_usd"]) * (1 - cost)
             p["hedged"] = bool(json.loads(p["tp_done"] or "[]"))
             p["bag_pct"] = round(100 * qty_left / p["qty"]) if p["qty"] else 0
             p["change_pct"] = ((p["last_usd"] / p["entry_usd"]) - 1) * 100 if p.get("last_usd") else 0.0
@@ -110,10 +128,9 @@ class Paper:
             unreal += p["pnl_usd"]
         for p in closed:
             p["change_pct"] = ((p["exit_usd"] / p["entry_usd"]) - 1) * 100 if p.get("exit_usd") else 0.0
-        realized = sum(p["pnl_usd"] or 0 for p in closed)
-        wins = sum(1 for p in closed if (p["pnl_usd"] or 0) > 0)
+        tot = self.db.one("SELECT COALESCE(SUM(pnl_usd),0) s, COALESCE(SUM(pnl_usd>0),0) w, COUNT(*) n FROM paper WHERE status='closed'")
         cur, why = lab.current_policy(self.db)
-        return {"open": opens, "closed": closed, "realized_usd": round(realized, 2), "unrealized_usd": round(unreal, 2),
-                "closed_count": len(closed), "win_rate": round(100.0 * wins / len(closed)) if closed else None,
+        return {"open": opens, "closed": closed, "realized_usd": round(tot["s"], 2), "unrealized_usd": round(unreal, 2),
+                "closed_count": tot["n"], "win_rate": round(100.0 * tot["w"] / tot["n"]) if tot["n"] else None,
                 "size_usd": C.PAPER_SIZE_USD, "min_score": C.PAPER_MIN_SCORE,
-                "rules": f"exits by the strategy lab, in use: {cur} ({why}); costs {COST * 2 * 100:.0f}% round trip included"}
+                "rules": f"exits by the strategy lab, in use: {cur} ({why}); each token's own costs (tax + fee + {lab.SLIPPAGE * 100:.0f}% slippage a side) included"}
