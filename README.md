@@ -1,6 +1,6 @@
 # Worm
 
-*Knows the dirt on every launch.* A small hooded worm on Robinhood Chain. It digs through every
+*Knows the dirt on every launch.* A small worm on Robinhood Chain. It digs through every
 [pons](https://www.ponsfamily.com/launchpad) graduation, looks for bad actors, tells the community
 first, and grows longer with the treasury it holds.
 

@@ -384,7 +384,7 @@ def test_docs_placeholders_are_all_filled(site):
     client = site[0]
     page = client.get("/docs").text
     assert not re.search(r"\{\{[a-z_]+\}\}", page)
-    assert "Worm is a small hooded worm" in page
+    assert "Worm is a small worm" in page
 
 
 def test_healthz_reflects_the_indexer(site):

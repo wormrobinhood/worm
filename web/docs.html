@@ -53,13 +53,24 @@ code{color:var(--white);background:rgba(0,40,10,.6);padding:0 4px;font-size:.95e
 <div class="tag">knows the dirt on every launch · how it works, what it earns, where the money goes</div>
 
 <div class="nav top">
-<a href="#what">what it is</a><a href="#dig">how a dig works</a><a href="#trust">trust values</a><a href="#learn">how it learns</a><a href="#lab">strategy lab</a><a href="#ready">readiness</a><a href="#money">money and fee split</a><a href="#runway">runway policy</a><a href="#token">the token</a><a href="#security">security</a><a href="#roadmap">roadmap</a><a href="#real">what is real</a>
+<a href="#what">what it is</a><a href="#ai">the AI, simply</a><a href="#dig">how a dig works</a><a href="#trust">trust values</a><a href="#learn">how it learns</a><a href="#lab">strategy lab</a><a href="#ready">readiness</a><a href="#money">money and fee split</a><a href="#runway">runway policy</a><a href="#token">the token</a><a href="#security">security</a><a href="#roadmap">roadmap</a><a href="#real">what is real</a>
 </div>
 
 <h2 id="what">what it is</h2>
-<p>Worm is a small hooded worm that lives on Robinhood Chain. It is a program with its own wallet. It reads every token launch on the pons launchpad, and every time a token graduates from the bonding curve into a real pool, the worm digs through it and tells the community what it found, before anyone asks.</p>
+<p>Worm is a small worm that lives on Robinhood Chain. It is a program with its own wallet. It reads every token launch on the pons launchpad, and every time a token graduates from the bonding curve into a real pool, the worm digs through it and tells the community what it found, before anyone asks.</p>
 <p>It is a scout first. It flags bad actors and shows its reasoning in the open. Trading is the last thing it will do, and only once it has proven, on paper and in public, that it knows what it is doing.</p>
 <div class="box"><b>Not advice.</b> The verdicts are rules written by a person and re-weighted by what actually happened afterwards. They are a screening aid. Nothing here is a recommendation to buy or sell anything.</div>
+
+<h2 id="ai">the AI, simply</h2>
+<p>The worm's judgement is not a chat model. Every verdict comes from rules that read numbers off the chain, and the rules are re-weighted by what happened to each token afterwards. That is the engine, and it runs for free.</p>
+<p>A language model sits next to the engine and does two jobs:</p>
+<ul>
+<li><b>The advisor.</b> Every two hours it reads the worm's own records (how each rule has done, the last resolved cases, the strategy lab's results) and proposes new rules and exit strategies in a strict form. The worm backtests every proposal on its own history and adopts only what would have worked. An adopted rule then scores new tokens like any other and earns or loses weight the same way. The model suggests; the records decide.</li>
+<li><b>The journal.</b> The field notes on the live page, written in the worm's voice from a packet of measured numbers, checked before they are shown: every number must be in the packet, no hype, no advice.</li>
+</ul>
+<p>The model never scores a token on its own, never trades, and never touches money. Token names and descriptions are written by strangers, so they are never fed to it as instructions.</p>
+<p><b>How the compute is paid for.</b> The worm buys its own inference from Venice AI as a prepaid balance, paid in USDC from its wallet on Base, five dollars at a time, only when the balance runs low. That money comes from the operations share of its fees: of every claim of $WORM creator fees, {{owner_share}} percent goes to the creator, {{burn_share}} percent buys $WORM and burns it, and {{ops_share}} percent stays with the worm for compute, gas and its reserve. So the loop is: trades of $WORM pay fees, fees buy compute, compute runs the advisor and the journal, the advisor makes the engine sharper, and a sharper engine is what people come to the worm for. An advisor run costs about a cent; a journal entry, a fraction of one.</p>
+<p>Until the worm is live, the journal runs a free template writer and the advisor runs the worm's own search over its records; nothing is bought and nothing is signed.</p>
 
 <h2 id="dig">how a dig works</h2>
 <p>Pons launches roughly 950 tokens an hour on this chain and about 18 of them graduate. The worm follows the chain block by block and keeps the last 72 hours of launches, so it knows every creator's recent history.</p>
