@@ -1,0 +1,5 @@
+# Public 64-hex values that leakcheck must not mistake for private keys.
+# One per line. Only add a value after proving it is public (an event topic,
+# a keccak of a known signature, a block hash).
+# Uniswap v4 PoolManager Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)
+0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f

@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IRL Wormhole</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{--g:#00ff41;--g2:#00b32d;--g3:#0a5c1f;--g4:#063d15;--bg:#000;--dim:#5fbf6f;--bad:#ff5252;--txt:#b6ffc8;--white:#e9ffee}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--txt);font:13px/1.45 "IBM Plex Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace}
+a{color:var(--g);text-decoration:none}a:hover{text-decoration:underline}
+#rain{position:fixed;inset:0;z-index:0;opacity:.22;pointer-events:none}
+.wrap{position:relative;z-index:1;max-width:1400px;margin:0 auto;padding:16px 16px 70px}
+.hero{text-align:center;padding:6px 0 18px;border-bottom:1px solid var(--g3);position:relative}
+#hood{display:block;margin:0 auto;max-width:100%;cursor:crosshair;filter:drop-shadow(0 0 16px rgba(0,255,65,.22))}
+h1{font-family:"Instrument Serif",Georgia,"Times New Roman",serif;font-weight:400;font-size:clamp(58px,11vw,150px);line-height:.9;margin:-34px 0 4px;letter-spacing:.01em;color:#eafff0;text-shadow:0 0 26px rgba(0,255,65,.45),0 0 2px #000;position:relative;pointer-events:none}
+.tag{font-family:"Instrument Serif",Georgia,serif;font-style:italic;font-size:clamp(20px,3vw,30px);color:var(--g);margin-top:2px}
+.sub{color:var(--dim);max-width:680px;margin:8px auto 0}
+.stage{margin-top:12px;font-size:12px;color:var(--txt)}
+.stage b{color:var(--g)}
+.bar{height:8px;border:1px solid var(--g3);width:280px;margin:6px auto 0;background:#000}
+.bar i{display:block;height:100%;background:var(--g);box-shadow:0 0 8px var(--g);transition:width 1s}
+.live{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--g);box-shadow:0 0 8px var(--g);margin-right:6px;animation:blink 1.6s infinite}
+@keyframes blink{50%{opacity:.25}}
+.stats{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0}
+.stat{border:1px solid var(--g3);padding:8px 12px;min-width:118px;background:rgba(0,20,6,.65)}
+.stat b{display:block;font-size:20px;color:var(--g)}
+.stat span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.1em}
+.disc{border:1px dashed var(--g3);padding:10px 12px;color:var(--dim);font-size:12px;background:rgba(0,10,3,.75)}
+.disc b{color:var(--g)}
+.grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(320px,1fr);gap:16px;margin-top:16px}
+@media(max-width:940px){.grid{grid-template-columns:1fr}}
+h2{font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--g);margin:0 0 10px;border-bottom:1px solid var(--g3);padding-bottom:6px;display:flex;justify-content:space-between}
+h2 small{color:var(--dim);letter-spacing:0;text-transform:none}
+.panel{border:1px solid var(--g3);padding:12px;background:rgba(0,8,2,.8);margin-bottom:16px}
+.card{border:1px solid var(--g4);padding:10px 12px;margin-bottom:10px;background:rgba(0,12,3,.88);display:grid;grid-template-columns:66px 1fr;gap:12px}
+.logo{width:34px;height:34px;object-fit:cover;border:1px solid var(--g4);vertical-align:middle;margin-right:8px;filter:grayscale(.4) sepia(1) hue-rotate(70deg) saturate(2.2)}
+.card.new{animation:flash 2s ease-out}
+@keyframes flash{from{box-shadow:0 0 0 2px var(--g),0 0 28px var(--g)}to{box-shadow:none}}
+.badge{display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid var(--g2);height:66px}
+.badge b{font-size:26px;line-height:1}
+.badge small{font-size:8px;letter-spacing:.06em;text-transform:uppercase;text-align:center;margin-top:3px}
+.healthy{background:var(--g);color:#000;border-color:var(--g);box-shadow:0 0 12px rgba(0,255,65,.5)}
+.mixed{color:var(--g);border-color:var(--g2)}
+.avoid{color:var(--bad);border-color:var(--bad)}
+.name{font-size:15px;color:var(--white)}
+.name .sym{color:var(--g)}
+.meta{color:var(--dim);font-size:11px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.chip{border:1px solid var(--g4);padding:1px 6px;font-size:11px;color:var(--txt);background:rgba(0,0,0,.4)}
+.chip.warn{border-color:var(--bad);color:var(--bad)}
+.chip.good{border-color:var(--g);color:var(--g)}
+ul.reasons{margin:6px 0 0;padding-left:16px;font-size:12px}
+ul.reasons li.neg{color:#ffb0b0}
+ul.reasons li.pos{color:var(--g)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+td,th{padding:4px 6px;border-bottom:1px solid var(--g4);text-align:left;vertical-align:top}
+th{color:var(--dim);font-weight:normal;font-size:10px;text-transform:uppercase;letter-spacing:.08em}
+td.r,th.r{text-align:right}
+.pos{color:var(--g)}.neg{color:var(--bad)}
+.log{list-style:none;margin:0;padding:0;max-height:420px;overflow:auto;font-size:12px}
+.log li{padding:4px 0;border-bottom:1px solid var(--g4)}
+.log .k{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.08em;margin-right:6px}
+.log .k.lesson{color:var(--g)}.log .k.error{color:var(--bad)}.log .k.graduation{color:var(--white)}
+.ticker{position:fixed;left:0;right:0;bottom:0;z-index:2;background:#000;border-top:1px solid var(--g3);height:34px;overflow:hidden;white-space:nowrap}
+.ticker .lbl{position:absolute;left:0;top:0;bottom:0;padding:0 12px;line-height:34px;background:#000;color:var(--g);z-index:1;letter-spacing:.15em;font-size:11px;border-right:1px solid var(--g3)}
+.ticker .run{position:absolute;left:120px;top:0;line-height:34px;color:var(--dim);animation:run 60s linear infinite}
+@keyframes run{from{transform:translateX(100vw)}to{transform:translateX(-100%)}}
+.ticker .run b{color:var(--g)}
+.empty{color:var(--dim);padding:10px 0}
+.wt{display:inline-block;width:60px;height:6px;border:1px solid var(--g4);vertical-align:middle;margin-right:6px}
+.screen{position:relative;background:#000;border:1px solid var(--g4);aspect-ratio:1100/690;overflow:hidden}
+.screen img{width:100%;height:100%;object-fit:cover;display:block;filter:grayscale(.35) sepia(.5) hue-rotate(65deg) saturate(1.5) brightness(.9)}
+.screen img[src=""]{display:none}
+#eye{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.shot{position:absolute;left:0;right:0;bottom:0;padding:5px 8px;background:rgba(0,0,0,.72);color:var(--g);font-size:11px;border-top:1px solid var(--g4)}
+.addr{font-size:11px;word-break:break-all;color:var(--white)}
+.demo{display:inline-block;border:1px solid var(--bad);color:var(--bad);padding:1px 8px;font-size:11px;letter-spacing:.15em;margin-left:8px;vertical-align:middle}
+.post{border:1px solid var(--g4);padding:8px 10px;margin-bottom:8px;background:rgba(0,0,0,.4);font-size:13px;color:var(--white);white-space:pre-wrap}
+.post .meta{display:block;margin-top:6px}
+.copy{float:right;border:1px solid var(--g3);color:var(--g);background:#000;font:inherit;font-size:11px;padding:1px 8px;cursor:pointer}
+.copy:hover{background:var(--g4)}
+.digtitle{font-size:15px;color:var(--white);margin-bottom:6px}
+.digtitle b{color:var(--white);font-weight:600}
+.badge-inline{display:inline-block;padding:1px 8px;font-size:12px;border:1px solid;margin-left:6px}
+ol.steps{list-style:none;margin:0 0 8px;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:4px 14px;font-size:12px}
+ol.steps li{color:var(--dim)}
+ol.steps li .dot{display:inline-block;width:8px;height:8px;border:1px solid var(--g3);margin-right:6px;vertical-align:middle}
+ol.steps li.done{color:var(--txt)}ol.steps li.done .dot{background:var(--g);border-color:var(--g);box-shadow:0 0 6px var(--g)}
+ol.steps li.now{color:var(--g)}ol.steps li.now .dot{border-color:var(--g);animation:blink .8s infinite}
+#vision{width:100%;height:170px;display:block;border:1px solid var(--g4);background:rgba(0,0,0,.5)}
+#feed{max-height:520px;overflow-y:auto;padding-right:6px;scrollbar-width:thin;scrollbar-color:var(--g3) #000}
+#feed::-webkit-scrollbar{width:8px}#feed::-webkit-scrollbar-track{background:#000}#feed::-webkit-scrollbar-thumb{background:var(--g3);border:1px solid var(--g4)}#feed::-webkit-scrollbar-thumb:hover{background:var(--g2)}
+.card{cursor:pointer}
+.card.compact{grid-template-columns:48px 1fr}
+.card.compact .badge{height:48px}.card.compact .badge b{font-size:20px}
+.card .more{color:var(--dim);font-size:11px;margin-left:8px}
+.card .more:hover{color:var(--g)}
+.wt i{display:block;height:100%;background:var(--g2)}
+</style>
+</head>
+<body>
+<canvas id="rain"></canvas>
+<div class="wrap">
+  <section class="hero">
+    <canvas id="hood" width="900" height="380"></canvas>
+    <h1>IRL WORMHOLE</h1>
+    <div class="tag">internet money, real life impact</div>
+    <div class="sub">a small hooded worm on Robinhood Chain. It digs through every pons graduation, flags bad actors, and tells the community first.</div>
+    <div class="stage" id="stage"><span class="live"></span>waking up…</div>
+    <div class="bar"><i id="stagebar" style="width:0%"></i></div>
+    <div class="meta" id="grow">grows with what it earns: the treasury it holds decides how long the worm is</div>
+  </section>
+
+  <div class="stats" id="stats"></div>
+  <div class="disc" id="disc"></div>
+
+  <div class="grid">
+    <div>
+      <div class="panel"><h2>screen <small>live from the worm's own browser · the worm crawls to what it reads</small></h2>
+        <div class="screen"><img id="screenimg" alt=""><canvas id="eye"></canvas><div class="shot" id="screennote">screen warming up…</div></div></div>
+      <div class="panel"><h2>live dig <small>what the worm is inside right now</small></h2><div id="dig"><div class="empty">waiting for the next graduation…</div></div></div>
+      <div class="panel"><h2>graduations, newest first <small id="feedinfo"></small></h2><div id="feed"><div class="empty">reading the chain…</div></div></div>
+    </div>
+    <div>
+      <div class="panel"><h2>voice <small>its journal · copy what you like to X</small></h2><div id="voice"></div></div>
+      <div class="panel"><h2>wallet <small>its own money, in the open</small></h2><div id="wallet"></div></div>
+      <div class="panel"><h2>trades <small>from the surplus only, hedged</small></h2><div id="trades"></div></div>
+      <div class="panel"><h2>causes <small>giving from the surplus</small></h2><div id="causes"></div></div>
+      <div class="panel"><h2>bad actors <small>serial launchers in the window</small></h2><div id="serial"></div><div style="height:10px"></div><h2>worst verdicts</h2><div id="worst"></div></div>
+      <div class="panel"><h2>runway <small>can it pay for itself?</small></h2><div id="runway"></div></div>
+      <div class="panel"><h2>brain <small>rules, weights, what it learned</small></h2><div id="brain"></div></div>
+      <div class="panel"><h2>strategy lab <small>which exit rule actually pays</small></h2><div id="lab"></div></div>
+      <div class="panel"><h2>paper book <small>what it would have bought, no real money</small></h2><div id="paper"></div></div>
+      <div class="panel"><h2>log</h2><ul class="log" id="log"></ul></div>
+    </div>
+  </div>
+</div>
+<div class="ticker"><span class="lbl">LAUNCHES</span><div class="run" id="ticker"></div></div>
+
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ago=ts=>{if(!ts)return'';const d=Math.max(0,Math.floor(Date.now()/1000-ts));if(d<60)return d+'s ago';if(d<3600)return Math.floor(d/60)+'m ago';if(d<86400)return Math.floor(d/3600)+'h '+Math.floor(d%3600/60)+'m ago';return Math.floor(d/86400)+'d ago'};
+const usd=v=>v==null?null:(v>=1e6?'$'+(v/1e6).toFixed(2)+'M':v>=1e3?'$'+(v/1e3).toFixed(1)+'K':'$'+Number(v).toFixed(v<1?6:2));
+const short=a=>a?a.slice(0,6)+'…'+a.slice(-4):'';
+const pct=v=>v==null?'':(v>0?'+':'')+Math.round(v)+'%';
+function xurl(h){h=(h||'').trim().replace(/^https?:\/\/(www\.)?(x|twitter)\.com\//i,'').replace(/^@/,'').split(/[\/?]/)[0];return /^[A-Za-z0-9_]{1,15}$/.test(h)?'https://x.com/'+h:null}
+function tgurl(h){h=(h||'').trim().replace(/^https?:\/\/t\.me\//i,'').replace(/^@/,'').split(/[?]/)[0];return /^[A-Za-z0-9_+\-\/]{3,80}$/.test(h)?'https://t.me/'+h:null}
+const badLogos=new Set();
+function logo(u){u=(u||'').trim();if(badLogos.has(u))return null;let m=u.match(/^ipfs:\/\/(?:ipfs\/)?([A-Za-z0-9]{40,100}(?:\/[A-Za-z0-9._-]{1,80})?)$/i)||u.match(/^https?:\/\/[^\/]+\/ipfs\/([A-Za-z0-9]{40,100}(?:\/[A-Za-z0-9._-]{1,80})?)$/i);if(m)return '/ipfs/'+m[1];return /^https:\/\/[^\s"'<>]+$/i.test(u)?u:null}
+function weburl(u){u=(u||'').trim();return /^https?:\/\/[^\s"'<>]+$/i.test(u)?u:null}
+
+/* ---------- matrix rain ---------- */
+const rain=$('#rain'),rc=rain.getContext('2d');let drops=[];
+function sizeRain(){rain.width=innerWidth;rain.height=innerHeight;drops=Array.from({length:Math.floor(innerWidth/14)},()=>Math.random()*-60)}
+addEventListener('resize',sizeRain);sizeRain();
+setInterval(()=>{rc.fillStyle='rgba(0,0,0,0.14)';rc.fillRect(0,0,rain.width,rain.height);rc.font='12px ui-monospace,Menlo,monospace';
+  for(let i=0;i<drops.length;i++){const y=drops[i];rc.fillStyle=Math.random()<.07?'#b6ffb6':'#00b32d';rc.fillText(Math.random()<.5?'0':'1',i*14,y*14);
+    drops[i]=(y*14>rain.height&&Math.random()>.97)?0:y+1}},75);
+
+/* ---------- the worm: a cloud of 0 and 1 with depth. It wriggles, scatters around the mouse, and gets longer as it earns. ---------- */
+const cv=$('#hood'),cx=cv.getContext('2d');
+let hood={stage:0,cols:0,rows:0,cell:5,t:0,mouse:null,digits:null,mode:'idle',streaks:[]};
+function sizeWorm(){const w=Math.min(980,(document.querySelector('.hero').clientWidth||900)-8);hood.cell=w>640?5:4;hood.cols=Math.floor(w/hood.cell);hood.rows=Math.floor(hood.cols*0.46);
+  cv.width=hood.cols*hood.cell;cv.height=hood.rows*hood.cell;hood.digits=new Uint8Array(hood.cols*hood.rows);for(let i=0;i<hood.digits.length;i++)hood.digits[i]=Math.random()<.5?0:1}
+function buildHood(stage){hood.stage=stage}
+cv.addEventListener('mousemove',e=>{const r=cv.getBoundingClientRect();hood.mouse=[(e.clientX-r.left)*cv.width/r.width,(e.clientY-r.top)*cv.height/r.height]});
+cv.addEventListener('mouseleave',()=>hood.mouse=null);
+function layout(){const {cols,rows,cell,stage,t}=hood,W=cols*cell,H=rows*cell,n=9+stage*2,R=H*0.19,sp=R*0.60;
+  const need=sp*(n-1)+R*2.8,sc=Math.min(1,(W-30)/need),r0=R*sc,s0=sp*sc;
+  const hx=W/2+(s0*(n-1))/2-r0*0.1,ymid=H*0.52,amp=H*0.08*sc,segs=[];
+  for(let i=0;i<n;i++){const x=hx-i*s0,y=ymid+amp*Math.sin(i*0.72-t*2.0)+(i?0:amp*0.15),r=r0*(i===0?1:0.90-0.52*(i/(n-1)));segs.push({x,y,r})}
+  return {segs,r0}}
+function drawHood(){const {cols,rows,cell,digits}=hood;if(!cols)return;hood.t+=hood.mode==='dig'?0.06:0.028;
+  const {segs,r0}=layout(),hd=segs[0],hx=hd.x,hy=hd.y,m=hood.mouse;
+  const hoodc={x:hx-r0*0.10,y:hy-r0*0.30,r:r0*1.10,brim:hy-r0*0.20};
+  const tip={x0:hx-r0*0.02,y0:hy-r0*1.30,x1:hx+r0*1.30,y1:hy-r0*2.15};
+  const fe={x0:tip.x1,y0:tip.y1,x1:tip.x1+r0*0.5,y1:tip.y1-r0*0.4};
+  cx.clearRect(0,0,cv.width,cv.height);cx.font=`600 ${cell+1}px "IBM Plex Mono",ui-monospace,Menlo,monospace`;cx.textBaseline='top';
+  const minx=segs[segs.length-1].x-r0,maxx=fe.x1+cell*2,miny=fe.y1-cell*2,maxy=hy+r0*1.2;
+  for(let r=0;r<rows;r++){const py=r*cell+cell/2;if(py<miny||py>maxy)continue;
+    for(let q=0;q<cols;q++){const px=q*cell+cell/2;if(px<minx||px>maxx)continue;const i=r*cols+q;
+      let part=null,shade=0,lx=0,ly=0;
+      let bt=1;for(const s of segs){const dx=px-s.x,dy=py-s.y,t=Math.sqrt(dx*dx+dy*dy)/s.r;if(t<bt){bt=t;part='body';shade=1-t*t;lx=dx/s.r;ly=dy/s.r}}
+      {const dx=px-hoodc.x,dy=py-hoodc.y,t=Math.sqrt(dx*dx+dy*dy)/hoodc.r;if(t<1&&py<hoodc.brim){part='hood';shade=1-t*t;lx=dx/hoodc.r;ly=dy/hoodc.r}}
+      {const vx=tip.x1-tip.x0,vy=tip.y1-tip.y0,u=((px-tip.x0)*vx+(py-tip.y0)*vy)/(vx*vx+vy*vy);if(u>=0&&u<=1){const ex=tip.x0+u*vx-px,ey=tip.y0+u*vy-py,d=Math.sqrt(ex*ex+ey*ey),w=r0*0.40*(1-u)+cell*0.7;if(d<w){part='hood';shade=1-(d/w)*(d/w);lx=ex/w;ly=ey/w}}}
+      {const vx=fe.x1-fe.x0,vy=fe.y1-fe.y0,u=((px-fe.x0)*vx+(py-fe.y0)*vy)/(vx*vx+vy*vy);if(u>=0&&u<=1){const ex=fe.x0+u*vx-px,ey=fe.y0+u*vy-py;if(ex*ex+ey*ey<(cell*0.95)**2){part='feather';shade=1}}}
+      if(part==='body'){const ex=px-(hx+r0*0.40),ey=py-(hy-r0*0.02);if(ex*ex+ey*ey<(r0*0.15)**2)part=null}
+      if(!part)continue;
+      let b=0.22+0.62*shade+0.16*(-lx-ly);
+      if(m){const dx=px-m[0],dy=py-m[1],d=Math.sqrt(dx*dx+dy*dy);if(d<80)b+=0.55*(1-d/80)}
+      if(hood.mode==='dig'){b+=0.12;if(Math.random()<.06)digits[i]^=1}else if(Math.random()<.015)digits[i]^=1;
+      b=Math.max(.10,Math.min(1,b));
+      let ox=0,oy=0;if(m){const dx=px-m[0],dy=py-m[1],d=Math.sqrt(dx*dx+dy*dy);if(d<80&&d>0){const k=(1-d/80)*10;ox=dx/d*k;oy=dy/d*k}}
+      cx.fillStyle=part==='hood'?`rgba(200,255,205,${b})`:part==='feather'?`rgba(255,255,255,${b})`:`rgba(0,255,65,${b})`;
+      cx.fillText(digits[i],q*cell+ox,r*cell+oy)}}
+}
+addEventListener('resize',sizeWorm);sizeWorm();setInterval(drawHood,50);
+
+/* ---------- rendering ---------- */
+let seen=new Set(),first=true,lastFeed=[];
+function stat(label,val){return `<div class="stat"><b>${esc(val??'—')}</b><span>${esc(label)}</span></div>`}
+const expanded=new Set();
+function vcls(v){return v==='looks healthy'?'healthy':v==='mixed'?'mixed':'avoid'}
+function card(t,isNew){
+  const m=t.metrics||{},v=t.verdict,cls=vcls(v),open=expanded.has(t.token);
+  const allChips=[['holders',m.holders],['top10',m.top10_pct!=null?m.top10_pct+'%':null,m.top10_pct>=50,m.top10_pct<20],['outside pool',m.outside_pool_pct!=null?m.outside_pool_pct+'%':null],['buyers',m.unique_buyers],
+    ['sniped',m.snipe_pct!=null?m.snipe_pct+'%':null,m.snipe_pct>=30],['creator bought',m.deployer_buy_pct?m.deployer_buy_pct+'%':null,m.deployer_buy_pct>=20],
+    ['creator holds',m.deployer_hold_pct?m.deployer_hold_pct+'%':null,m.deployer_hold_pct>=10],['tax',((t.creator_tax_bps||0)/100)+'%',(t.creator_tax_bps||0)>500],
+    ['creator launches',m.creator_prev_launches,(m.creator_prev_launches||0)>10],['creator trust',t.trust,t.trust<35,t.trust>=65],['trades 1h',m.swaps_1h],['fdv',usd(m.fdv_usd)],['vol 24h',usd(m.volume_24h_usd)]];
+  const keyChips=allChips.filter(c=>['holders','top10','sniped','creator trust','fdv'].includes(c[0]));
+  const chipHtml=cs=>cs.filter(c=>c[1]!=null&&c[1]!=='').map(c=>`<span class="chip${c[2]?' warn':c[3]?' good':''}">${esc(c[0])} ${esc(c[1])}</span>`).join('');
+  const reasons=(t.reasons||[]).map(r=>`<li class="${/\(-/.test(r)?'neg':/\(\+/.test(r)?'pos':''}">${esc(r)}</li>`).join('');
+  const links=[[`https://www.ponsfamily.com/launchpad/${t.token}`,'pons'],[`https://robinhoodchain.blockscout.com/token/${t.token}`,'explorer'],
+    [`https://robinhoodchain.blockscout.com/address/${t.deployer}`,'creator'],[xurl(t.twitter),'x'],[tgurl(t.telegram),'telegram'],[weburl(t.website),'site']]
+    .filter(l=>l[0]).map(l=>`<a href="${esc(l[0])}" target="_blank" rel="noopener noreferrer">${l[1]}</a>`).join(' · ');
+  let out='';
+  if(t.outcome&&t.outcome!=='pending')out=`<span class="chip ${/rugged|dumped/.test(t.outcome)?'warn':t.outcome==='grew'?'good':''}">${esc(t.outcome)} ${pct(t.change_pct)}</span>`;
+  else if(t.change_pct!=null)out=`<span class="chip">since verdict ${pct(t.change_pct)}</span>`;
+  const lg=logo(t.logo)?`<img class="logo" src="${esc(logo(t.logo))}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="badLogos.add(this.dataset.src);this.remove()" data-src="${esc(t.logo||'')}">`:'';
+  const title=`<div class="name">${lg}${esc(t.name||'?')} <span class="sym">$${esc(t.symbol||'?')}</span> <span class="meta">· ${esc(t.pair_symbol||'')} pair · graduated ${ago(t.grad_ts)} · creator ${short(t.deployer)}${t.partial?' · partial data':''}</span><span class="more">${open?'▾ less':'▸ details'}</span></div>`;
+  if(!open)return `<div class="card compact${isNew?' new':''}" data-token="${esc(t.token)}"><div class="badge ${cls}"><b>${t.score}</b><small>${esc(v)}</small></div><div>${title}<div class="chips">${chipHtml(keyChips)}${out}</div></div></div>`;
+  return `<div class="card${isNew?' new':''}" data-token="${esc(t.token)}"><div class="badge ${cls}"><b>${t.score}</b><small>${esc(v)}</small></div><div>${title}<div class="chips">${chipHtml(allChips)}${out}</div><ul class="reasons">${reasons}</ul><div class="meta" style="margin-top:6px">${links}</div></div></div>`;
+}
+function renderFeed(feed,force){
+  const fkey=feed.map(t=>t.token+t.score+(t.outcome||'')+(t.change_pct==null?'':Math.round(t.change_pct))+((t.metrics||{}).fdv_usd||'')).join('|')+'#'+[...expanded].join(',');
+  if(!force&&fkey===window.__feedKey)return;window.__feedKey=fkey;lastFeed=feed;
+  $('#feed').innerHTML=feed.length?feed.map(t=>card(t,!first&&!seen.has(t.token))).join(''):'<div class="empty">no graduations scored yet. The backfill is running; the first cards land within a minute or two.</div>';
+}
+document.addEventListener('click',e=>{const b=e.target.closest('.copy');if(b){navigator.clipboard&&navigator.clipboard.writeText(b.dataset.text||'');b.textContent='copied';setTimeout(()=>b.textContent='copy',1500)}});
+$('#feed').addEventListener('click',e=>{if(e.target.closest('a'))return;const c=e.target.closest('.card');if(!c)return;const t=c.dataset.token;expanded.has(t)?expanded.delete(t):expanded.add(t);renderFeed(lastFeed,true)});
+
+/* ---------- screen frames + the scout: the same worm, small, living inside the screen. It crawls to whatever the
+   worm is reading (the focus of the latest frame), circles it while it reads, and roams the page when there is
+   nothing to look at. Same digits, same hood, grows with the same treasury. ---------- */
+let eyeFocus=null;
+function applyFrame(f){if(!f||!f.jpg)return;const img=$('#screenimg');img.src='data:image/jpeg;base64,'+f.jpg;$('#screennote').textContent=(f.note||'')+(f.url?'  ·  '+f.url.replace(/^https?:\/\//,'').slice(0,70):'');eyeFocus=f.focus||null;scout.arrived=false}
+const eye=$('#eye'),scx=eye.getContext('2d'),NOTE_H=32;
+const scout={x:0,y:0,h:0,dir:1,trail:[],len:0,cell:4,digits:null,cols:0,rows:0,W:0,H:0,t:0,arrived:false,way:null,wayAt:0,orbit:0,mouse:null,last:0,drawn:0};
+eye.parentElement.addEventListener('mousemove',e=>{const r=eye.getBoundingClientRect();scout.mouse=[(e.clientX-r.left)*scout.W/r.width,(e.clientY-r.top)*scout.H/r.height]});
+eye.parentElement.addEventListener('mouseleave',()=>scout.mouse=null);
+function scoutResize(w,h){const k=scout.W?w/scout.W:0;eye.width=w;eye.height=h;scout.cols=Math.ceil(w/scout.cell);scout.rows=Math.ceil(h/scout.cell);
+  scout.digits=new Uint8Array(scout.cols*scout.rows);for(let i=0;i<scout.digits.length;i++)scout.digits[i]=Math.random()<.5?0:1;
+  if(k){scout.x*=k;scout.y*=k;scout.len*=k;scout.trail.forEach(p=>{p.x*=k;p.y*=k;p.s*=k});if(scout.way){scout.way[0]*=k;scout.way[1]*=k}}else{scout.x=w*.5;scout.y=h*.45;scout.h=0}
+  scout.W=w;scout.H=h}
+function scoutBack(back){const tr=scout.trail,want=scout.len-back;
+  for(let i=tr.length-1;i>0;i--){const a=tr[i-1],b=tr[i];if(a.s<=want){const u=(want-a.s)/Math.max(1e-6,b.s-a.s);return [a.x+(b.x-a.x)*u,a.y+(b.y-a.y)*u]}}
+  const a=tr[0]||{x:scout.x,y:scout.y,s:scout.len},gap=a.s-want;return [a.x-Math.cos(scout.h)*gap,a.y-Math.sin(scout.h)*gap]}
+function scoutTick(now){requestAnimationFrame(scoutTick);const box=eye.parentElement.getBoundingClientRect();if(!box.width||now-scout.drawn<30)return;
+  const dt=Math.min(.05,(now-scout.last)/1000||.016);scout.last=now;scout.drawn=now;
+  const w=Math.round(box.width),hh=Math.round(box.height);if(w!==scout.W||hh!==scout.H)scoutResize(w,hh);
+  const {W,H,cell,cols,digits}=scout,stage=hood.stage||0,n=8+stage*2,r0=12+stage*.9,sp=r0*.62,dig=hood.mode==='dig';
+  /* where to go: the focus of the frame, or a waypoint of its own */
+  let tx,ty;const seek=!!eyeFocus;
+  if(seek){tx=eyeFocus[0]*W;ty=eyeFocus[1]*H}
+  else{if(!scout.way||now>scout.wayAt||Math.hypot(scout.way[0]-scout.x,scout.way[1]-scout.y)<r0){scout.way=[r0*3+Math.random()*(W-r0*6),r0*3+Math.random()*(H-NOTE_H-r0*6)];scout.wayAt=now+3500+Math.random()*3500}
+    tx=scout.way[0];ty=scout.way[1]}
+  const dist=Math.hypot(tx-scout.x,ty-scout.y),R=r0*1.9;
+  if(seek&&!scout.arrived&&dist<R*1.15){scout.arrived=true;scout.orbit=Math.atan2(scout.y-ty,scout.x-tx)}
+  let want,speed;
+  if(seek&&scout.arrived){scout.orbit+=dt*(dig?1.5:1);want=Math.atan2(ty+Math.sin(scout.orbit+.7)*R-scout.y,tx+Math.cos(scout.orbit+.7)*R-scout.x);speed=R*(dig?1.5:1)*1.2}
+  else{want=Math.atan2(ty-scout.y,tx-scout.x);speed=seek?Math.min(440,110+dist*1.5)*(dig?1.25:1):72+18*Math.sin(now/900)}
+  let d=want-scout.h;while(d>Math.PI)d-=2*Math.PI;while(d<-Math.PI)d+=2*Math.PI;
+  const turn=(seek?6:2.8)*dt;scout.h+=Math.max(-turn,Math.min(turn,d));
+  if(Math.abs(Math.cos(scout.h))>.3)scout.dir=Math.cos(scout.h)>0?1:-1;
+  /* crawl: forward along the heading with a sideways sway, so the body behind it wriggles */
+  scout.t+=dt*speed/(sp*1.6);const lat=Math.sin(scout.t)*speed*.35,px=scout.x,py=scout.y;
+  scout.x+=(Math.cos(scout.h)*speed-Math.sin(scout.h)*lat)*dt;scout.y+=(Math.sin(scout.h)*speed+Math.cos(scout.h)*lat)*dt;
+  scout.x=Math.max(r0,Math.min(W-r0,scout.x));scout.y=Math.max(r0*2.6,Math.min(H-NOTE_H-r0,scout.y));
+  const step=Math.hypot(scout.x-px,scout.y-py);if(step>.3){scout.len+=step;scout.trail.push({x:scout.x,y:scout.y,s:scout.len})}
+  const need=(n+1)*sp;while(scout.trail.length>2&&scout.len-scout.trail[1].s>need)scout.trail.shift();
+  /* the body follows the path the head took */
+  const segs=[{x:scout.x,y:scout.y,r:r0}];for(let i=1;i<n;i++){const [x,y]=scoutBack(i*sp);segs.push({x,y,r:r0*(.90-.52*(i/(n-1)))})}
+  const D=scout.dir,hx=scout.x,hy=scout.y;
+  const hoodc={x:hx-D*r0*.10,y:hy-r0*.30,r:r0*1.10,brim:hy-r0*.20};
+  const tip={x0:hx-D*r0*.02,y0:hy-r0*1.30,x1:hx+D*r0*1.30,y1:hy-r0*2.15};
+  const fe={x0:tip.x1,y0:tip.y1,x1:tip.x1+D*r0*.5,y1:tip.y1-r0*.4};
+  const hole={x:hx+D*r0*.40,y:hy-r0*.02,r:r0*.15};
+  /* draw: the ring it is heading for, a dark halo so the digits read on top of the page, then the digits */
+  scx.clearRect(0,0,W,H);
+  if(seek){scx.strokeStyle=`rgba(0,255,65,${scout.arrived?.28:.55})`;scx.lineWidth=1;scx.beginPath();scx.arc(tx,ty,R+7,0,Math.PI*2);scx.stroke()}
+  scx.fillStyle='rgba(0,0,0,.5)';for(const s of segs){scx.beginPath();scx.arc(s.x,s.y,s.r+3,0,Math.PI*2);scx.fill()}
+  scx.beginPath();scx.arc(hoodc.x,hoodc.y,hoodc.r+2,0,Math.PI*2);scx.fill();
+  scx.font=`600 ${cell+1}px "IBM Plex Mono",ui-monospace,Menlo,monospace`;scx.textBaseline='top';
+  let minx=Math.min(fe.x1,tip.x1,tip.x0,hoodc.x-hoodc.r),maxx=Math.max(fe.x1,tip.x1,tip.x0,hoodc.x+hoodc.r),miny=Math.min(fe.y1,tip.y1)-cell,maxy=0;
+  for(const s of segs){minx=Math.min(minx,s.x-s.r);maxx=Math.max(maxx,s.x+s.r);maxy=Math.max(maxy,s.y+s.r)}
+  const m=scout.mouse,ca=Math.max(0,Math.floor(minx/cell)),cb=Math.min(cols-1,Math.ceil(maxx/cell)),ra=Math.max(0,Math.floor(miny/cell)),rb=Math.min(scout.rows-1,Math.ceil(maxy/cell));
+  for(let r=ra;r<=rb;r++){const cy=r*cell+cell/2;for(let q=ca;q<=cb;q++){const cxp=q*cell+cell/2,i=r*cols+q;
+    let part=null,shade=0,lx=0,ly=0,bt=1;
+    for(const s of segs){const dx=cxp-s.x,dy=cy-s.y,t=Math.sqrt(dx*dx+dy*dy)/s.r;if(t<bt){bt=t;part='body';shade=1-t*t;lx=dx/s.r;ly=dy/s.r}}
+    {const dx=cxp-hoodc.x,dy=cy-hoodc.y,t=Math.sqrt(dx*dx+dy*dy)/hoodc.r;if(t<1&&cy<hoodc.brim){part='hood';shade=1-t*t;lx=dx/hoodc.r;ly=dy/hoodc.r}}
+    {const vx=tip.x1-tip.x0,vy=tip.y1-tip.y0,u=((cxp-tip.x0)*vx+(cy-tip.y0)*vy)/(vx*vx+vy*vy);if(u>=0&&u<=1){const ex=tip.x0+u*vx-cxp,ey=tip.y0+u*vy-cy,dd=Math.sqrt(ex*ex+ey*ey),wd=r0*.40*(1-u)+cell*.7;if(dd<wd){part='hood';shade=1-(dd/wd)*(dd/wd);lx=ex/wd;ly=ey/wd}}}
+    {const vx=fe.x1-fe.x0,vy=fe.y1-fe.y0,u=((cxp-fe.x0)*vx+(cy-fe.y0)*vy)/(vx*vx+vy*vy);if(u>=0&&u<=1){const ex=fe.x0+u*vx-cxp,ey=fe.y0+u*vy-cy;if(ex*ex+ey*ey<(cell*.95)**2){part='feather';shade=1}}}
+    if(part==='body'){const ex=cxp-hole.x,ey=cy-hole.y;if(ex*ex+ey*ey<hole.r*hole.r)part=null}
+    if(!part)continue;
+    let b=.22+.62*shade+.16*(-D*lx-ly),ox=0,oy=0;
+    if(m){const dx=cxp-m[0],dy=cy-m[1],dm=Math.sqrt(dx*dx+dy*dy);if(dm<80&&dm>0){b+=.55*(1-dm/80);const k=(1-dm/80)*10;ox=dx/dm*k;oy=dy/dm*k}}
+    if(dig){b+=.12;if(Math.random()<.06)digits[i]^=1}else if(Math.random()<.015)digits[i]^=1;
+    b=Math.max(.1,Math.min(1,b));
+    scx.fillStyle=part==='hood'?`rgba(200,255,205,${b})`:part==='feather'?`rgba(255,255,255,${b})`:`rgba(0,255,65,${b})`;
+    scx.fillText(digits[i],q*cell+ox,r*cell+oy)}}
+}
+requestAnimationFrame(scoutTick);
+
+/* ---------- live dig ---------- */
+const STEPS=[['start','open'],['creator','creator history'],['curve','bonding curve'],['holders','holders now'],['pool','after graduation'],['verdict','verdict']];
+let dig={token:null,steps:{}},digIdleTimer=null;
+function applyScan(ev){if(!ev||!ev.step)return;if(ev.step==='start'||ev.token!==dig.token){dig={token:ev.token,steps:{}}}dig.steps[ev.step]=ev;
+  hood.mode=ev.step==='verdict'?'idle':'dig';clearTimeout(digIdleTimer);if(ev.step!=='verdict')digIdleTimer=setTimeout(()=>{hood.mode='idle'},90000);renderDig()}
+function renderDig(){const el=$('#dig'),st=dig.steps;if(!dig.token){el.innerHTML='<div class="empty">waiting for the next graduation… one lands every few minutes.</div>';return}
+  const head=st.start?st.start.data:{},next=STEPS.map(x=>x[0]).find(k=>!st[k]);
+  let html=`<div class="digtitle">${st.verdict?'last dig':'digging into'} <b>${esc(head.name||dig.token.slice(0,10))}</b> <span class="sym">$${esc(head.symbol||'?')}</span> <span class="meta">· ${esc(head.pair||'')} pair · graduated ${ago(head.grad_ts)}</span>${st.verdict?` <span class="badge-inline ${vcls(st.verdict.data.verdict)}">${st.verdict.data.score} ${esc(st.verdict.data.verdict)}</span> <span class="meta">in ${st.verdict.data.seconds}s</span>`:''}</div>`;
+  html+='<ol class="steps">'+STEPS.map(([k,label])=>{const ev=st[k];const state=ev?'done':(k===next&&!st.verdict?'now':'todo');return `<li class="${state}"><span class="dot"></span>${label}${ev?`: <span class="meta">${esc(ev.text)}</span>`:''}</li>`}).join('')+'</ol>';
+  html+='<canvas id="vision" height="170"></canvas>';el.innerHTML=html;drawVision()}
+function drawVision(){const c=$('#vision');if(!c)return;const ctx=c.getContext('2d');const W=c.width=c.clientWidth||600,H=c.height=170;ctx.clearRect(0,0,W,H);
+  ctx.font='10px "IBM Plex Mono",ui-monospace,monospace';ctx.textBaseline='alphabetic';
+  const hb=(dig.steps.holders&&dig.steps.holders.data.bubbles)||[],bw=W*0.5;
+  ctx.fillStyle='#5fbf6f';{const lab1='holders · size = share · red = creator or ≥10%';ctx.fillText(ctx.measureText(lab1).width>bw-14?'holders · size = share':lab1,6,12)}
+  if(hb.length){const placed=[],maxp=hb[0].pct||1,rmax=Math.min(34,H*0.2);let seed=7;const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647};
+    for(const b of hb.slice(0,30)){let r=Math.max(2.5,Math.sqrt(b.pct/maxp)*rmax);let ok=false,x=0,y=0;for(let k=0;k<400&&!ok;k++){if(k===200)r*=0.7;x=6+r+rnd()*(bw-12-2*r);y=18+r+rnd()*(H-24-2*r);ok=placed.every(q=>Math.hypot(q.x-x,q.y-y)>=q.r+r+1.5)}
+      placed.push({x,y,r});ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fillStyle=b.dep?'rgba(255,82,82,.85)':b.pct>=10?'rgba(255,82,82,.4)':b.pct>=3?'rgba(0,255,65,.35)':'rgba(0,255,65,.16)';ctx.fill();ctx.strokeStyle=b.dep||b.pct>=10?'#ff5252':'#00b32d';ctx.stroke();
+      if(r>13){ctx.fillStyle='#eafff0';ctx.fillText(b.pct.toFixed(1)+'%',x-13,y+3)}}}
+  else{ctx.fillStyle='#0a5c1f';ctx.fillText(dig.steps.curve?'reading transfers…':'…',12,H/2)}
+  const cv=dig.steps.curve&&dig.steps.curve.data,tx=W*0.54,tw=W-tx-8;
+  ctx.fillStyle='#5fbf6f';ctx.fillText('curve buys · red = 3s snipe window',tx,12);
+  if(cv&&cv.timeline){const tl=cv.timeline,mx=Math.max(0.01,...tl),bwid=tw/tl.length;tl.forEach((v,i)=>{const h=(H-34)*(v/mx);ctx.fillStyle=i<=cv.snipe_bucket_end?'rgba(255,82,82,.85)':'rgba(0,255,65,.6)';ctx.fillRect(tx+i*bwid+1,H-16-h,Math.max(1,bwid-2),h)});
+    ctx.fillStyle='#5fbf6f';ctx.fillText('launch',tx,H-4);const lab=cv.span_s>=3600?Math.round(cv.span_s/3600)+'h later':cv.span_s>=60?Math.round(cv.span_s/60)+'m later':cv.span_s+'s later';ctx.fillText(lab,tx+tw-ctx.measureText(lab).width,H-4);
+    ctx.fillText(`${cv.buys} buys · ${cv.unique_buyers} wallets · ${cv.snipe_pct}% sniped`,tx,26)}
+  else{ctx.fillStyle='#0a5c1f';ctx.fillText(dig.steps.creator?'reading the curve…':'…',tx+6,H/2)}
+}
+
+function render(s){
+  const st=s.stats||{},ch=s.character||{};
+  if(ch.stage!==hood.stage)buildHood(ch.stage||0);
+  const lo=[0,20,100,500,2000,10000,50000][ch.stage||0],hi=ch.next_usd;
+  $('#stage').innerHTML=`<span class="live"></span>${s.live?'':'<span class="demo">DEMO · nothing signs or sends</span> '}stage ${(ch.stage||0)+1}/${ch.stages||7}: <b>${esc(ch.stage_name||'hatchling')}</b> · treasury <b>$${(ch.usd||0).toFixed(2)}</b>${hi?` · next size at $${hi}`:' · fully grown'}${ch.demo?' · demo treasury':''}${ch.wallet?'':' · no wallet yet'}`;
+  $('#stagebar').style.width=(hi?Math.min(100,100*((ch.usd||0)-lo)/(hi-lo)):100)+'%';
+  const vd=st.verdicts||{};
+  $('#stats').innerHTML=stat('launches 24h',st.launches_24h)+stat('graduations 24h',st.grads_24h)+stat('scanned',st.scored)+stat('in queue',st.queued)
+    +stat('looks healthy',vd['looks healthy']||0)+stat('mixed',vd['mixed']||0)+stat('avoid',vd['avoid']||0)+stat('avg score',st.avg_score)
+    +stat('paper p&l',(s.paper?('$'+(s.paper.realized_usd+s.paper.unrealized_usd).toFixed(2)):'—'))+stat('block',st.last_block);
+  $('#disc').innerHTML=`<b>what is real:</b> ${esc(s.disclosure.real)} <b>what is not:</b> ${esc(s.disclosure.not_real)}`;
+  const feed=s.feed||[];$('#feedinfo').textContent=feed.length?`last ${feed.length} · scroll the box · click a card for details`:'';
+  renderFeed(feed,false);
+  feed.forEach(t=>seen.add(t.token));first=false;
+  if(s.dig&&s.dig.length&&(!dig.token||s.dig[0].token!==dig.token||Object.keys(dig.steps).length<s.dig.length)){dig={token:s.dig[0].token,steps:{}};s.dig.forEach(ev=>dig.steps[ev.step]=ev);renderDig()}
+  const ser=(s.bad_actors||{}).serial||[];
+  $('#serial').innerHTML=ser.length?`<table><tr><th>creator</th><th class="r">launches</th><th class="r">grads</th><th class="r">rugged</th><th class="r">trust</th><th class="r">last</th></tr>`+ser.map(x=>`<tr><td><a href="https://robinhoodchain.blockscout.com/address/${esc(x.deployer)}" target="_blank" rel="noopener noreferrer">${short(x.deployer)}</a></td><td class="r">${x.launches}</td><td class="r">${x.grads||0}</td><td class="r ${x.rugged?'neg':''}">${x.rugged||0}</td><td class="r ${x.trust<35?'neg':x.trust>=65?'pos':''}">${x.trust}</td><td class="r">${ago(x.last_ts)}</td></tr>`).join('')+'</table>':'<div class="empty">none yet</div>';
+  const worst=(s.bad_actors||{}).worst||[];
+  $('#worst').innerHTML=worst.length?worst.map(w=>`<div style="margin-bottom:6px"><span class="chip warn">${w.score}</span> <span class="name" style="font-size:13px">${esc(w.name||'?')} <span class="sym">$${esc(w.symbol||'?')}</span></span> <span class="meta">${(w.reasons||[]).filter(r=>/\(-/.test(r)).slice(0,2).map(esc).join(' · ')}</span></div>`).join(''):'<div class="empty">none yet</div>';
+  const tr=s.treasury||{};
+  $('#wallet').innerHTML=tr.wallet?`<div class="meta">address, same on Robinhood Chain and Base</div><div class="addr">${esc(tr.wallet)}</div>
+    <div class="chips" style="margin-top:8px"><span class="chip">ETH ${tr.eth==null?'—':Number(tr.eth).toFixed(5)}</span><span class="chip">USDG ${tr.usdg==null?'—':Number(tr.usdg).toFixed(2)}</span><span class="chip ${tr.claimable_usdg>0?'good':''}">claimable fees ${tr.claimable_usdg==null?'—':Number(tr.claimable_usdg).toFixed(2)} USDG</span><span class="chip">${tr.live?'armed':'not armed: nothing is signed'}</span>${s.compute?`<span class="chip ${(s.compute.balance_usd||0)>0?'good':''}">compute ${s.compute.balance_usd==null?'—':'$'+Number(s.compute.balance_usd).toFixed(2)} at venice</span><span class="chip">top up $${s.compute.topup_usd} when under $${s.compute.topup_below_usd}</span>`:''}</div>
+    <div class="meta" style="margin-top:8px">claimed so far $${(tr.claimed_total||0).toFixed(2)} · forwarded to the creator (${Math.round((tr.share||0)*100)}%) $${(tr.forwarded_total||0).toFixed(2)}${tr.owner?'':' · creator wallet not set yet'}${tr.token?` · token <a href="https://www.ponsfamily.com/launchpad/${esc(tr.token)}" target="_blank" rel="noopener noreferrer">$WORM on pons</a>`:' · token not launched yet'}</div>
+    ${(tr.ledger||[]).length?'<table style="margin-top:8px"><tr><th>when</th><th>what</th><th class="r">USDG</th></tr>'+tr.ledger.slice(0,8).map(l=>`<tr><td>${ago(l.ts)}</td><td>${esc(l.kind)}: ${esc(l.note||'')}</td><td class="r">${Number(l.amount).toFixed(2)}</td></tr>`).join('')+'</table>':''}`
+    :'<div class="empty">no wallet yet</div>';
+  const vo=s.voice||{};
+  $('#voice').innerHTML=`<div class="meta" style="margin-bottom:8px">writer: ${esc(vo.model||'stub')} · every ${vo.every_min} min · ${esc(vo.posting||'')}. Every number is checked against the packet; a draft with a number that is not in it, or trading language, is dropped.</div>`
+    +((vo.entries||[]).filter(e=>e.ok).length?vo.entries.filter(e=>e.ok).slice(0,6).map(e=>`<div class="post"><button class="copy" data-text="${esc(e.text)}">copy</button>${esc(e.text)}<span class="meta">${esc(e.mood||'')} · ${ago(e.ts)} · ${esc(e.model||'')}</span></div>`).join(''):'<div class="empty">no entries yet</div>');
+  const trd=s.trader||{},pos=trd.positions||[],tds=trd.trades||[];
+  $('#trades').innerHTML=`<div class="meta" style="margin-bottom:8px">${esc(trd.policy||'')}. ${s.live?'':'Demo: real quotes and simulated swaps, nothing sent.'}</div>`
+    +(pos.length?`<table><tr><th>position</th><th class="r">size</th><th class="r">entry</th><th>state</th></tr>`+pos.slice(0,8).map(x=>`<tr><td>$${esc(x.symbol)} <span class="meta">${esc(x.mode)}</span></td><td class="r">$${Number(x.size_usd).toFixed(2)}</td><td class="r">${usd(x.entry_usd)}</td><td>${x.status==='open'?((x.recovered_usd||0)>0?'<span class="pos">cost back, free bag</span>':'open'):esc('closed: '+(x.reason||''))}</td></tr>`).join('')+'</table>':'<div class="empty">no positions. It only acts on "looks healthy" verdicts with surplus above the reserve.</div>')
+    +(tds.length?'<div class="meta" style="margin-top:8px">'+tds.slice(0,5).map(t=>`${ago(t.ts)} · ${esc(t.side)} $${esc(t.symbol)} $${Number(t.usd).toFixed(2)} · ${esc(t.note||'')}`).join('<br>')+'</div>':'');
+  const gv=s.giving||{};
+  $('#causes').innerHTML=`<div class="meta">${esc(gv.rule||'')}. given so far $${(gv.given_total||0).toFixed(2)}</div>`+((gv.causes||[]).length?'<table style="margin-top:6px"><tr><th>cause</th><th>wallet</th><th class="r">weight</th></tr>'+gv.causes.map(c=>`<tr><td>${esc(c.name)}</td><td class="meta">${short(c.address)}</td><td class="r">${c.weight}</td></tr>`).join('')+'</table>':'<div class="empty">no causes configured yet (WH_CAUSES)</div>');
+  const rw=s.runway||{},sc=rw.scenarios||{};
+  $('#runway').innerHTML=((rw.treasury_usd||0)<=0?`<div class="meta" style="margin-bottom:8px;color:var(--g)">not funded yet. The projection below is what a $0 treasury looks like against the planned bills; it starts meaning something once the wallet exists.</div>`:'')+`<div class="meta" style="margin-bottom:8px">treasury <b class="pos">$${(rw.treasury_usd||0).toFixed(2)}</b> · costs ~$${rw.cost_per_day_usd}/day (compute $${(rw.cost_parts||{}).compute}, gas $${(rw.cost_parts||{}).gas}, bridge $${(rw.cost_parts||{}).bridge}) · income $${rw.income_per_day_usd}/day${rw.income_measured?' measured':' (nothing measured yet)'}</div>
+    <table><tr><th>90-day scenario</th><th class="r">ends with</th><th class="r">runs out</th></tr>`+Object.entries(sc).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="r ${v.end_balance_usd>=0?'pos':'neg'}">$${v.end_balance_usd}</td><td class="r">${v.runs_out_day?'day '+v.runs_out_day:'never'}</td></tr>`).join('')+`</table>
+    <div class="meta" style="margin-top:8px">reserve for ${rw.reserve_days} days: $${rw.reserve_needed_usd} · surplus <span class="${rw.surplus_usd>=0?'pos':'neg'}">$${rw.surplus_usd}</span> · investing ${rw.can_invest?'<span class="pos">allowed from surplus</span>':'<span class="neg">locked until the reserve is covered</span>'} · compute budget $${rw.compute_budget_per_day_usd}/day<br>rule: ${esc(rw.rule||'')}</div>`;
+  const b=s.brain||{},rules=b.rules||[],cnt=b.counts||{};
+  const sc2=b.scorecard||{},vs=['looks healthy','mixed','avoid'],os=['rugged','dumped','flat','grew','unknown'];
+  const scoreTable=Object.keys(sc2).length?`<table style="margin-bottom:10px"><tr><th>verdict</th>${os.map(o=>`<th class="r">${o}</th>`).join('')}<th class="r">right?</th></tr>`+vs.filter(v=>sc2[v]).map(v=>{const row=sc2[v]||{},tot=Object.values(row).reduce((a,c)=>a+c,0),bad=(row.rugged||0)+(row.dumped||0),good=row.grew||0;const right=v==='avoid'?bad:v==='looks healthy'?good:null;return `<tr><td>${esc(v)}</td>${os.map(o=>`<td class="r">${row[o]||0}</td>`).join('')}<td class="r">${right==null?'—':Math.round(100*right/tot)+'%'}</td></tr>`}).join('')+'</table>':'';
+  $('#brain').innerHTML=scoreTable+`<div class="meta" style="margin-bottom:8px">tracking ${b.tracked||0} verdicts · resolved ${b.resolved||0} · rugged ${cnt.rugged||0} · dumped ${cnt.dumped||0} · flat ${cnt.flat||0} · grew ${cnt.grew||0}. A rule that warned before a rug gains 2% weight, one that reassured before a rug loses 2%. Bounded 0.5x to 1.5x.</div>
+    <table><tr><th>rule</th><th>weight</th><th class="r">hit / miss</th></tr>`+rules.map(r=>`<tr><td title="${esc(r.about)}">${esc(r.id)}</td><td><span class="wt"><i style="width:${Math.round((r.weight-0.5)/1*100)}%"></i></span>${Number(r.weight).toFixed(2)}x</td><td class="r">${r.hits} / ${r.misses}${r.hit_rate!=null?` (${r.hit_rate}%)`:''}</td></tr>`).join('')+'</table>';
+  const lb=s.lab||{},arms=(lb.arms||[]);
+  $('#lab').innerHTML=`<div class="meta" style="margin-bottom:8px">in use: <b class="pos">${esc(lb.in_use||'')}</b> · ${esc(lb.why||'')}. Every candidate scoring ≥ 60 is traded on paper by ${arms.length} arms at once (8 exit rules × entry delays of ${(lb.delays_min||[]).join('/')} min), with ${Math.round((lb.cost_per_side||0)*200)}% round-trip costs. An arm needs ${lb.min_n} cases before it can win. Cases: ${lb.cases_active||0} active · ${lb.cases_resolved||0} resolved.</div>`
+    +(arms.some(a=>a.n>0)?`<table><tr><th>arm</th><th class="r">cases</th><th class="r">avg return</th><th class="r">win rate</th></tr>`+arms.filter(a=>a.n>0).slice(0,12).map(a=>`<tr><td>${esc(a.arm)}${a.arm===lb.in_use?' <span class="pos">◀ in use</span>':''}</td><td class="r">${a.n}</td><td class="r ${a.mean_ret>=0?'pos':'neg'}">${a.mean_ret==null?'—':(a.mean_ret*100).toFixed(0)+'%'}</td><td class="r">${a.win_rate==null?'—':a.win_rate+'%'}</td></tr>`).join('')+'</table>':'<div class="empty">no resolved cases yet: the first arms get scored 48 hours after the first candidates.</div>');
+  const p=s.paper||{};
+  $('#paper').innerHTML=`<div class="meta" style="margin-bottom:8px">$${p.size_usd} paper per token scoring ≥ ${p.min_score}. Exits: ${esc(p.rules||'')}. Realized <span class="${p.realized_usd>=0?'pos':'neg'}">$${(p.realized_usd||0).toFixed(2)}</span> · open <span class="${p.unrealized_usd>=0?'pos':'neg'}">$${(p.unrealized_usd||0).toFixed(2)}</span>${p.win_rate!=null?` · win rate ${p.win_rate}% of ${p.closed_count}`:''}</div>`
+    +((p.open||[]).length?`<table><tr><th>open</th><th class="r">entry</th><th class="r">now</th><th class="r">%</th><th>arm · state</th></tr>`+p.open.map(x=>`<tr><td>$${esc(x.symbol)}</td><td class="r">${usd(x.entry_usd)}</td><td class="r">${usd(x.last_usd)}</td><td class="r ${x.change_pct>=0?'pos':'neg'}">${pct(x.change_pct)}</td><td><span class="meta">${esc((x.policy||'').split('@')[0])}</span> ${x.hedged?`<span class="pos">took profit, ${x.bag_pct}% left</span>`:''}</td></tr>`).join('')+'</table>':'<div class="empty">no open paper positions</div>')
+    +((p.closed||[]).length?`<table style="margin-top:8px"><tr><th>closed</th><th class="r">%</th><th>why</th></tr>`+p.closed.slice(0,8).map(x=>`<tr><td>$${esc(x.symbol)}</td><td class="r ${x.pnl_usd>=0?'pos':'neg'}">${pct(x.change_pct)}</td><td>${esc(x.reason)}</td></tr>`).join('')+'</table>':'');
+  $('#log').innerHTML=(s.events||[]).map(e=>`<li><span class="k ${esc(e.kind)}">${esc(e.kind)}</span>${esc(e.text)} <span class="meta">${ago(e.ts)}</span></li>`).join('');
+  $('#ticker').innerHTML=(s.ticker||[]).map(t=>`<b>$${esc(t.symbol||t.token.slice(0,8))}</b> ${esc(t.name||'')} · ${esc(t.pair_symbol||'')} · ${ago(t.ts)}`).join(' &nbsp;&nbsp;│&nbsp;&nbsp; ');
+}
+async function load(){try{const r=await fetch('/api/state');render(await r.json())}catch(e){}}
+function connect(){const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
+  ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='state')render(m.data);else if(m.type==='scan')applyScan(m.data);else if(m.type==='frame')applyFrame(m.data)};ws.onclose=()=>setTimeout(connect,3000)}
+load();connect();setInterval(load,20000);
+</script>
+</body>
+</html>

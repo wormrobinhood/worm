@@ -1,0 +1,9 @@
+Pillow
+eth-abi==6.0.0
+eth-account==0.13.7
+eth-hash[pycryptodome]
+eth-utils==6.0.0
+fastapi==0.141.1
+playwright
+requests==2.34.2
+uvicorn[standard]==0.52.4

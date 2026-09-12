@@ -1,0 +1,21 @@
+# secrets and local state: never tracked
+.env
+.env.*
+!.env.example
+.leakcheck.local
+data/
+*.db
+*.db-*
+*.sqlite*
+*.log
+*.pem
+*.key
+
+# machine-specific
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.claude/
+node_modules/

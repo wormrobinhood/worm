@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+.leakcheck.local
+data/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+.githooks/
+.claude/
+*.db
+*.log
