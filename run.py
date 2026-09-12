@@ -42,8 +42,11 @@ def build():
     screen = Screen(hub, newest=newest) if os.environ.get("WH_SCREEN", "1") != "0" else None
     hub.screen_on = screen is not None            # the page hides the screen panel on a host that runs no browser
 
+    hub.restore(db)                               # the last dig survives a restart
+
     def progress(ev):
         hub.scan(ev)
+        hub.persist(db)
         if screen:
             screen.on_dig(ev)
 

@@ -441,3 +441,19 @@ def test_healthz_is_ok_while_the_first_backfill_runs(site):
     assert r.status_code == 200 and r.json()["catching_up"] is True
     Idx.ready.set()
     assert client.get("/healthz").status_code == 503
+
+
+def test_the_last_dig_survives_a_restart(db):
+    hub = Hub()
+    for step in ("start", "creator", "verdict"):
+        hub.scan({"token": ADDR, "step": step, "text": step, "ts": 1, "data": {}})
+        hub.persist(db)
+    fresh = Hub()
+    fresh.restore(db)
+    assert [e["step"] for e in fresh.dig] == ["start", "creator", "verdict"]
+    db.meta_set("last_dig", "not json")
+    other = Hub()
+    other.restore(db)
+    assert other.dig == []                                                 # unreadable: start empty, never crash
+    hub.scan({"token": "0x" + "ef" * 20, "step": "start", "text": "start", "ts": 2, "data": {}})
+    assert len(hub.dig) == 1                                               # a new dig replaces the last one

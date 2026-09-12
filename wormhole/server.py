@@ -121,6 +121,22 @@ class Hub:
         self.dig = (self.dig + [ev])[-8:]
         self.pending.put({"kind": "scan", "payload": ev, "ts": ev.get("ts")})
 
+    def persist(self, db):
+        """The dig in progress (or the last one) into the database, so a restart does not blank the panel."""
+        try:
+            db.meta_set("last_dig", json.dumps(self.dig))
+        except Exception as e:
+            log.info("dig not persisted: %s", e)
+
+    def restore(self, db):
+        """The last dig from the database at startup; nothing when there is none or it is unreadable."""
+        try:
+            saved = json.loads(db.meta_get("last_dig") or "[]")
+            if isinstance(saved, list) and all(isinstance(e, dict) and e.get("step") for e in saved):
+                self.dig = saved[-8:]
+        except Exception as e:
+            log.info("dig not restored: %s", e)
+
     # ---- the rescan registry: what /api/rescan has queued, bounded and deduplicated ----
     def _prune(self, now):
         """Entries expire after RESCAN_DEDUPE_S, so a worker that never reports back cannot wedge the cap."""
