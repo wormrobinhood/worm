@@ -216,7 +216,8 @@ def snapshot(rpc, db, brain, paper, hub=None):
             "bad_actors": {"serial": serial, "worst": worst},
             "paper": paper.summary(), "brain": brain_sum, "events": db.events(40), "advisor": ADV.summary(db),
             "character": char, "runway": runway, "disclosure": DISCLOSURE,
-            "links": {"pons": "https://www.ponsfamily.com/launchpad/", "explorer": "https://robinhoodchain.blockscout.com/"}}
+            "links": {"pons": "https://www.ponsfamily.com/launchpad/", "explorer": "https://robinhoodchain.blockscout.com/",
+                      "x": C.X_URL or None, "site": C.SITE_URL}}
 
 
 class SnapshotCache:
@@ -451,6 +452,7 @@ def make_app(rpc, db, brain, paper, hub):
                  "token": (f'<a href="https://www.ponsfamily.com/launchpad/{C.TOKEN}" target="_blank" rel="noopener noreferrer">$WORM on pons</a>'
                            if C.TOKEN else "not launched yet"),
                  "explorer": "https://robinhoodchain.blockscout.com/",
+                 "x_link": (f'<a href="{C.X_URL}" target="_blank" rel="noopener noreferrer">the worm on X</a>' if C.X_URL else ""),
                  "repo": (f'<a href="{C.REPO_URL}" target="_blank" rel="noopener noreferrer">{C.REPO_URL}</a>' if C.REPO_URL else "public repository coming with the launch")}
         for k, v in fills.items():
             page = page.replace("{{%s}}" % k, v)

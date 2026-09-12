@@ -1,5 +1,6 @@
 """Addresses, limits and knobs. Everything here was verified on-chain on 2026-09-11/12."""
 import os
+import re
 from pathlib import Path
 
 from eth_utils import is_address, is_checksum_address
@@ -141,6 +142,8 @@ TRADING = os.environ.get("WH_TRADING", "0") == "1"                   # off by po
 LIVE = os.environ.get("WH_LIVE", "0") == "1"                         # nothing is ever signed unless 1
 SITE_URL = os.environ.get("WH_SITE_URL", "http://127.0.0.1:4670").rstrip("/")
 REPO_URL = os.environ.get("WH_REPO_URL", "").strip()               # public source, shown on /docs once it exists
+TOKEN_X = os.environ.get("WH_TOKEN_X", "").strip().lstrip("@")       # the token's X handle: written on-chain at launch, linked from the pages
+X_URL = f"https://x.com/{TOKEN_X}" if re.fullmatch(r"[A-Za-z0-9_]{1,15}", TOKEN_X) else ""
 TOKEN = os.environ.get("WH_TOKEN", "").lower()                        # the worm's own token once launched
 BASE_RPC = os.environ.get("WH_BASE_RPC", "https://mainnet.base.org")
 BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"

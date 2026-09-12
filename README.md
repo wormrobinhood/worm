@@ -81,7 +81,7 @@ writes `WH_TOKEN_PENDING_TX` to `.env` at broadcast and refuses a second launch 
 `WH_TOKEN` on success. Every send goes through one locked sender that computes the hash locally, never
 re-broadcasts blindly, and records a pending ledger row before waiting for the receipt.
 
-Token settings live in `.env`: `WH_TOKEN_NAME`, `WH_TOKEN_SYMBOL`, `WH_TOKEN_X`, `WH_TOKEN_TELEGRAM`, `WH_CREATOR_TAX_BPS`
+Token settings live in `.env`: `WH_TOKEN_NAME`, `WH_TOKEN_SYMBOL`, `WH_TOKEN_X` (also linked from the pages), `WH_TOKEN_TELEGRAM`, `WH_CREATOR_TAX_BPS`
 (default 200 = 2%), `WH_SITE_URL` (logo and website links). `WH_OWNER_WALLET` receives `WH_OWNER_SHARE` (default 0.60)
 of every fee claim; `WH_BURN_SHARE` (default 0.20) buys $WORM on its pool and sends it to the burn address; the rest is
 the worm's operations money. The live screen (`WH_SCREEN=1`, default on) needs Chromium: `python -m playwright install chromium`.
