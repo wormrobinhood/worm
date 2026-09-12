@@ -56,3 +56,4 @@ body[data-view=learning] #synapse{background:radial-gradient(ellipse at 25% 40%,
 /* Integration: the log's kind column fits "graduation" at the larger type; the dig badge in the topline. */
 .log li{grid-template-columns:96px minmax(0,1fr) auto}
 #dig-badge{font:11px 'IBM Plex Mono',monospace;color:#7dff9c;border:1px solid #348b49;padding:3px 8px;border-radius:3px;animation:blink 1.6s infinite;white-space:nowrap}.motion-off #dig-badge{animation:none}
+.rail-brand span{margin-left:0}

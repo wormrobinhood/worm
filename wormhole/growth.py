@@ -1,4 +1,4 @@
-"""How big IRL Worm is. The character grows with the treasury it actually holds.
+"""How big the worm is. The character grows with the treasury it actually holds.
 
 WH_DEMO_TREASURY adds pretend money so the stages can be looked at before funding. It counts for the
 character only: "usd" is what the worm displays (demo included), "usd_real" is real balances alone and

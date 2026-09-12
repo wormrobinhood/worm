@@ -77,7 +77,7 @@ def test_wallet_new_creates_env_0600_and_prints_only_the_address(env, capsys):
     out = capsys.readouterr().out
     assert Account.from_key(key).address in out and key not in out and key[2:] not in out
     assert not env.with_name(".env.tmp").exists()
-    assert env.read_text().startswith("# IRL Worm secrets")
+    assert env.read_text().startswith("# Worm secrets")
 
 
 def test_wallet_new_refuses_an_existing_key(env):
@@ -112,4 +112,4 @@ def test_update_env_sets_removes_and_keeps_the_rest(tmp_path):
     assert p.read_text() == "# head\nA=1\nB=9\n"
     q = tmp_path / "new.env"
     W.update_env({"X": "1"}, path=q)
-    assert q.read_text() == "# IRL Worm secrets. Never commit this file.\nX=1\n"
+    assert q.read_text() == "# Worm secrets. Never commit this file.\nX=1\n"

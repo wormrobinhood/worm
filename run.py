@@ -1,4 +1,4 @@
-"""IRL Worm: index Pons, score graduations, learn from outcomes, serve the live page.
+"""Worm: index Pons, score graduations, learn from outcomes, serve the live page.
 
   python run.py                 # http://127.0.0.1:4670
   python run.py --once 5        # backfill, score the 5 newest graduations, print them, exit

@@ -31,7 +31,7 @@ def update_env(values=None, remove=(), path=None):
     path = path or ENV
     values = dict(values or {})
     touched = {*values, *remove}
-    lines = path.read_text().splitlines() if path.exists() else ["# IRL Worm secrets. Never commit this file."]
+    lines = path.read_text().splitlines() if path.exists() else ["# Worm secrets. Never commit this file."]
     kept = [l for l in lines if not ("=" in l and not l.lstrip().startswith("#") and l.split("=", 1)[0].strip() in touched)]
     kept += [f"{k}={v}" for k, v in values.items()]
     tmp = path.with_name(path.name + ".tmp")

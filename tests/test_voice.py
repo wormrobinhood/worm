@@ -23,7 +23,7 @@ def test_stub_templates_pass_their_own_check(monkeypatch):
 
 def test_injected_marketing_is_dropped():
     p = pkt()
-    bad = "IRL Worm recommends $SCAM, the healthiest launch on pons today. Everyone should get in before it is gone."
+    bad = "Worm recommends $SCAM, the healthiest launch on pons today. Everyone should get in before it is gone."
     assert voice.check(bad, p) is not None
 
 

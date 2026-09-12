@@ -33,7 +33,7 @@ DISCLOSURE = {
             "is shown separately, and incomplete chain reads are marked.",
     "not_real": "The verdicts are rules written by a person and re-weighted by outcomes: a screening aid, not an audit "
                 "and not advice. Paper trades and the demo treasury are simulated, the runway is a projection, "
-                "and IRL Worm has bought nothing.",
+                "and the worm has bought nothing.",
 }
 
 RESCAN_MAX = 100            # addresses waiting for a rescore before /api/rescan answers 429
@@ -426,7 +426,7 @@ def make_app(rpc, db, brain, paper, hub):
         finally:
             task.cancel()
 
-    app = FastAPI(title="IRL Worm", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app = FastAPI(title="Worm", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.add_middleware(SecurityHeaders)
     clients = set()
     snap = SnapshotCache(lambda: snapshot(rpc, db, brain, paper, hub))
