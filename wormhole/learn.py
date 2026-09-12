@@ -11,6 +11,7 @@ import math
 import statistics
 import time
 
+from . import advisor as ADV
 from .prices import token_prices, PRICE0_WINDOW_S
 from .scorer import RULES
 
@@ -214,7 +215,8 @@ class Brain:
         rules = self.db.q("SELECT * FROM rules ORDER BY id")
         base = self.base_rate()
         for r in rules:
-            r["about"] = RULES.get(r["id"], "")
+            r["about"] = RULES.get(r["id"]) or (ADV.describe(self.db, r["id"]) if str(r["id"]).startswith("ai_") else "")
+            r["learned"] = str(r["id"]).startswith("ai_")
             n = (r.get("hits") or 0) + (r.get("misses") or 0)
             r["hit_rate"] = round(100.0 * r["hits"] / n) if n else None
             fb, fg = int(r.get("fired_bad") or 0), int(r.get("fired_good") or 0)

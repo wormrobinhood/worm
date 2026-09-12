@@ -165,14 +165,14 @@ def write_stub(pkt):
     return text[:MAX_CHARS], mood
 
 
-def _llm(kind, model, system, user):
+def _llm(kind, model, system, user, max_tokens=300):
     if kind == "anthropic":
         key = os.environ.get("ANTHROPIC_API_KEY", "")
         if not key:
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
         r = requests.post("https://api.anthropic.com/v1/messages",
                           headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                          json={"model": model, "max_tokens": 300, "system": system, "messages": [{"role": "user", "content": user}]},
+                          json={"model": model, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": user}]},
                           timeout=90)
         r.raise_for_status()
         return r.json()["content"][0]["text"], r.json().get("usage", {})
@@ -182,14 +182,14 @@ def _llm(kind, model, system, user):
         if not base:
             raise RuntimeError("WH_LLM_BASE_URL is not set")
         r = requests.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}", "content-type": "application/json"},
-                          json={"model": model, "max_tokens": 300, "temperature": 0.8,
+                          json={"model": model, "max_tokens": max_tokens, "temperature": 0.8,
                                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}, timeout=90)
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"], r.json().get("usage", {})
     if kind == "venice":
         from .compute import chat
         from .wallet import account
-        return chat(account(), model, [{"role": "system", "content": system}, {"role": "user", "content": user}], max_tokens=300)
+        return chat(account(), model, [{"role": "system", "content": system}, {"role": "user", "content": user}], max_tokens=max_tokens)
     raise RuntimeError(f"unknown writer {kind}")
 
 

@@ -7,6 +7,7 @@ import math
 import time
 
 from . import config as C
+from . import advisor as ADV
 from .pons import CURVE_BUY, CURVE_SELL, TRANSFER, POOL_REGISTERED, SWAP
 
 log = logging.getLogger("wormhole.scorer")
@@ -411,6 +412,10 @@ class Scorer:
 
         # 6. market snapshot is filled in batches by prices.refresh_scored (GeckoTerminal rate limits)
         m.update(price_usd=None, fdv_usd=None, volume_24h_usd=None, reserve_usd=None)
+
+        # learned rules: hypotheses the advisor adopted after a backtest on the worm's own history
+        for f in ADV.apply(self.db, m):
+            rule(f["rule"], f["points"], f["text"])
 
         # total ---------------------------------------------------------------
         w = self.weights()

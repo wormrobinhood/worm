@@ -29,6 +29,14 @@ Everything from scouting to trading is built and runs in demo mode: its own wall
   to become the policy the paper book and the trader use; exploration is off (`WH_LAB_EXPLORE`). Until
   then the default is `costout_1.5x@0m`: at +50% sell two thirds (the cost comes back), trail the rest 40%
   below its peak, cut at -35% before that, never hold past 48 hours.
+- **Advisor**: every two hours (`WH_ADVISOR_EVERY_MIN`), once a few more verdicts have resolved, the writer
+  (`WH_ADVISOR_MODEL`, default the voice's model) reads the worm's records and proposes scoring rules (up to
+  three conditions over at-scan metrics plus points) and exit arms in a strict JSON form. Nothing it says runs
+  as code: every rule is backtested on the worm's own resolved verdicts and adopted only if the tokens it fires
+  on moved clearly differently from the rest (a median difference of 10 points that fewer than 2 in 100 random splits would show, 20 cases each side)
+  and it is not a copy of an existing rule; arms join the lab and earn their use there. With the stub writer
+  the worm runs its own one-metric threshold search through the same gate. Proposals, backtests and fates are
+  kept and shown.
 - **Readiness**: one evidence-only number (exit rule proven, warnings right against the base rate, runway,
   surplus) that has to reach 80 before the trader may buy; demo money counts for nothing.
 - **Runway**: measures income from claimed fees in the ledger, estimates the planned bills (compute, gas,
@@ -108,6 +116,7 @@ fund the wallet to make the same code sign and send. Phase 3 to 5 settings:
 | `WH_TOPUP_COOLDOWN_S`, `WH_TOPUP_MAX_PER_DAY`, `WH_TOPUP_ALWAYS` | at most one top-up per 6 h and two a day (21600, 2); top-ups only happen while the journal runs on Venice unless `WH_TOPUP_ALWAYS=1` |
 | `WH_LAB_MIN_N`, `WH_LAB_LCB_Z`, `WH_LAB_EXPLORE` | cases an exit rule needs (30), the lower-bound factor (1.5), exploration share (0) |
 | `WH_READY_AT` | readiness needed before real trades (80) |
+| `WH_ADVISOR_MODEL`, `WH_ADVISOR_EVERY_MIN`, `WH_ADVISOR_MIN_NEW` | the advisor's writer (default: the voice's), minutes between runs (120), new resolved verdicts a run needs (3) |
 | `WH_RESCAN_TOKEN` | lets a remote caller use `/api/rescan/<token>` by sending the header `X-Rescan-Token`; unset, only loopback clients may rescan (the queue is capped at 100 and an address is not queued twice within 10 minutes) |
 | `WH_BUY_MIN_SCORE`, `WH_MAX_POSITION_USD`, `WH_MAX_OPEN`, `WH_MAX_DAILY_USD` | trader limits (70, 10, 5, 30) |
 | `WH_OWNER_SHARE`, `WH_BURN_SHARE` | of every claim of creator fees: forwarded to the creator (0.60) and spent buying $WORM on its pool and sending it to the burn address (0.20); the rest is operations |

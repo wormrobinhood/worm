@@ -19,7 +19,7 @@ from wormhole.scorer import Scorer
 from wormhole.server import Hub, make_app
 from wormhole.screen import Screen
 from wormhole import treasury as T
-from wormhole import voice, trader, giving, compute, lab
+from wormhole import voice, trader, giving, compute, lab, advisor
 from wormhole.budget import projection
 from wormhole import readiness
 import os
@@ -33,6 +33,7 @@ log = logging.getLogger("wormhole")
 def build():
     rpc = Rpc(C.RPC)
     db = DB()
+    advisor.load(db)                              # learned exit arms into the lab before anything parses an arm name
     brain = Brain(db)
     paper = Paper(db)
     hub = Hub()
@@ -186,6 +187,7 @@ def main():
             # exits and bookkeeping run before entries; every stage is isolated so one failure cannot skip the rest
             stages = [("prices", lambda: refresh_scored(db)), ("lab", lambda: lab.tick(db)),
                       ("paper", paper.retry_pending), ("paper mark", paper.mark), ("brain", brain.check),
+                      ("advisor", lambda: advisor.due(db)[0] and advisor.run(db, brain.summary(), lab.summary(db))),
                       ("exits", lambda: trader.mark(rpc, db, C.LIVE, acct)), ("treasury", lambda: T.cycle(rpc, db, acct)),
                       ("books", books), ("compute", compute_stage), ("entries", entries),
                       ("giving", lambda: giving.cycle(rpc, db, acct, box["rw"], C.LIVE and not box["tre"].get("demo"))),

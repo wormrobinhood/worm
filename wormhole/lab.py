@@ -45,6 +45,11 @@ POLICIES = {
 }
 DELAYS = (0, 30, 60)
 ARMS = [f"{p}@{d}m" for p in POLICIES for d in DELAYS]
+LEARNED = {}                   # policies the advisor adopted, by name; loaded at startup (advisor.load)
+
+
+def all_arms():
+    return ARMS + [f"{p}@{d}m" for p in LEARNED for d in DELAYS]
 
 
 def ensure_tables(db):
@@ -63,7 +68,10 @@ def ensure_tables(db):
 
 def parse_arm(name):
     p, _, d = name.partition("@")
-    return POLICIES[p], int(d.rstrip("m")) * 60
+    policy = POLICIES.get(p) or LEARNED.get(p)
+    if policy is None:
+        raise KeyError(f"unknown arm {name}")
+    return policy, int(d.rstrip("m")) * 60
 
 
 # ---- costs ------------------------------------------------------------------------------------
@@ -200,7 +208,7 @@ def _resolve(db, c):
         return
     fee = c["cost"] if c.get("cost") is not None else FEE
     results = {}
-    for arm in ARMS:
+    for arm in all_arms():
         r = simulate(arm, path, c["t0"], fee)
         if r is None:
             continue
@@ -251,7 +259,7 @@ def pick_arm(db):
     """Arm for a new position: the current policy, or a random other arm when exploration is on."""
     best, _ = current_policy(db)
     if EXPLORE > 0 and random.random() < EXPLORE:
-        return random.choice([a for a in ARMS if a != best])
+        return random.choice([a for a in all_arms() if a != best])
     return best
 
 
@@ -262,4 +270,4 @@ def summary(db):
             "cases_active": db.one("SELECT COUNT(*) n FROM lab_cases WHERE status='active'")["n"],
             "cases_resolved": db.one("SELECT COUNT(*) n FROM lab_cases WHERE status='resolved'")["n"],
             "cases_stale": db.one("SELECT COUNT(*) n FROM lab_cases WHERE status='stale'")["n"],
-            "policies": {k: v for k, v in POLICIES.items()}, "delays_min": list(DELAYS)}
+            "policies": {**POLICIES, **LEARNED}, "delays_min": list(DELAYS)}
