@@ -160,7 +160,7 @@ def main():
             def books():
                 tre = box["tre"] = treasury(rpc)
                 budget.sample(db, tre["usd_real"], bool(tre.get("demo")))
-                box["rw"] = projection(db, tre["usd_real"])
+                box["rw"] = projection(db, T.free_usd(db, tre["usd_real"]))   # the wallet minus what is owed to the creator and the burn
 
             def compute_stage():
                 tre, rw = box["tre"], box["rw"]

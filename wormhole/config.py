@@ -129,8 +129,15 @@ _owner_env = os.environ.get("WH_OWNER_WALLET", "").strip()
 check_addresses(_wallet_env, _signer, _owner_env)
 WALLET = (_wallet_env or _signer).lower()
 BASE_WALLET = (os.environ.get("WH_BASE_WALLET") or WALLET).lower()
-OWNER_WALLET = _owner_env.lower()                                    # owner wallet: receives 20% of income
-OWNER_SHARE = float(os.environ.get("WH_OWNER_SHARE", "0.20"))
+OWNER_WALLET = _owner_env.lower()                                    # the creator's wallet: receives OWNER_SHARE of every claim
+# The fee policy, of every claim of creator fees: the creator's share is forwarded; the burn share buys $WORM on its
+# own pool and sends it to the burn address; the rest (operations) pays compute, gas, bridging and the reserve.
+OWNER_SHARE = float(os.environ.get("WH_OWNER_SHARE", "0.60"))
+BURN_SHARE = float(os.environ.get("WH_BURN_SHARE", "0.20"))
+OPS_SHARE = round(1.0 - OWNER_SHARE - BURN_SHARE, 6)
+if not (0.0 <= OWNER_SHARE <= 1.0 and 0.0 <= BURN_SHARE <= 1.0 and OPS_SHARE >= 0.0):
+    raise SystemExit("WH_OWNER_SHARE and WH_BURN_SHARE must each be between 0 and 1 and add up to at most 1")
+TRADING = os.environ.get("WH_TRADING", "0") == "1"                   # off by policy until the brain is mature; when on, the readiness gate still applies
 LIVE = os.environ.get("WH_LIVE", "0") == "1"                         # nothing is ever signed unless 1
 SITE_URL = os.environ.get("WH_SITE_URL", "http://127.0.0.1:4670").rstrip("/")
 REPO_URL = os.environ.get("WH_REPO_URL", "").strip()               # public source, shown on /docs once it exists

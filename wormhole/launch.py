@@ -30,8 +30,9 @@ GAS_FLOOR = 4_500_000        # a real launch+buy used 3.85M; the estimate (+30%)
 
 DEFAULT_DESCRIPTION = (
     "Worm is a small hooded worm that lives at IRL Worm on Robinhood Chain. It digs through every pons "
-    "graduation, flags bad actors, and tells the community first. Its fees pay for its own compute; 20% of what "
-    "it earns goes to its creator. Internet money, real life impact. It is a screening aid, not advice.")
+    "graduation, flags bad actors, and tells the community first. Of its fees, 60% go to its creator, 20% buy "
+    "back and burn $WORM, and 20% pay for its own compute. Internet money, real life impact. It is a screening "
+    "aid, not advice.")
 
 
 def params(wallet):
@@ -44,7 +45,7 @@ def params(wallet):
         "socials": (env("WH_TOKEN_X", ""), env("WH_TOKEN_TELEGRAM", ""), env("WH_TOKEN_DISCORD", ""),
                     env("WH_TOKEN_WEBSITE", C.SITE_URL), env("WH_TOKEN_FARCASTER", "")),
         "creatorFeeRecipient": wallet,
-        "creatorTaxBps": int(env("WH_CREATOR_TAX_BPS", "100")),
+        "creatorTaxBps": int(env("WH_CREATOR_TAX_BPS", "200")),
         "buybackEnabled": env("WH_BUYBACK", "0") == "1",
     }
     for k in ("name", "symbol", "logo", "description"):

@@ -206,7 +206,7 @@ def snapshot(rpc, db, brain, paper, hub=None):
                  " JOIN launches l ON l.token=s.token WHERE s.verdict='avoid' ORDER BY s.scored_at DESC LIMIT 8")
     worst = [_js(r, ("reasons",)) for r in worst]
     char = treasury(rpc)
-    runway = projection(db, char.get("usd_real", char["usd"]))   # real money only: demo treasury buys no runway
+    runway = projection(db, T.free_usd(db, char.get("usd_real", char["usd"])))   # real money only, minus what is owed away
     brain_sum, lab_sum = brain.summary(), LB.summary(db)
     ready = RD.compute(brain_sum, lab_sum, runway, bool(char.get("demo")), TR.MAX_POSITION_USD)
     return {"now": now, "stats": st, "scout": _scout(db), "readiness": ready, "lessons": _lessons(db), "feed": feed, "ticker": ticker,
@@ -446,7 +446,8 @@ def make_app(rpc, db, brain, paper, hub):
         except Exception:
             wallet_shown = C.WALLET or "not created yet"
         fills = {"wallet": wallet_shown, "owner_share": str(int(round(C.OWNER_SHARE * 100))),
-                 "treasury_share": str(100 - int(round(C.OWNER_SHARE * 100))), "ready_at": str(RD.READY_AT),
+                 "burn_share": str(int(round(C.BURN_SHARE * 100))), "ops_share": str(int(round(C.OPS_SHARE * 100))),
+                 "treasury_share": str(int(round(C.OPS_SHARE * 100))), "ready_at": str(RD.READY_AT),
                  "token": (f'<a href="https://www.ponsfamily.com/launchpad/{C.TOKEN}" target="_blank" rel="noopener noreferrer">$WORM on pons</a>'
                            if C.TOKEN else "not launched yet"),
                  "explorer": "https://robinhoodchain.blockscout.com/",

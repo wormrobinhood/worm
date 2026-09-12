@@ -1,14 +1,17 @@
 """Money in, money out, in the open.
 
 - income: USDG creator fees. pons credits them to an escrow; the worm claims them with claimToken(USDG).
-- the 20% forward: WH_OWNER_SHARE of everything claimed is owed to WH_OWNER_WALLET. The owed balance
-  is derived from the ledger (claims minus forwards, in flight included), so small claims add up
+- the split of every claim (WH_OWNER_SHARE / WH_BURN_SHARE / the rest): the creator's share is owed to
+  WH_OWNER_WALLET and forwarded; the burn share is owed to the burn and, once at least MIN_BURN_USD is
+  owed and $WORM has a pool, buys $WORM on that pool and sends it to the burn address in the same
+  transaction; the rest stays in the wallet for compute, gas and the reserve. Both owed balances are
+  derived from the ledger (claims minus what went out, in flight included), so small claims add up
   instead of being dropped and a crash between two steps changes nothing.
 - every movement is written to the ledger table and shown on the site. A row is written as
   '<kind>_pending' the moment the node has the transaction and settled from the receipt: 'claim',
-  'forward' or 'give' on success (amount taken from the ClaimedToken or Transfer log), '<kind>_failed'
-  on a revert, '<kind>_dropped' when the node lost it. Pending rows are reconciled at the top of every
-  cycle, before anything new is sent."""
+  'forward', 'burn' or 'give' on success (amount taken from the ClaimedToken or Transfer log, a burn's
+  token count from the Transfer to the burn address), '<kind>_failed' on a revert, '<kind>_dropped'
+  when the node lost it. Pending rows are reconciled at the top of every cycle, before anything new is sent."""
 import logging
 import time
 
@@ -20,6 +23,11 @@ from .chain import addr_from_topic, call_data, call_fn, selector, topic
 log = logging.getLogger("wormhole.treasury")
 MIN_CLAIM_USD = 1.0        # do not spend gas on dust
 MIN_FORWARD_USD = 0.50
+MIN_BURN_USD = 5.0         # a burn is one pool swap: the share is batched so gas and slippage stay small
+BURN_SLIPPAGE = 0.03       # the swap reverts if the pool delivers less than the quote minus this
+PERMIT2_MAX = 2 ** 160 - 1
+EXPIRY_MAX = 2 ** 48 - 1
+TAKE = b"\x0e"             # Uniswap v4 router action: take a currency to a recipient (amount 0 = the whole open delta)
 PENDING_MAX_AGE_S = 3600   # a pending tx the node no longer knows after this long is written off
 CLAIMED_TOPIC = topic("ClaimedToken(address,address,uint256)")     # PonsV2FeeEscrow: recipient, token indexed
 TRANSFER_TOPIC = topic("Transfer(address,address,uint256)")
@@ -27,7 +35,11 @@ TRANSFER_TOPIC = topic("Transfer(address,address,uint256)")
 
 def ensure_tables(db):
     db.x("CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, asset TEXT,"
-         " amount REAL, tx TEXT, note TEXT)")
+         " amount REAL, tx TEXT, note TEXT, qty REAL)")
+    try:
+        db.x("ALTER TABLE ledger ADD COLUMN qty REAL")     # tokens burned, next to the USDG that bought them
+    except Exception:
+        pass
 
 
 def units(usd):
@@ -51,6 +63,28 @@ def owed_to_owner(db):
     c = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind='claim'")["s"]
     f = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind IN ('forward','forward_pending')")["s"]
     return c * C.OWNER_SHARE - f
+
+
+def owed_to_burn(db):
+    """The burn share of every claim so far, minus what was burned or is on its way, in USDG."""
+    c = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind='claim'")["s"]
+    b = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind IN ('burn','burn_pending')")["s"]
+    return c * C.BURN_SHARE - b
+
+
+def owed_total(db):
+    return max(0.0, owed_to_owner(db)) + max(0.0, owed_to_burn(db))
+
+
+def free_usd(db, usd_real):
+    """The part of the real treasury that is the worm's own: the balance minus what is owed to the creator and
+    to the burn. Runway, surplus, readiness and giving are sized from this, never from money passing through."""
+    try:
+        ensure_tables(db)
+        return round(max(0.0, float(usd_real or 0.0) - owed_total(db)), 2)
+    except Exception as e:
+        log.info("owed read failed: %s", e)
+        return round(max(0.0, float(usd_real or 0.0)), 2)
 
 
 # ---- receipts ----------------------------------------------------------------
@@ -81,9 +115,23 @@ def transferred(rc, token, frm, to, value):
     return False
 
 
+def burned_in(rc):
+    """$WORM delivered to the burn address in this receipt, in whole tokens, or None when nothing reached it."""
+    total, seen = 0, False
+    for lg in rc.get("logs", []):
+        t = lg.get("topics", [])
+        if (lg["address"].lower() == C.TOKEN and len(t) == 3 and t[0] == TRANSFER_TOPIC
+                and addr_from_topic(t[2]) == C.DEAD):
+            total += _word(lg["data"])
+            seen = True
+    return total / 1e18 if seen else None
+
+
 def _event_text(kind, amount, row):
     if kind == "claim":
         return f"claimed {amount:.2f} USDG of creator fees"
+    if kind == "burn":
+        return f"burned {row.get('qty') or 0:,.0f} $WORM bought with {amount:.2f} USDG"
     if kind == "forward":
         return f"forwarded {amount:.2f} USDG ({int(C.OWNER_SHARE * 100)}%) to the creator"
     if kind == "give":
@@ -95,19 +143,22 @@ def settle(db, row, rc, wallet, to=None):
     """Apply a receipt to a '<kind>_pending' ledger row and write the event. Returns (kind, amount)."""
     base = row["kind"].removesuffix("_pending")
     ok = rc.get("status") == "0x1"
-    amount, why = row["amount"], "reverted"
+    amount, why, qty = row["amount"], "reverted", None
     if ok and base == "claim":
         got = claimed_in(rc, wallet)               # what the escrow actually paid, not the pre-tx read
         if got is not None:
             amount = got
+    elif ok and base == "burn":
+        qty = burned_in(rc)                        # the tokens that reached the burn address, from the receipt
+        ok, why = qty is not None, "no $WORM reached the burn address"
     elif ok:
         ok = transferred(rc, C.USDG, wallet, to, units(row["amount"]))
         why = "no Transfer log for the amount"
     kind = base if ok else f"{base}_failed"
     note = row["note"] if ok else f"{row['note']} ({why})"
-    db.x("UPDATE ledger SET kind=?, amount=?, note=? WHERE id=?", (kind, amount, note, row["id"]))
+    db.x("UPDATE ledger SET kind=?, amount=?, note=?, qty=? WHERE id=?", (kind, amount, note, qty, row["id"]))
     if ok:
-        db.add_event("giving" if base == "give" else "treasury", _event_text(kind, amount, row))
+        db.add_event("giving" if base == "give" else "treasury", _event_text(kind, amount, dict(row, qty=qty)))
     else:
         db.add_event("error", f"{base} {why}: {row['tx']}")
     return kind, amount
@@ -147,8 +198,10 @@ def reconcile(rpc, db, kinds, wallet, to_for=None):
 def summary(rpc, db):
     ensure_tables(db)
     out = {"wallet": C.WALLET or None, "owner": C.OWNER_WALLET or None, "share": C.OWNER_SHARE, "token": C.TOKEN or None,
+           "burn_share": C.BURN_SHARE, "ops_share": C.OPS_SHARE, "trading": C.TRADING, "burn_min_usd": MIN_BURN_USD,
            "live": C.LIVE, "claimable_usdg": None, "usdg": None, "eth": None,
-           "claimed_total": 0.0, "forwarded_total": 0.0, "compute_total": 0.0, "owed_to_owner": 0.0, "ledger": []}
+           "claimed_total": 0.0, "forwarded_total": 0.0, "compute_total": 0.0, "burned_total": 0.0, "burned_qty": 0.0,
+           "owed_to_owner": 0.0, "owed_to_burn": 0.0, "burn_state": "", "ledger": []}
     if C.WALLET:
         try:
             out["claimable_usdg"] = round(claimable_usdg(rpc, C.WALLET), 4)
@@ -163,7 +216,12 @@ def summary(rpc, db):
             out["forwarded_total"] = round(r["s"], 4)
         elif r["kind"] == "compute":
             out["compute_total"] = round(r["s"], 4)
+        elif r["kind"] == "burn":
+            out["burned_total"] = round(r["s"], 4)
+    out["burned_qty"] = round(db.one("SELECT COALESCE(SUM(qty),0) q FROM ledger WHERE kind='burn'")["q"] or 0.0, 2)
     out["owed_to_owner"] = round(max(0.0, owed_to_owner(db)), 4)
+    out["owed_to_burn"] = round(max(0.0, owed_to_burn(db)), 4)
+    out["burn_state"] = burn_state(out["owed_to_burn"])
     out["ledger"] = db.q("SELECT * FROM ledger ORDER BY id DESC LIMIT 20")
     return out
 
@@ -214,14 +272,133 @@ def forward(rpc, db, acct):
     return finish(db, h, rc, C.WALLET, to=C.OWNER_WALLET)[0] == "forward"
 
 
+def burn_state(owed):
+    """One line for the page: why nothing has burned yet, or that a burn is due."""
+    if not C.TOKEN:
+        return "waits for the token"
+    if owed < MIN_BURN_USD:
+        return f"burns once ${MIN_BURN_USD:.0f} is owed"
+    return "due: burns on the next cycle once $WORM has its pool"
+
+
+def _say_hourly(db, kind, text):
+    last = db.one("SELECT ts FROM events WHERE text=? ORDER BY id DESC LIMIT 1", (text[:300],))
+    if last and time.time() - last["ts"] < 3600:
+        return
+    db.add_event(kind, text)
+
+
+# ---- the burn: buy $WORM on its pool and send it to the burn address in one transaction ----
+
+def router_allowance(rpc, wallet):
+    """What a Universal Router pull of USDG needs: (USDG allowance to Permit2, Permit2 allowance to the router,
+    its expiry)."""
+    a = call_fn(rpc, C.USDG, "allowance(address,address)", ("uint256",), ("address", "address"), (wallet, C.PERMIT2)) or 0
+    amt, exp, _nonce = call_fn(rpc, C.PERMIT2, "allowance(address,address,address)", ("uint160", "uint48", "uint48"),
+                               ("address", "address", "address"), (wallet, C.USDG, C.UNIVERSAL_ROUTER))
+    return int(a), int(amt), int(exp)
+
+
+def approve_for_router(rpc, db, acct, need):
+    """The two one-time approvals a router swap of USDG needs (USDG to Permit2, Permit2 to the router), sent
+    only when short. Each is an ordinary transaction from the wallet, written to the events."""
+    from .tx import send_tx
+    a, amt, exp = router_allowance(rpc, C.WALLET)
+    if a < need:
+        data = selector("approve(address,uint256)") + encode(["address", "uint256"], [C.PERMIT2, 2 ** 256 - 1]).hex()
+        h, rc = send_tx(rpc, acct, C.USDG, data)
+        if not rc or rc.get("status") != "0x1":
+            raise RuntimeError(f"USDG approval for Permit2 reverted: {h}")
+        db.add_event("treasury", f"approved USDG for Permit2, once: {h}")
+    if amt < need or exp <= int(time.time()):
+        data = selector("approve(address,address,uint160,uint48)") + encode(
+            ["address", "address", "uint160", "uint48"], [C.USDG, C.UNIVERSAL_ROUTER, PERMIT2_MAX, EXPIRY_MAX]).hex()
+        h, rc = send_tx(rpc, acct, C.PERMIT2, data)
+        if not rc or rc.get("status") != "0x1":
+            raise RuntimeError(f"Permit2 approval for the router reverted: {h}")
+        db.add_event("treasury", f"approved the Universal Router to spend USDG through Permit2, once: {h}")
+
+
+def burn_calldata(pk, zero_for_one, amount_in, min_out):
+    """One Universal Router call: swap USDG for $WORM on its pool and take the tokens straight to the burn
+    address. The swap reverts below min_out, so a burn either happens whole or not at all."""
+    from .trader import SETTLE_ALL, SWAP_EXACT_IN_SINGLE, SWAP_T, V4_SWAP, _key_tuple
+    actions = SWAP_EXACT_IN_SINGLE + SETTLE_ALL + TAKE
+    params = [encode([SWAP_T], [(_key_tuple(pk), zero_for_one, amount_in, min_out, b"")]),
+              encode(["address", "uint256"], [C.USDG, amount_in]),
+              encode(["address", "address", "uint256"], [C.TOKEN, C.DEAD, 0])]
+    inputs = [encode(["bytes", "bytes[]"], [actions, params])]
+    return selector("execute(bytes,bytes[],uint256)") + encode(["bytes", "bytes[]", "uint256"],
+                                                             [V4_SWAP, inputs, int(time.time()) + 600]).hex()
+
+
+def burn(rpc, db, acct):
+    """Buy $WORM with the owed burn share and send it to the burn address, once at least MIN_BURN_USD is owed
+    and the token has graduated to a pool (a curve buy is not a pool swap). Returns True on a settled burn."""
+    if not C.TOKEN:
+        return False
+    owed = owed_to_burn(db)
+    if owed < MIN_BURN_USD:
+        return False
+    try:
+        have = usdg_balance(rpc, C.WALLET)
+    except Exception as e:
+        log.info("usdg balance read failed: %s", e)
+        return False
+    n = units(min(owed, have))
+    if n < units(MIN_BURN_USD):
+        return False
+    from . import trader
+    trader.ensure_tables(db)                     # the pools table is the trader's; the burn may run first
+    try:
+        pk = trader.pool_key(rpc, db, C.TOKEN)
+    except Exception as e:
+        db.add_event("error", f"burn: pool lookup failed: {str(e)[:100]}")
+        return False
+    if not pk:
+        _say_hourly(db, "treasury", f"${owed:.2f} waits to be burned: $WORM has not graduated to a pool yet")
+        return False
+    if pk["quote"] != C.USDG:
+        db.add_event("error", "burn: $WORM's pool is not quoted in USDG; the burn share stays owed")
+        return False
+    try:
+        out, _gas, zfo = trader.quote_buy(rpc, pk, C.TOKEN, n)
+    except Exception as e:
+        db.add_event("error", f"burn: quote failed: {str(e)[:100]}")
+        return False
+    if not out:
+        db.add_event("error", "burn: no liquidity quoted; the burn share stays owed")
+        return False
+    min_out = int(out * (1 - BURN_SLIPPAGE))
+    try:
+        approve_for_router(rpc, db, acct, n)
+    except Exception as e:
+        db.add_event("error", f"burn: approval failed: {str(e)[:120]}")
+        return False
+    from .tx import send_tx
+    data = burn_calldata(pk, zfo, n, min_out)
+
+    def pending(h):
+        db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
+             (int(time.time()), "burn_pending", "USDG", n / 1e6, h,
+              f"{int(round(C.BURN_SHARE * 100))}% of income: buy $WORM on its pool and send it to the burn address"))
+
+    try:
+        h, rc = send_tx(rpc, acct, C.UNIVERSAL_ROUTER, data, on_broadcast=pending)
+    except Exception as e:
+        db.add_event("error", f"burn failed: {str(e)[:120]}")
+        return False
+    return finish(db, h, rc, C.WALLET)[0] == "burn"
+
+
 def cycle(rpc, db, acct):
-    """Settle what is in flight, claim fees when worth it, then forward the owner's share.
+    """Settle what is in flight, claim fees when worth it, forward the creator's share, then burn.
     Only ever runs armed (WH_LIVE=1)."""
     ensure_tables(db)
     if not (C.LIVE and acct and C.WALLET):
         return
     try:
-        if reconcile(rpc, db, ("claim_pending", "forward_pending"), C.WALLET, lambda r: C.OWNER_WALLET):
+        if reconcile(rpc, db, ("claim_pending", "forward_pending", "burn_pending"), C.WALLET, lambda r: C.OWNER_WALLET):
             return                      # something is still in flight: settle it before sending more
     except Exception as e:
         db.add_event("error", f"ledger reconcile failed: {str(e)[:120]}")
@@ -234,3 +411,4 @@ def cycle(rpc, db, acct):
     if claimable >= MIN_CLAIM_USD:
         claim(rpc, db, acct, claimable)
     forward(rpc, db, acct)
+    burn(rpc, db, acct)

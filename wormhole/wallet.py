@@ -90,7 +90,7 @@ def show():
     for k, v in balances(acct.address).items():
         print(f"  {k:10} {v}")
     print("live     ", "ARMED (WH_LIVE=1)" if C.LIVE else "no (WH_LIVE=0): nothing will be signed")
-    print("owner    ", C.OWNER_WALLET or "(WH_OWNER_WALLET not set: the 20% forward is off)")
+    print("owner    ", C.OWNER_WALLET or "(WH_OWNER_WALLET not set: the creator's forward is off)")
 
 
 if __name__ == "__main__":

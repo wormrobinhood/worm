@@ -217,6 +217,10 @@ def decide(rpc, db, runway, live, acct=None, ready=None):
     wallet = C.WALLET
     if not wallet:
         return
+    if not C.TRADING:
+        _say_once(db, "trade", "trading is off by policy: the worm learns on paper until its brain is mature; "
+                               "only the creator turns it on, and the readiness gate still applies then")
+        return
     if not runway.get("can_invest"):
         return
     if ready is not None and not ready.get("ready"):
@@ -389,7 +393,8 @@ def summary(db):
     ensure_tables(db)
     return {"positions": db.q("SELECT * FROM positions ORDER BY opened_ts DESC LIMIT 20"),
             "trades": db.q("SELECT * FROM trades ORDER BY id DESC LIMIT 20"),
-            "live_sell_ready": LIVE_SELL_READY,
-            "policy": f"readiness ≥ {RD.READY_AT}% first (evidence only, see the readiness panel); then verdict looks healthy and score ≥ {MIN_SCORE}; size min(${MAX_POSITION_USD:.0f}, 10% of surplus); "
+            "live_sell_ready": LIVE_SELL_READY, "enabled": C.TRADING,
+            "policy": ("" if C.TRADING else "off by policy until the brain is mature; only the creator turns it on; when on: ")
+                      + f"readiness ≥ {RD.READY_AT}% first (evidence only, see the readiness panel); then verdict looks healthy and score ≥ {MIN_SCORE}; size min(${MAX_POSITION_USD:.0f}, 10% of surplus); "
                       f"≤ {MAX_OPEN} open; ≤ ${MAX_DAILY_USD:.0f} a day; only from the surplus above the 90-day reserve"
                       + ("" if LIVE_SELL_READY else "; live buys wait for live sells")}

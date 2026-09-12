@@ -14,6 +14,12 @@ from wormhole.pons import TRANSFER
 
 NOW = int(time.time())
 RUNWAY = {"can_invest": True, "surplus_usd": 1000.0}
+
+
+@pytest.fixture(autouse=True)
+def trading_on(monkeypatch):
+    """The policy switch is off by default; these tests exercise the trader as if the creator had turned it on."""
+    monkeypatch.setattr(C, "TRADING", True)
 OUT = 10 ** 21                                  # the Quoter's answer: 1000 tokens for the buy
 OTHER_ASSET = "0x" + "ab" * 20
 HASH = "0x" + "cd" * 32
@@ -416,3 +422,13 @@ def test_received_qty_sums_transfer_logs():
     rc["logs"].append({"address": tok(2), "topics": [TRANSFER.topic, pad(C.HOOK), pad(C.WALLET)], "data": "0x" + f"{10 ** 18:064x}"})  # another token
     assert trader.received_qty(rc, t, C.WALLET) == 5.0
     assert trader.received_qty({"logs": []}, t, C.WALLET) is None
+
+
+def test_trading_off_by_policy_makes_no_decisions(tdb, monkeypatch):
+    monkeypatch.setattr(C, "TRADING", False)
+    monkeypatch.setattr(trader, "candidates", lambda *a, **k: (_ for _ in ()).throw(AssertionError("candidates consulted while trading is off")))
+    trader.decide(object(), tdb, RUNWAY, False, ready={"ready": True, "score": 90})
+    assert tdb.q("SELECT * FROM positions") == [] and tdb.q("SELECT * FROM trades") == []
+    s = trader.summary(tdb)
+    assert s["enabled"] is False and s["policy"].startswith("off by policy")
+    assert "off by policy" in tdb.one("SELECT text FROM events ORDER BY id DESC LIMIT 1")["text"]

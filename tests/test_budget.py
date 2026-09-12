@@ -2,6 +2,7 @@
 import time
 
 from wormhole import budget as B
+from wormhole import config as C
 from wormhole import treasury as T
 
 
@@ -50,9 +51,11 @@ def test_income_from_ledger_only(db):
     inc = B.income_per_day(db)
     assert abs(inc - 1.0) < 1e-3
     p = B.projection(db, 200.0)
-    assert p["income_measured"] is True and abs(p["income_per_day_usd"] - 1.0) < 1e-3
+    assert p["income_measured"] is True and abs(p["claims_per_day_usd"] - 1.0) < 1e-3
+    assert abs(p["income_per_day_usd"] - C.OPS_SHARE) < 1e-3               # the operations share of the claims
     assert p["compute_budget_per_day_usd"] <= B.COMPUTE_USD_DAY
-    assert p["compute_budget_per_day_usd"] <= max(0.10, 0.5 * 1.0) + 1e-9
+    assert p["compute_budget_per_day_usd"] <= max(0.10, C.OPS_SHARE * 1.0) + 1e-9
+    assert "operations share" in p["rule"] and "no trading" in p["rule"]
     assert p["scenarios"]["current income"]["end_balance_usd"] > p["scenarios"]["no income"]["end_balance_usd"]
 
 

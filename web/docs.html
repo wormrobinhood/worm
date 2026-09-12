@@ -147,23 +147,26 @@ code{color:var(--white);background:rgba(0,40,10,.6);padding:0 4px;font-size:.95e
 <table>
 <tr><th>fee on each trade</th><th>who gets it</th></tr>
 <tr><td>1 percent base fee</td><td>70 percent to the token's creator (the worm), 30 percent to pons</td></tr>
-<tr><td>1 percent creator tax, set by the worm (pons allows up to 10)</td><td>the worm</td></tr>
+<tr><td>2 percent creator tax, set by the worm (pons allows up to 10)</td><td>the worm</td></tr>
 </table>
-<p>Pons credits the worm's share to a fee escrow. The worm claims it in USDG whenever at least 1 dollar is waiting. Every claim is then split, and the creator's share is kept as an owed balance so small claims are never rounded away:</p>
+<p>Pons credits the worm's share to a fee escrow. The worm claims it in USDG whenever at least 1 dollar is waiting. Every claim is then split three ways, and each share is kept as an owed balance so small claims are never rounded away:</p>
 <table>
 <tr><th>of every claim</th><th class="r">share</th><th>goes to</th></tr>
-<tr><td>the creator's share</td><td class="r">{{owner_share}}%</td><td>the person who made the worm, forwarded on-chain right after the claim</td></tr>
-<tr><td>the treasury</td><td class="r">{{treasury_share}}%</td><td>the worm's own wallet: compute, gas, reserve, later trades and giving</td></tr>
+<tr><td>the creator</td><td class="r">{{owner_share}}%</td><td>the person who made the worm, forwarded on-chain right after the claim</td></tr>
+<tr><td>buyback and burn</td><td class="r">{{burn_share}}%</td><td>buys $WORM on its own pool and sends it to the burn address, in one transaction</td></tr>
+<tr><td>operations</td><td class="r">{{ops_share}}%</td><td>the worm's own wallet: compute, gas, bridge fees and the 90-day reserve</td></tr>
 </table>
-<p>Every claim and every forward is a transaction on Robinhood Chain from the worm's wallet, and the wallet panel on the live page lists them.</p>
+<p><b>How a burn works.</b> Once at least 5 dollars of the burn share is owed and $WORM has graduated to its pool, the worm swaps that USDG for $WORM on the pool through the Uniswap router and has the tokens delivered straight to the burn address <span class="addr">0x000000000000000000000000000000000000dEaD</span>. One transaction, visible on the explorer: USDG in, $WORM to the burn address; the burned count on the wallet panel is read from that transaction's transfer log. Before the pool exists the share waits in the wallet as an owed balance and is shown as such. Pons offers its own buyback option at launch; the worm leaves it off, because that option locks the bought tokens in a vault that vests over five years instead of burning them.</p>
+<p><b>No trading, by policy.</b> The worm does not buy other tokens with real money. It keeps learning on paper, and the readiness number on the learning page measures how far its brain has come. Turning trading on is a deliberate decision by the creator, and even then the readiness gate applies.</p>
+<p>Every claim, forward and burn is a transaction on Robinhood Chain from the worm's wallet, and the wallet panel on the live page lists them.</p>
 <p class="dim">Wallet: <span class="addr">{{wallet}}</span> · same address on Base for compute money · token: {{token}}</p>
 
 <h2 id="runway">runway policy</h2>
 <p>The worm has to pay its own bills, so it keeps books. The rule is written down and does not change:</p>
 <ul>
 <li>keep a <b>90-day reserve</b> at all times</li>
-<li>spend on compute at most <b>half of what it earns</b></li>
-<li>invest and give <b>only from the surplus</b> above the reserve</li>
+<li>compute, gas and bridge fees come <b>only from the operations share</b>, {{ops_share}} percent of every claim</li>
+<li><b>no trading</b> by policy until the brain is mature; give <b>only from the surplus</b> above the reserve</li>
 </ul>
 <p>Planned bills: about 0.75 dollars a day of compute, about 0.10 dollars a day of gas, about 0.20 dollars a month of bridge fees. The runway panel projects 90 days under three scenarios (no income, current income, half income) and says on which day the money would run out.</p>
 <p><b>Compute</b> is bought from Venice AI through x402, a pay-per-use protocol, as a prepaid balance in USDC on Base. The worm tops up 5 dollars when the balance falls under 1 dollar, at most twice a day and never within six hours of the last top-up, and only while its journal actually runs on Venice. Income for the runway math is what it actually claimed in fees, never a balance change. Hosting the site is the one bill it cannot pay itself, because hosts do not take crypto, so its creator pays that.</p>
@@ -171,12 +174,12 @@ code{color:var(--white);background:rgba(0,40,10,.6);padding:0 4px;font-size:.95e
 <p><b>Growth:</b> the worm on the live page gets longer as its real treasury grows: <span class="stage">hatchling $0</span><span class="stage">tiny $20</span><span class="stage">small $100</span><span class="stage">growing $500</span><span class="stage">long $2,000</span><span class="stage">mighty $10,000</span><span class="stage">legend $50,000</span></p>
 
 <h2 id="token">the token</h2>
-<p><b>Worm ($WORM)</b> is launched by the worm itself from its own wallet, on pons V2, paired with USDG, with the logo, description, and links written on-chain at launch. Like every pons token it starts on a bonding curve and graduates into a locked Uniswap v4 pool once the curve reaches its threshold. The worm does not hold a hidden allocation. What it earns is the fee share above, in the open.</p>
+<p><b>Worm ($WORM)</b> is launched by the worm itself from its own wallet, on pons V2, paired with USDG, with a 2 percent creator tax and the logo, description, and links written on-chain at launch. Like every pons token it starts on a bonding curve and graduates into a locked Uniswap v4 pool once the curve reaches its threshold. The worm does not hold a hidden allocation. What it earns is the fee share above, in the open.</p>
 
 <h2 id="security">security</h2>
 <ul>
 <li><b>Its own wallet.</b> The key was generated on the machine that runs the worm and lives only in a file that the code, the site, and the public repository never expose. The address is public, so every move can be checked on the explorer.</li>
-<li><b>A hot wallet is as safe as its machine.</b> The worm has to hold the key to sign, so the person running it keeps a backup key and the treasury is kept small on purpose. The 20 percent forward moves money off the hot wallet on every claim. Planned next: a Safe vault that owns the treasury while the worm's key only gets a daily allowance.</li>
+<li><b>A hot wallet is as safe as its machine.</b> The worm has to hold the key to sign, so the person running it keeps a backup key and the treasury is kept small on purpose. The creator's share leaves the hot wallet on every claim, and the burn share leaves it as $WORM sent to the burn address. Planned next: a Safe vault that owns the treasury while the worm's key only gets a daily allowance.</li>
 <li><b>Open source and audited.</b> The whole program is public. A guard runs before every commit and push and refuses secrets, keys, and personal details. Five independent audits (chain indexer, scoring and learning, trading lab, money paths, server and web) were run before launch and their fixes shipped with tests.</li>
 <li><b>Nothing signs in demo mode.</b> Until the creator flips it live, the worm reads the chain, simulates swaps with real quotes, and sends nothing.</li>
 <li><b>Public rules can be gamed.</b> A scammer can read the rules and build a token that passes them. That is why the sizes are small, why the brain re-weights rules from outcomes, and why the score is never the whole story.</li>
@@ -187,15 +190,15 @@ code{color:var(--white);background:rgba(0,40,10,.6);padding:0 4px;font-size:.95e
 <tr><th>phase</th><th>what</th><th>state</th></tr>
 <tr><td>1 · scout</td><td>index every launch, dig every graduation, verdicts, trust values, live page</td><td>running</td></tr>
 <tr><td>2 · learn</td><td>outcomes at 1h/6h/24h, rule weights, strategy lab, training book, readiness</td><td>running, gathering cases</td></tr>
-<tr><td>3 · its own token</td><td>launch $WORM on pons, claim fees, forward the creator's share</td><td>built, waiting for the creator to go live</td></tr>
+<tr><td>3 · its own token</td><td>launch $WORM on pons with a 2 percent creator tax, claim fees, split every claim: {{owner_share}} percent to the creator, {{burn_share}} percent to buy back and burn, {{ops_share}} percent to operations</td><td>built, waiting for the creator to go live</td></tr>
 <tr><td>4 · pays its own way</td><td>compute bought with its own fees, 90-day runway kept</td><td>built, demo</td></tr>
-<tr><td>5 · trades small</td><td>real sells first (token approvals and the exit path), then real buys from the surplus once readiness reaches {{ready_at}} percent, lab-chosen exits</td><td>locked by readiness; sells not built yet</td></tr>
+<tr><td>5 · trades small</td><td>off by policy while the brain matures; if the creator ever turns it on: real sells first (token approvals and the exit path), then real buys from the surplus once readiness reaches {{ready_at}} percent, lab-chosen exits</td><td>off by policy</td></tr>
 <tr><td>6 · gives</td><td>10 percent of the surplus to causes every 30 days</td><td>built, waiting for causes</td></tr>
 <tr><td>7 · vault</td><td>Safe vault owns the treasury, the worm's key gets an allowance</td><td>planned</td></tr>
 </table>
 
 <h2 id="real">what is real and what is not</h2>
-<p><b>Real:</b> every number on the live page is read from Robinhood Chain or GeckoTerminal: launches, graduations, curve buys, holders, swaps, prices, wallet balances, claims, forwards.</p>
+<p><b>Real:</b> every number on the live page is read from Robinhood Chain or GeckoTerminal: launches, graduations, curve buys, holders, swaps, prices, wallet balances, claims, forwards, burns.</p>
 <p><b>Not real:</b> the verdicts are rules written by a person and re-weighted by outcomes. They are a screening aid, not an audit and not advice. The training book is paper trades with fake money. The demo badge on the live page means nothing has been signed or sent.</p>
 <p class="dim">Source code: {{repo}}</p>
 </div>

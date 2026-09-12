@@ -75,7 +75,7 @@ def test_params_limits_count_bytes_not_characters(monkeypatch, acct):
         L.params(acct.address)
     monkeypatch.setenv("WH_TOKEN_X", "x" * 256)
     p = L.params(acct.address)
-    assert p["creatorFeeRecipient"] == acct.address and p["creatorTaxBps"] == 100 and p["socials"][3] == C.SITE_URL
+    assert p["creatorFeeRecipient"] == acct.address and p["creatorTaxBps"] == 200 and p["socials"][3] == C.SITE_URL
 
 
 # ---- main -----------------------------------------------------------------------------

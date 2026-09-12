@@ -4,11 +4,13 @@ Phase 1 spends nothing, so the costs below are the planned phase-3 bills (narrat
 Surplus, gas on Robinhood Chain, bridge fees to Base). Income is what the worm actually claimed:
 the ledger's 'claim' rows (USDG creator fees) over the last week, per day. Treasury balance samples
 are kept for the chart only; a balance moves with deposits, ETH's price and the worm's own buys, none
-of which is income. The policy is simple and written down: keep a 90-day reserve, spend on compute at
-most half of what it earns, invest only from the surplus above the reserve."""
+of which is income. The policy is simple and written down: keep a 90-day reserve; compute, gas and
+bridging come only from the operations share of every claim (the rest is forwarded to the creator or
+burned); no trading by policy until the brain is mature; give only from the surplus above the reserve."""
 import os
 import time
 
+from . import config as C
 from . import treasury as T
 
 COMPUTE_USD_DAY = float(os.environ.get("WH_COMPUTE_USD_DAY", "0.75"))
@@ -59,18 +61,24 @@ def _run(balance, income, cost, days=HORIZON):
 
 
 def projection(db, treasury_usd):
+    """treasury_usd is the worm's own money (the wallet minus what is owed to the creator and to the burn).
+    Income is the operations share of the claims measured in the ledger: the rest leaves the wallet."""
     cost_day = COMPUTE_USD_DAY + GAS_USD_DAY + BRIDGE_USD_MONTH / 30
     measured = income_per_day(db)
-    income = max(0.0, measured) if measured is not None else 0.0
+    claims = max(0.0, measured) if measured is not None else 0.0
+    income = claims * C.OPS_SHARE
     flow = net_flow_per_day(db)
     reserve = cost_day * RESERVE_DAYS
     surplus = treasury_usd - reserve
-    compute_budget = COMPUTE_USD_DAY if income == 0 else min(COMPUTE_USD_DAY, max(0.10, 0.5 * income))
+    compute_budget = COMPUTE_USD_DAY if claims == 0 else min(COMPUTE_USD_DAY, max(0.10, income))
+    ops_pct = int(round(C.OPS_SHARE * 100))
     return {
         "treasury_usd": round(treasury_usd, 2),
         "cost_per_day_usd": round(cost_day, 3),
         "cost_parts": {"compute": COMPUTE_USD_DAY, "gas": GAS_USD_DAY, "bridge": round(BRIDGE_USD_MONTH / 30, 3)},
         "income_per_day_usd": round(income, 3),
+        "claims_per_day_usd": round(claims, 3),
+        "ops_share": C.OPS_SHARE,
         "income_measured": measured is not None,
         "income_window_days": INCOME_WINDOW_DAYS,
         "balance_change_per_day_usd": round(flow, 3) if flow is not None else None,   # chart only
@@ -85,6 +93,6 @@ def projection(db, treasury_usd):
         "surplus_usd": round(surplus, 2),
         "can_invest": surplus > 0,
         "compute_budget_per_day_usd": round(compute_budget, 3),
-        "rule": "keep a 90-day reserve; spend on compute at most half of what it earns; "
-                "invest only from the surplus above the reserve",
+        "rule": f"keep a 90-day reserve; compute, gas and bridging come only from the operations share ({ops_pct}% of every claim); "
+                "no trading by policy until the brain is mature; give only from the surplus above the reserve",
     }

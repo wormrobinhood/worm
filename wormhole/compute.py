@@ -176,7 +176,7 @@ def topups_today(db, now):
 
 def plan(db, acct, usdc_base, runway_ok, live, budget_per_day=None):
     """Top up when low. Live: signs and sends the authorization. Demo: writes what it would do.
-    budget_per_day: the runway's compute budget (at most half of measured income); a month of it must cover one top-up."""
+    budget_per_day: the runway's compute budget (the operations share of measured income); a month of it must cover one top-up."""
     st = status(acct, usdc_base)
     if st["balance_usd"] is None or st["balance_usd"] >= TOPUP_BELOW_USD:
         return st
@@ -188,7 +188,7 @@ def plan(db, acct, usdc_base, runway_ok, live, budget_per_day=None):
         _say_hourly(db, f"{low} is low but the runway rule blocks a top-up")
         return st
     if budget_per_day is not None and budget_per_day * 30 < TOPUP_USD:
-        _say_hourly(db, f"{low} is low but the compute budget (${budget_per_day:.2f}/day, at most half of income) does not cover a ${TOPUP_USD:.0f} top-up")
+        _say_hourly(db, f"{low} is low but the compute budget (${budget_per_day:.2f}/day, the operations share of income) does not cover a ${TOPUP_USD:.0f} top-up")
         return st
     if (usdc_base or 0) < TOPUP_USD:
         _say_hourly(db, f"{low}: would top up ${TOPUP_USD:.0f} but the Base wallet holds ${usdc_base or 0:.2f} USDC")
