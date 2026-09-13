@@ -457,6 +457,15 @@ function scoutTick(now){requestAnimationFrame(scoutTick);if(window.motionPaused)
     b=Math.max(.1,Math.min(1,b));
     scx.fillStyle=part==='hood'?`rgba(190,248,179,${b})`:part==='feather'?`rgba(236,218,149,${b})`:`rgba(81,242,137,${b})`;
     scx.fillText(digits[i],q*cell+ox,r*cell+oy)}}
+  /* the bubble: what the worm is doing, said beside its head; the words come from the screen chip */
+  const chip=$('#screen-state'),say=chip&&!chip.hidden?chip.textContent:'';
+  if(say){const busy=/\bon\b|\bact\b/.test(chip.className),dots=busy?'.'.repeat(1+Math.floor(now/400)%3):'',text=say.replace(/^waiting for (the next )?graduation$/,'looking around')+dots;
+    const col=/\bon\b/.test(chip.className)?'#ff7b7b':/\bact\b/.test(chip.className)?'#ffd166':'#7dff9c';
+    scx.font='600 11px "IBM Plex Mono",ui-monospace,Menlo,monospace';const tw=Math.ceil(scx.measureText(text).width)+16,bh=22;
+    let bx=D>0?hx+r0*1.7:hx-r0*1.7-tw,by=hy-r0*3.1-bh;bx=Math.max(4,Math.min(W-tw-4,bx));by=Math.max(4,by);
+    scx.fillStyle='rgba(0,0,0,.82)';scx.strokeStyle=col;scx.lineWidth=1;scx.beginPath();if(scx.roundRect)scx.roundRect(bx,by,tw,bh,5);else scx.rect(bx,by,tw,bh);scx.fill();scx.stroke();
+    scx.beginPath();scx.moveTo(D>0?bx+8:bx+tw-8,by+bh);scx.lineTo(D>0?bx+2:bx+tw-2,by+bh+7);scx.lineTo(D>0?bx+16:bx+tw-16,by+bh);scx.closePath();scx.fillStyle=col;scx.fill();
+    scx.fillStyle=col;scx.textBaseline='middle';scx.textAlign='left';scx.fillText(text,bx+8,by+bh/2);scx.textBaseline='top'}
 }
 requestAnimationFrame(scoutTick);
 
