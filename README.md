@@ -112,6 +112,7 @@ fund the wallet to make the same code sign and send. Phase 3 to 5 settings:
 |---|---|
 | `WH_VOICE_MODEL` | `stub` (free templates), `aisurplus:<model>` (its own AI Surplus balance, paid in USDG on Robinhood Chain), `venice:<model>` (its own Venice balance, USDC on Base), `anthropic:<model>` (ANTHROPIC_API_KEY), `openai:<model>` (WH_LLM_BASE_URL + WH_LLM_API_KEY) |
 | `WH_COMPUTE_PROVIDER` | `aisurplus` (default: paid with plain USDG transfers on Robinhood Chain, nothing bridged) or `venice` (USDC on Base through x402) |
+| `WH_AISURPLUS_FALLBACK` | the paid model used when the free open lane is out of its shared weekly quota (`gpt-5.6-luna`); empty disables the fallback |
 | `WH_AISURPLUS_KEY`, `WH_AISURPLUS_DEPOSIT` | the key minted at aisurplus.io/app/keys (a secret, popped from the environment like the wallet key) and the deposit address aisurplus.io/app/wallet shows for Robinhood Chain |
 | `WH_VOICE_EVERY_MIN` | minutes between journal entries (120) |
 | `WH_TOPUP_USD`, `WH_TOPUP_BELOW_USD` | compute top-up size and threshold (5, 1) |

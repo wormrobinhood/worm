@@ -289,6 +289,7 @@ def aisurplus(monkeypatch):
     monkeypatch.setenv("WH_VOICE_MODEL", "aisurplus:deepseek-v4-flash")
     monkeypatch.setenv("WH_ADVISOR_MODEL", "")
     monkeypatch.setattr(CP, "TOPUP_ALWAYS", False)
+    monkeypatch.setattr(CP, "AISURPLUS_FALLBACK", "")
     monkeypatch.setattr(CP, "_markets", (0.0, {}))
 
 
@@ -443,3 +444,51 @@ def test_compute_pending_rows_are_reconciled_by_the_treasury(db, rpc, aisurplus)
     assert T.reconcile(rpc, db, ("compute_pending", "forward_pending"), C.WALLET, to_for) == 0
     assert kinds(db) == ["compute"]
     assert "paid 5.00 USDG of compute to AI Surplus" in db.one("SELECT text FROM events WHERE kind='treasury'")["text"]
+
+
+def test_aisurplus_falls_back_once_when_the_free_lane_is_out(aisurplus, monkeypatch):
+    """The open models share a weekly quota. A 429 or a dead source moves the call to the paid fallback
+    once; a bad key or an empty balance does not; the answer says which model served it."""
+    calls = []
+
+    def post(url, **kw):
+        calls.append(kw["json"]["model"])
+        if kw["json"]["model"] == "deepseek-v4-flash":
+            return Resp(429, {"error": {"type": "GoUsageLimitError", "message": "Weekly usage limit reached. Resets in 11hr"}})
+        return Resp(200, {"choices": [{"message": {"content": "from luna"}}], "usage": {"total_tokens": 9}})
+    monkeypatch.setattr(CP.requests, "post", post)
+    text, usage = CP.aisurplus_chat("deepseek-v4-flash", [{"role": "user", "content": "hi"}], fallback="gpt-5.6-luna")
+    assert text == "from luna" and usage["served_by"] == "gpt-5.6-luna" and usage["total_tokens"] == 9
+    assert calls == ["deepseek-v4-flash", "gpt-5.6-luna"]
+    calls.clear()
+    text, usage = CP.aisurplus_chat("gpt-5.6-luna", [], fallback="gpt-5.6-luna")     # the fallback itself: one call
+    assert usage["served_by"] == "gpt-5.6-luna" and calls == ["gpt-5.6-luna"]
+    calls.clear()
+    with pytest.raises(RuntimeError, match="429"):
+        CP.aisurplus_chat("deepseek-v4-flash", [], fallback="")                         # no fallback configured
+    assert calls == ["deepseek-v4-flash"]
+    for code, msg in ((401, "rejected"), (402, "no compute balance")):
+        calls.clear()
+        monkeypatch.setattr(CP.requests, "post", lambda url, **kw: calls.append(kw["json"]["model"]) or Resp(code, {"error": "x"}))
+        with pytest.raises(RuntimeError, match=msg):
+            CP.aisurplus_chat("deepseek-v4-flash", [], fallback="gpt-5.6-luna")
+        assert calls == ["deepseek-v4-flash"]                                           # never retried on auth or money
+
+
+def test_the_fallback_counts_as_a_paid_model_in_use(aisurplus, monkeypatch):
+    monkeypatch.setattr(CP, "AISURPLUS_FALLBACK", "gpt-5.6-luna")
+    surplus_api(monkeypatch, free=True)
+    assert CP.provider_models() == ["deepseek-v4-flash", "gpt-5.6-luna"]
+    assert CP.all_free() is False and CP.status(None)["free"] is False              # so the balance is watched
+    monkeypatch.setenv("WH_VOICE_MODEL", "stub")
+    assert CP.provider_models() == [] and not CP.uses_compute()                       # nothing at the provider: no fallback either
+
+
+def test_journal_label_names_the_model_that_answered(aisurplus, monkeypatch):
+    from wormhole import voice
+    monkeypatch.setattr(voice, "MODEL", "aisurplus:deepseek-v4-flash")
+    monkeypatch.setattr(voice, "_llm", lambda *a, **k: ('{"post": "dug a lot today", "mood": "calm"}', {"served_by": "gpt-5.6-luna"}))
+    text, mood, label, usage = voice.write({"x": 1})
+    assert (text, mood, label) == ("dug a lot today", "calm", "aisurplus:gpt-5.6-luna")
+    monkeypatch.setattr(voice, "_llm", lambda *a, **k: ('{"post": "p", "mood": "m"}', {}))
+    assert voice.write({"x": 1})[2] == "aisurplus:deepseek-v4-flash"

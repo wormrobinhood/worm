@@ -205,7 +205,8 @@ def write(pkt):
     raw, usage = _llm(kind, model, SYSTEM, "Observation packet:\n" + json.dumps(pkt, indent=1))
     m = re.search(r"\{.*\}", raw, re.S)
     j = json.loads(m.group(0)) if m else {"post": raw.strip(), "mood": ""}
-    return str(j.get("post", "")).strip(), str(j.get("mood", ""))[:40], MODEL, usage
+    label = f"{kind}:{usage['served_by']}" if isinstance(usage, dict) and usage.get("served_by") else MODEL
+    return str(j.get("post", "")).strip(), str(j.get("mood", ""))[:40], label, usage
 
 
 def cycle(db, extra=None, force=False):

@@ -4,7 +4,9 @@ Two providers, chosen by WH_COMPUTE_PROVIDER:
 - aisurplus (default): AI Surplus, an OpenAI-compatible API. The balance is read from the key's own status
   endpoint; a top-up is a plain USDG transfer on Robinhood Chain from the worm's wallet to the account's
   deposit address (WH_AISURPLUS_DEPOSIT), the same chain and token its fees arrive in, so nothing is bridged.
-  The open models are free during the pilot: while every configured model is free, nothing is topped up.
+  The open models are free during the pilot but share one weekly quota; when it is used up the call falls
+  back once to WH_AISURPLUS_FALLBACK (gpt-5.6-luna, a fraction of a cent per run), which is paid, so the
+  balance is watched and topped up like any other.
 - venice: Venice AI, paid in USDC on Base through x402, described below.
 
 Venice:
@@ -47,6 +49,7 @@ VALID_AFTER_SKEW_S = 600          # what Venice's own x402 client uses; 60 s bro
 PROVIDER = C.COMPUTE_PROVIDER
 PAYS_WITH = {"aisurplus": "USDG on Robinhood Chain", "venice": "USDC on Base"}
 AISURPLUS_API = "https://aisurplus.io"
+AISURPLUS_FALLBACK = os.environ.get("WH_AISURPLUS_FALLBACK", "gpt-5.6-luna").strip()   # empty: no fallback
 MARKETS_TTL_S = 600
 _markets = (0.0, {})
 
@@ -199,8 +202,7 @@ def aisurplus_free(model):
     return None if m is None else m["free"]
 
 
-def aisurplus_chat(model, messages, max_tokens=400, temperature=0.8):
-    """One inference call at AI Surplus. Returns (text, usage) or raises."""
+def _aisurplus_call(model, messages, max_tokens, temperature):
     r = requests.post(f"{AISURPLUS_API}/v1/chat/completions", headers={**_aisurplus_headers(), "Content-Type": "application/json"},
                       json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}, timeout=120)
     if r.status_code == 401:
@@ -210,7 +212,29 @@ def aisurplus_chat(model, messages, max_tokens=400, temperature=0.8):
     if r.status_code != 200:
         raise RuntimeError(f"aisurplus chat {r.status_code}: {r.text[:160]}")
     j = r.json()
-    return j["choices"][0]["message"]["content"], j.get("usage", {})
+    usage = dict(j.get("usage") or {})
+    usage["served_by"] = model
+    return j["choices"][0]["message"]["content"], usage
+
+
+def _lane_trouble(err):
+    """A model that is out of quota or whose source is down, as opposed to a bad key or an empty balance."""
+    t = str(err)
+    return any(m in t for m in ("429", "503", "usage limit", "upstream_error", "no_source"))
+
+
+def aisurplus_chat(model, messages, max_tokens=400, temperature=0.8, fallback=None):
+    """One inference call at AI Surplus. The free open lane shares one weekly quota; when that is used up,
+    or the lane is down, the call is retried once on the fallback model. Returns (text, usage); the usage
+    carries served_by, the model that actually answered."""
+    fallback = AISURPLUS_FALLBACK if fallback is None else fallback
+    try:
+        return _aisurplus_call(model, messages, max_tokens, temperature)
+    except RuntimeError as e:
+        if fallback and fallback != model and _lane_trouble(e):
+            log.info("aisurplus %s unavailable (%s); trying %s", model, str(e)[:80], fallback)
+            return _aisurplus_call(fallback, messages, max_tokens, temperature)
+        raise
 
 
 def deposit_address():
@@ -260,8 +284,12 @@ def spending_models():
 
 
 def provider_models():
-    """The configured models that run at the current provider, without the prefix."""
-    return [m.partition(":")[2] for m in spending_models() if m.startswith(PROVIDER + ":")]
+    """The configured models that run at the current provider, without the prefix; at AI Surplus the
+    fallback counts too, since it spends the balance whenever the free lane is out."""
+    out = [m.partition(":")[2] for m in spending_models() if m.startswith(PROVIDER + ":")]
+    if out and PROVIDER == "aisurplus" and AISURPLUS_FALLBACK and AISURPLUS_FALLBACK not in out:
+        out.append(AISURPLUS_FALLBACK)
+    return out
 
 
 def uses_compute():
