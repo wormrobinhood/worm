@@ -13,6 +13,7 @@
   token count from the Transfer to the burn address), '<kind>_failed' on a revert, '<kind>_dropped'
   when the node lost it. Pending rows are reconciled at the top of every cycle, before anything new is sent."""
 import logging
+import os
 import time
 
 from eth_abi import encode
@@ -21,9 +22,9 @@ from . import config as C
 from .chain import addr_from_topic, call_data, call_fn, selector, topic
 
 log = logging.getLogger("wormhole.treasury")
-MIN_CLAIM_USD = 1.0        # do not spend gas on dust
+MIN_CLAIM_USD = float(os.environ.get("WH_MIN_CLAIM_USD", "1.0"))    # do not spend gas on dust (lower it only for a rehearsal)
 MIN_FORWARD_USD = 0.50
-MIN_BURN_USD = 5.0         # a burn is one pool swap: the share is batched so gas and slippage stay small
+MIN_BURN_USD = float(os.environ.get("WH_MIN_BURN_USD", "5.0"))      # a burn is one pool swap: the share is batched so gas and slippage stay small
 BURN_SLIPPAGE = 0.03       # the swap reverts if the pool delivers less than the quote minus this
 PERMIT2_MAX = 2 ** 160 - 1
 EXPIRY_MAX = 2 ** 48 - 1
