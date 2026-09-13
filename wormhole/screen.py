@@ -16,7 +16,11 @@ from urllib.parse import urlparse
 log = logging.getLogger("wormhole.screen")
 CLOSED_MARKERS = ("has been closed", "target closed")   # Playwright's wording when the page, context or browser is gone
 ALLOW = {"www.ponsfamily.com", "ponsfamily.com"}
-IDLE_EVERY = 30
+IDLE_STEP_S = 4                                   # while waiting, one look (a scroll step) every few seconds
+HOLD_S = 30                                       # what a dig or a transaction showed stays this long before the looking around resumes
+OWN_EVERY = 40                                    # every so many idle turns, a look at its own token's page
+SCROLL_STEP_PX = 260
+SCROLL_STEPS_MAX = 14                             # then back to the top of the graduated launches
 WAITING = "waiting for the next graduation"     # every idle caption starts with it, so a viewer knows the state at a glance
 ACTION_SPOTS = {"claim": "Payable", "forward": "Payable", "burn": "Recent trades", "compute": "Market cap", "gold": "Market cap",
                 "launch": "About"}               # where on the page the worm's eye goes for each kind of transaction
@@ -61,6 +65,7 @@ class Screen(threading.Thread):
         self.newest = newest or (lambda: None)   # callable: the newest graduated launch row (token, name, symbol, grad_ts)
         self.own = own or (lambda: None)         # callable: the worm's own token row (token, name, symbol, ts), once launched
         self.idle_n = 0
+        self.scroll_steps = None                 # None: not on the graduated launches; else how far down it has looked
 
     def on_dig(self, ev):
         self.q.put(ev)
@@ -89,7 +94,7 @@ class Screen(threading.Thread):
             ctx.route("**/*", self._gate)             # nothing private, nothing loopback: the browser cannot reach the worm's own ops routes
             page = ctx.new_page()
             page.on("dialog", lambda d: d.dismiss())
-            last_idle, last_dig = 0.0, None
+            last_idle, hold_until, last_dig = 0.0, 0.0, None
             started = time.time()
             log.info("screen on")
             while True:
@@ -99,18 +104,19 @@ class Screen(threading.Thread):
                     browser.close()
                     return
                 try:
-                    ev = self.q.get(timeout=5)
+                    ev = self.q.get(timeout=1)
                 except queue.Empty:
                     ev = None
                 if ev:
+                    self.scroll_steps = None            # the looking around starts again from the top afterwards
                     if ev.get("action"):
                         self._act(page, ev)
                     else:
                         self._dig_step(page, ev)
                         last_dig = ev.get("token")
-                    last_idle = time.time()             # what was just shown holds for a whole turn before the idle views resume
+                    hold_until = time.time() + HOLD_S   # what was just shown holds before the looking around resumes
                     continue
-                if time.time() - last_idle > IDLE_EVERY:
+                if time.time() >= hold_until and time.time() - last_idle >= IDLE_STEP_S:
                     last_idle = time.time()
                     self._idle(page, last_dig)
 
@@ -219,49 +225,53 @@ class Screen(threading.Thread):
             log.info("screen action %s failed: %s", ev.get("action"), str(e)[:120])
 
     def _idle(self, page, last_dig):
-        """Views taken in turns while the worm waits for the next graduation: the newest graduation's page,
-        the curve newest first, the curve biggest first and, once it has one, its own token's page. Every
-        caption says so first."""
+        """While the worm waits it looks around: the launchpad's graduated launches, scrolled a little further
+        every turn, back to the top at the end of the page. Every so often, once it has one, a look at its own
+        token's page. Every caption says the worm is waiting. A dig or a transaction interrupts this at once."""
         self.idle_n += 1
         mine = None
         try:
             mine = self.own()
         except Exception as e:
             log.info("own token lookup failed: %s", str(e)[:120])
-        views = ("graduation", "newest", "biggest") + (("own",) if mine and mine.get("token") else ())
-        what = views[self.idle_n % len(views)]
         row = None
         try:
             row = self.newest()
         except Exception as e:
             log.info("newest graduation lookup failed: %s", str(e)[:120])
-        token = (row or {}).get("token") or last_dig
-        if what == "graduation" and not token:
-            what = "newest"
+        newest = ""
+        if row and row.get("symbol"):
+            when = _ago(row.get("grad_ts"))
+            newest = f" · the newest so far: {row['name']} (${row['symbol']})" + (f", graduated {when}" if when else "")
         try:
-            if what == "own":
+            if mine and mine.get("token") and self.idle_n % OWN_EVERY == 0:
                 label = f"{mine.get('name') or 'its token'} (${mine.get('symbol') or '?'})"
                 when = _ago(mine.get("ts"))
+                self.scroll_steps = None                    # the next turn re-enters the graduated launches from the top
                 self._goto(page, f"{LAUNCHPAD}/{mine['token']}", 2500)
                 self._frame(page, f"{WAITING} · its own token: {label}" + (f", launched {when}" if when else ""),
                             self._focus(page, "Market cap"), idle=True)
-            elif what == "graduation":
-                label = f"{row['name']} (${row['symbol']})" if row and row.get("symbol") else token[:10]
-                when = _ago(row.get("grad_ts")) if row else ""
-                self._goto(page, f"{LAUNCHPAD}/{token}", 2500)
-                self._frame(page, f"{WAITING} · the newest so far: {label}" + (f", graduated {when}" if when else ""),
-                            self._focus(page, "Market cap"), idle=True)
-            elif what == "newest":
+                return
+            if self.scroll_steps is None or page.url != NEWEST_LAUNCHES:
                 self._goto(page, NEWEST_LAUNCHES, 3000)
-                self._scroll_to_heading(page, "Explore")
-                self._frame(page, f"{WAITING} · watching the curve, newest launches first",
-                            self._focus_loc(page, page.get_by_role("tab", name="Newest")), idle=True)
+                self._scroll_to_heading(page, "Graduated")
+                self.scroll_steps = 0
+                self._frame(page, f"{WAITING} · looking through the graduated launches{newest}", None, idle=True)
+                return
+            at_end = bool(page.evaluate("() => window.innerHeight + window.scrollY >= document.body.scrollHeight - 40"))
+            if at_end or self.scroll_steps >= SCROLL_STEPS_MAX:
+                self._scroll_to_heading(page, "Graduated")
+                self.scroll_steps = 0
+                note = "back to the top of the graduated launches"
             else:
-                self._goto(page, BIGGEST_CURVES, 3000)
-                self._scroll_to_heading(page, "Explore")
-                self._frame(page, f"{WAITING} · watching the curve, biggest market caps first: the next one comes from here",
-                            self._focus_loc(page, page.get_by_role("tab", name="Market cap")), idle=True)
+                page.mouse.wheel(0, SCROLL_STEP_PX)
+                page.wait_for_timeout(500)
+                self.scroll_steps += 1
+                note = "looking through the graduated launches"
+            self._frame(page, f"{WAITING} · {note}{newest}", None, idle=True)
         except Exception as e:
             if page_gone(page, e):
                 raise
+            self.scroll_steps = None
             log.info("idle failed: %s", str(e)[:120])
+

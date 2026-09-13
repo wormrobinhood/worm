@@ -96,13 +96,13 @@ h1{font-family:"Instrument Serif",Georgia,"Times New Roman",serif;font-weight:40
 .pos{color:var(--g)}.neg{color:var(--bad)}
 
 /* ---- live band: the screen next to the dig and the log ---- */
-.liverow{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);grid-template-rows:auto minmax(280px,1fr);grid-template-areas:"screen dig" "log dig";gap:var(--gap);margin-top:var(--gap)}
+.liverow{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);grid-template-rows:auto minmax(280px,auto);grid-template-areas:"screen screen" "dig log";gap:var(--gap);margin-top:var(--gap)}
 .screenp{grid-area:screen}.digp{grid-area:dig}.logp{grid-area:log}
 .panel.digp{display:flex;flex-direction:column}.panel.digp .body,#dig{flex:1 1 auto;display:flex;flex-direction:column;min-height:0}#dig>*{flex:none}#dig>#vision{flex:1 1 170px}
 .panel.logp{min-height:0;display:flex;flex-direction:column}
 .panel.logp .body{flex:1 1 0px;min-height:0;overflow:auto}
 .panel.logp.collapsed{min-height:auto}
-@media(max-width:1279px){.liverow{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"screen dig" "log dig"}}
+@media(max-width:1279px){.liverow{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"screen screen" "dig log"}}
 @media(max-width:899px){.liverow{grid-template-columns:1fr;grid-template-rows:auto;grid-template-areas:"screen" "dig" "log"}.panel.logp .body{max-height:320px}}
 .screen{position:relative;background:#000;aspect-ratio:1100/690;overflow:hidden}
 .screen img{width:100%;height:100%;object-fit:cover;display:block;filter:grayscale(.35) sepia(.5) hue-rotate(65deg) saturate(1.5) brightness(.9)}
@@ -645,7 +645,7 @@ function updateBar(){const s=lastState;if(!s)return;const ch=s.character||{},st=
   $('#sb-usd').textContent='$'+Number(ch.usd||0).toFixed(2);
   $('#sb-ready').textContent=num(rd.score??0)+'%';
   $('#sb-block').textContent=st.last_block==null?'…':String(st.last_block);
-  const m=$('#sb-mode');m.textContent=s.live?'LIVE':'DEMO';m.className='mode'+(s.live?' on':'');
+  const m=$('#sb-mode');m.textContent=s.live?'LIVE':'NOT LIVE';m.className='mode'+(s.live?' on':'');
   const {digging,head,sym}=digState();
   const act=currentAction(),actText=act?(ACTIONS[act.action]||act.action)+(act.done?'':'…'):'';
   const d=$('#sb-dig');d.hidden=!digging&&!act;d.textContent=digging?'digging $'+sym:actText;

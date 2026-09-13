@@ -22,9 +22,19 @@ class FakeLoc:
         return {"x": 100, "y": 200, "width": 20, "height": 10}
 
 
+class FakeMouse:
+    def __init__(self):
+        self.wheels = []
+
+    def wheel(self, dx, dy):
+        self.wheels.append(dy)
+
+
 class FakePage:
-    def __init__(self, closed=False, error=None):
-        self.closed, self.error, self.url = closed, error, LAUNCHPAD
+    def __init__(self, closed=False, error=None, at_end=False):
+        self.closed, self.error, self.url, self.at_end = closed, error, LAUNCHPAD, at_end
+        self.mouse = FakeMouse()
+        self.evaluated = []
 
     def is_closed(self):
         return self.closed
@@ -40,8 +50,10 @@ class FakePage:
     def screenshot(self, **kw):
         return b"jpeg"
 
-    def evaluate(self, *a, **k):
-        pass
+    def evaluate(self, script, *a, **k):
+        self.evaluated.append((script, a))
+        if "scrollHeight" in script:
+            return self.at_end
 
     def get_by_role(self, *a, **k):
         return FakeLoc()
@@ -84,20 +96,21 @@ def test_dig_step_reraises_when_the_page_is_gone():
     s._dig_step(FakePage(error=RuntimeError("no locator")), {"step": "creator", "token": TOKEN, "text": "x"})
 
 
-def test_idle_frames_say_the_worm_is_waiting():
-    """Between digs every caption starts by saying the worm waits for the next graduation, whichever of the
-    three views it is on, and the frame is flagged idle; a dig frame is not."""
+def test_idle_looks_through_the_graduated_launches_and_says_it_is_waiting():
+    """Between digs the screen opens the launchpad's graduated launches and scrolls a step further every turn;
+    every caption starts by saying the worm waits, names the newest graduation, and the frame is flagged idle."""
     sink = Sink()
     s = Screen(sink, newest=lambda: {"token": TOKEN, "name": "Tok", "symbol": "TOK", "grad_ts": time.time() - 120})
+    page = FakePage()
     for _ in range(3):
-        s._idle(FakePage(), None)
-    assert len(sink.frames) == 3
-    assert all(f["idle"] is True and f["note"].startswith(WAITING + " · ") for f in sink.frames)
-    assert all("idle:" not in f["note"] for f in sink.frames)
-    notes = "\n".join(f["note"] for f in sink.frames)
-    assert "the newest so far: Tok ($TOK), graduated 2m ago" in notes
-    assert "newest launches first" in notes and "biggest market caps first" in notes
-    assert {f["url"] for f in sink.frames} == {LAUNCHPAD + "/" + TOKEN, LAUNCHPAD + "?sort=newest", LAUNCHPAD + "?sort=marketCap"}
+        s._idle(page, None)
+    assert len(sink.frames) == 3 and page.url == LAUNCHPAD + "?sort=newest"
+    assert all(f["idle"] is True and f["note"].startswith(WAITING + " · looking through the graduated launches") for f in sink.frames)
+    assert all("the newest so far: Tok ($TOK), graduated 2m ago" in f["note"] for f in sink.frames)
+    assert page.mouse.wheels == [260, 260] and any("Graduated" in str(e) for e in page.evaluated)   # one page load, then two scroll steps
+    page.at_end = True
+    s._idle(page, None)
+    assert "back to the top of the graduated launches" in sink.frames[-1]["note"] and s.scroll_steps == 0
     s._dig_step(FakePage(), {"step": "creator", "token": TOKEN, "text": "creator 0x1: fresh"})
     f = sink.frames[-1]
     assert f["idle"] is False and f["note"] == "creator 0x1: fresh" and f["focus"] == [110 / 1100, 205 / 690]
@@ -105,12 +118,9 @@ def test_idle_frames_say_the_worm_is_waiting():
 
 def test_idle_reraises_when_the_page_is_gone():
     s = Screen(Sink(), newest=lambda: {"token": TOKEN, "name": "Tok", "symbol": "TOK", "grad_ts": 1})
-    s.idle_n = 2                                              # the next turn is the graduation view: a page load
     with pytest.raises(RuntimeError, match="has been closed"):
-        s._idle(FakePage(error=RuntimeError(CLOSED)), None)
-    s.idle_n = 2
+        s._idle(FakePage(error=RuntimeError(CLOSED)), None)                         # the first turn is a page load
     s._idle(FakePage(error=RuntimeError("net::ERR_CONNECTION_RESET")), None)       # swallowed
-    s.idle_n = 2
     with pytest.raises(RuntimeError, match="Timeout"):
         s._idle(FakePage(closed=True, error=RuntimeError("Timeout")), None)
 
@@ -122,24 +132,26 @@ def test_allowlist_still_fences_the_browser():
     s._goto(FakePage(), LAUNCHPAD + "/" + TOKEN)
 
 
-def test_own_token_joins_the_idle_rotation_once_it_exists():
-    """Without a token of its own the screen cycles three views; with one, a fourth: its own token's page,
-    captioned as waiting like the rest."""
+def test_own_token_gets_a_look_every_so_often_once_it_exists():
+    """Without a token of its own the screen only looks through the graduated launches; with one, every OWN_EVERY
+    turns it opens its own token's page, captioned as waiting like the rest, then goes back to the top."""
+    from wormhole import screen as SC
     sink = Sink()
     s = Screen(sink, newest=lambda: None, own=lambda: None)
-    for _ in range(4):
-        s._idle(FakePage(), None)
-    newest, biggest = LAUNCHPAD + "?sort=newest", LAUNCHPAD + "?sort=marketCap"
-    assert [f["url"] for f in sink.frames] == [newest, biggest, newest, newest]   # three views; no graduation yet, so newest stands in for it
+    page = FakePage()
+    for _ in range(SC.OWN_EVERY + 1):
+        s._idle(page, None)
+    assert {f["url"] for f in sink.frames} == {LAUNCHPAD + "?sort=newest"}
     mine = {"token": "0x" + "cd" * 20, "name": "Worm", "symbol": "WORM", "ts": time.time() - 300}
     sink2 = Sink()
     s2 = Screen(sink2, newest=lambda: {"token": TOKEN, "name": "Tok", "symbol": "TOK", "grad_ts": time.time() - 60}, own=lambda: mine)
-    for _ in range(4):
-        s2._idle(FakePage(), None)
+    page2 = FakePage()
+    for _ in range(SC.OWN_EVERY + 1):
+        s2._idle(page2, None)
     own = [f for f in sink2.frames if f["url"] == LAUNCHPAD + "/" + mine["token"]]
     assert len(own) == 1 and own[0]["idle"] is True
     assert own[0]["note"] == WAITING + " · its own token: Worm ($WORM), launched 5m ago"
-    assert len({f["url"] for f in sink2.frames}) == 4
+    assert sink2.frames[-1]["url"] == LAUNCHPAD + "?sort=newest" and "looking through" in sink2.frames[-1]["note"]
 
 
 def test_a_launch_in_flight_shows_the_create_page_and_the_screen_lag():
