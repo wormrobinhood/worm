@@ -1,5 +1,6 @@
 """Compute at Venice: the SIWE header, the x402 payment authorization, rail selection, the top-up policy."""
 import base64
+import time
 import json
 import re
 from datetime import datetime, timedelta
@@ -267,6 +268,14 @@ def test_plan_needs_something_that_spends_the_balance(db, acct, live, monkeypatc
     monkeypatch.setattr(CP, "TOPUP_ALWAYS", True)
     CP.plan(db, acct, 20.0, True, True)
     assert len(calls) == 1
+
+
+def test_topups_today_counts_failed_and_written_off_rows_too(db):
+    T.ensure_tables(db)
+    now = int(time.time())
+    for kind in ("compute_failed", "compute_dropped"):
+        db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)", (now - 60, kind, "USDC", 5.0, None, "x"))
+    assert CP.topups_today(db, now)[0] == 2
 
 
 def test_topups_today_counts_done_and_pending(db):

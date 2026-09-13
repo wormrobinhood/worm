@@ -279,7 +279,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const num=v=>{const n=typeof v==='number'?v:(typeof v==='string'&&v.trim()!==''?Number(v):NaN);return Number.isFinite(n)?n:'…'};
 const ago=ts=>{if(!ts)return'';const d=Math.max(0,Math.floor(Date.now()/1000-ts));if(d<60)return d+'s ago';if(d<3600)return Math.floor(d/60)+'m ago';if(d<86400)return Math.floor(d/3600)+'h '+Math.floor(d%3600/60)+'m ago';return Math.floor(d/86400)+'d ago'};
 const usd=v=>v==null?null:(v>=1e6?'$'+(v/1e6).toFixed(2)+'M':v>=1e3?'$'+(v/1e3).toFixed(1)+'K':'$'+Number(v).toFixed(v<1?6:2));
-const short=a=>a?a.slice(0,6)+'…'+a.slice(-4):'';
+const short=a=>a?esc(a.slice(0,6)+'…'+a.slice(-4)):'';
 const pct=v=>v==null?'':(v>0?'+':'')+Math.round(v)+'%';
 function xurl(h){h=(h||'').trim().replace(/^https?:\/\/(www\.)?(x|twitter)\.com\//i,'').replace(/^@/,'').split(/[\/?]/)[0];return /^[A-Za-z0-9_]{1,15}$/.test(h)?'https://x.com/'+h:null}
 function tgurl(h){h=(h||'').trim().replace(/^https?:\/\/t\.me\//i,'').replace(/^@/,'').split(/[?]/)[0];return /^[A-Za-z0-9_+\-\/]{3,80}$/.test(h)?'https://t.me/'+h:null}

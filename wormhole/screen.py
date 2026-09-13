@@ -9,6 +9,7 @@ import base64
 import logging
 import queue
 import threading
+import re
 import time
 from urllib.parse import urlparse
 
@@ -20,6 +21,8 @@ WAITING = "waiting for the next graduation"     # every idle caption starts with
 ACTION_SPOTS = {"claim": "Payable", "forward": "Payable", "burn": "Recent trades", "compute": "Market cap", "gold": "Market cap",
                 "launch": "About"}               # where on the page the worm's eye goes for each kind of transaction
 VIEW = {"width": 1100, "height": 690}
+SESSION_MAX_S = 6 * 3600                          # a fresh Chromium every six hours
+PRIVATE_HOSTS = {"localhost", "0.0.0.0", "metadata", "metadata.google.internal"}
 LAUNCHPAD = "https://www.ponsfamily.com/launchpad"
 NEWEST_LAUNCHES = LAUNCHPAD + "?sort=newest"      # the Explore section, newest first; the site keeps the sort in the URL
 BIGGEST_CURVES = LAUNCHPAD + "?sort=marketCap"    # the Explore section by market cap: closest to the graduation threshold
@@ -83,11 +86,18 @@ class Screen(threading.Thread):
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"])
             ctx = browser.new_context(viewport=VIEW, color_scheme="dark", accept_downloads=False)
+            ctx.route("**/*", self._gate)             # nothing private, nothing loopback: the browser cannot reach the worm's own ops routes
             page = ctx.new_page()
             page.on("dialog", lambda d: d.dismiss())
             last_idle, last_dig = 0.0, None
+            started = time.time()
             log.info("screen on")
             while True:
+                if time.time() - started > SESSION_MAX_S:  # a fresh browser every few hours keeps its memory flat
+                    log.info("screen session recycled after %d h", SESSION_MAX_S // 3600)
+                    ctx.close()
+                    browser.close()
+                    return
                 try:
                     ev = self.q.get(timeout=5)
                 except queue.Empty:
@@ -104,6 +114,17 @@ class Screen(threading.Thread):
                     last_idle = time.time()
                     self._idle(page, last_dig)
 
+    @staticmethod
+    def _gate(route, request):
+        """Block requests the pons page might make to private or loopback addresses (or to plain http)."""
+        u = urlparse(request.url)
+        host = (u.hostname or "").lower()
+        if (u.scheme not in ("https", "data", "blob") or host in PRIVATE_HOSTS
+                or host.endswith((".local", ".internal", ".localhost")) or host.startswith(("fc", "fd", "fe80", "::"))
+                or re.match(r"^(10\.|127\.|0\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)", host)):
+            return route.abort()
+        return route.continue_()
+
     def _goto(self, page, url, wait=2500):
         host = urlparse(url).hostname or ""
         if host not in ALLOW:
@@ -115,6 +136,9 @@ class Screen(threading.Thread):
         """One frame to the page: the screenshot, a caption, where the worm's eye should go, whether the worm
         is between digs (the page then says it is waiting for the next graduation), and, for a transaction
         it sent, which action it was, whether it has settled and how many seconds the screen was behind."""
+        if (urlparse(page.url).hostname or "") not in ALLOW:     # a click led off the launchpad: back, and show nothing of it
+            log.info("screen left the allowlist (%s); returning", page.url[:80])
+            self._goto(page, NEWEST_LAUNCHES)
         raw = page.screenshot(type="jpeg", quality=45)
         self.hub.frame({"jpg": base64.b64encode(raw).decode(), "note": note[:160], "focus": focus,
                         "url": page.url, "ts": int(time.time()), "idle": idle, "action": action, "done": done, "lag_s": lag})

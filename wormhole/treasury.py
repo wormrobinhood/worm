@@ -50,10 +50,11 @@ TRANSFER_TOPIC = topic("Transfer(address,address,uint256)")
 def ensure_tables(db):
     db.x("CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, asset TEXT,"
          " amount REAL, tx TEXT, note TEXT, qty REAL)")
-    try:
-        db.x("ALTER TABLE ledger ADD COLUMN qty REAL")     # tokens burned, next to the USDG that bought them
-    except Exception:
-        pass
+    for col in ("qty REAL", "to_addr TEXT"):                # tokens burned / bought; the recipient a transfer was sent to
+        try:
+            db.x(f"ALTER TABLE ledger ADD COLUMN {col}")
+        except Exception:
+            pass
 
 
 def units(usd):
@@ -198,6 +199,7 @@ def settle(db, row, rc, wallet, to=None):
     base = row["kind"].removesuffix("_pending")
     ok = rc.get("status") == "0x1"
     amount, why, qty = row["amount"], "reverted", None
+    to = row.get("to_addr") or to                  # the recipient it was sent to, not whoever is configured now
     if ok and base == "claim":
         got = claimed_in(rc, wallet)               # what the escrow actually paid, not the pre-tx read
         if got is not None:
@@ -224,9 +226,16 @@ def settle(db, row, rc, wallet, to=None):
     return kind, amount
 
 
-def finish(db, h, rc, wallet, to=None):
-    """Settle the pending row written at broadcast for hash h (send_tx's on_broadcast)."""
+def finish(db, h, rc, wallet, to=None, fallback=None):
+    """Settle the pending row written at broadcast for hash h (send_tx's on_broadcast). fallback: the row's
+    (kind, amount, note, to_addr) to write now if the broadcast callback failed to write it, so a transfer
+    that left the wallet is never missing from the ledger (and never sent twice for lack of a row)."""
     row = db.one("SELECT * FROM ledger WHERE tx=? AND kind LIKE '%_pending' ORDER BY id DESC LIMIT 1", (h,))
+    if not row and fallback:
+        db.add_event("error", f"the ledger row for {h} was not written at broadcast; rebuilt from the receipt")
+        db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note,to_addr) VALUES(?,?,?,?,?,?,?)",
+             (int(time.time()), fallback["kind"], "USDG", fallback["amount"], h, fallback["note"], fallback.get("to_addr")))
+        row = db.one("SELECT * FROM ledger WHERE tx=? AND kind LIKE '%_pending' ORDER BY id DESC LIMIT 1", (h,))
     if not row:
         db.add_event("error", f"no pending ledger row for {h}")
         return None, None
@@ -240,11 +249,13 @@ def reconcile(rpc, db, kinds, wallet, to_for=None):
     still = 0
     marks = ",".join("?" * len(kinds))
     for row in db.q(f"SELECT * FROM ledger WHERE kind IN ({marks}) ORDER BY id", tuple(kinds)):
-        rc = rpc.call("eth_getTransactionReceipt", [row["tx"]]) if row["tx"] else None
+        if not row["tx"]:                          # not a chain transaction of ours (an x402 payment in flight): compute's own business
+            continue
+        rc = rpc.call("eth_getTransactionReceipt", [row["tx"]])
         if rc:
             settle(db, row, rc, wallet, to_for(row) if to_for else None)
-        elif not row["tx"] or (time.time() - row["ts"] > PENDING_MAX_AGE_S
-                               and not rpc.call("eth_getTransactionByHash", [row["tx"]])):
+        elif (time.time() - row["ts"] > PENDING_MAX_AGE_S
+              and not rpc.call("eth_getTransactionByHash", [row["tx"]])):
             base = row["kind"].removesuffix("_pending")
             db.x("UPDATE ledger SET kind=?, note=? WHERE id=?", (f"{base}_dropped", f"{row['note']} (never mined)", row["id"]))
             db.add_event("error", f"{base} tx {row['tx']} was never mined and the node has dropped it; written off")
@@ -301,9 +312,11 @@ def summary(rpc, db):
 def claim(rpc, db, acct, claimable):
     from .tx import send_tx
 
+    note = "creator fees claimed from pons escrow"
+
     def pending(h):
         db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
-             (int(time.time()), "claim_pending", "USDG", claimable, h, "creator fees claimed from pons escrow"))
+             (int(time.time()), "claim_pending", "USDG", claimable, h, note))
         watch("claim", f"claiming {claimable:.2f} USDG of creator fees from the pons escrow", h)
 
     try:
@@ -312,7 +325,7 @@ def claim(rpc, db, acct, claimable):
     except Exception as e:
         db.add_event("error", f"fee claim failed: {str(e)[:120]}")
         return False
-    return finish(db, h, rc, C.WALLET)[0] == "claim"
+    return finish(db, h, rc, C.WALLET, fallback={"kind": "claim_pending", "amount": claimable, "note": note})[0] == "claim"
 
 
 def forward(rpc, db, acct):
@@ -333,9 +346,11 @@ def forward(rpc, db, acct):
     from .tx import send_tx
     data = selector("transfer(address,uint256)") + encode(["address", "uint256"], [C.OWNER_WALLET, n]).hex()
 
+    note, to = f"{int(C.OWNER_SHARE * 100)}% of income to the creator", C.OWNER_WALLET
+
     def pending(h):
-        db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
-             (int(time.time()), "forward_pending", "USDG", n / 1e6, h, f"{int(C.OWNER_SHARE * 100)}% of income to the creator"))
+        db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note,to_addr) VALUES(?,?,?,?,?,?,?)",
+             (int(time.time()), "forward_pending", "USDG", n / 1e6, h, note, to))
         watch("forward", f"sending {n / 1e6:.2f} USDG, the creator's {int(C.OWNER_SHARE * 100)}%, to the creator's wallet", h)
 
     try:
@@ -343,7 +358,8 @@ def forward(rpc, db, acct):
     except Exception as e:
         db.add_event("error", f"forward failed: {str(e)[:120]}")
         return False
-    return finish(db, h, rc, C.WALLET, to=C.OWNER_WALLET)[0] == "forward"
+    return finish(db, h, rc, C.WALLET, to=to,
+                  fallback={"kind": "forward_pending", "amount": n / 1e6, "note": note, "to_addr": to})[0] == "forward"
 
 
 def burn_state(owed):
@@ -452,10 +468,11 @@ def burn(rpc, db, acct):
     from .tx import send_tx
     data = burn_calldata(pk, zfo, n, min_out)
 
+    note = f"{int(round(C.BURN_SHARE * 100))}% of income: buy $WORM on its pool and send it to the burn address"
+
     def pending(h):
         db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
-             (int(time.time()), "burn_pending", "USDG", n / 1e6, h,
-              f"{int(round(C.BURN_SHARE * 100))}% of income: buy $WORM on its pool and send it to the burn address"))
+             (int(time.time()), "burn_pending", "USDG", n / 1e6, h, note))
         watch("burn", f"buying $WORM with {n / 1e6:.2f} USDG on its pool and sending it to the burn address", h)
 
     try:
@@ -463,7 +480,7 @@ def burn(rpc, db, acct):
     except Exception as e:
         db.add_event("error", f"burn failed: {str(e)[:120]}")
         return False
-    return finish(db, h, rc, C.WALLET)[0] == "burn"
+    return finish(db, h, rc, C.WALLET, fallback={"kind": "burn_pending", "amount": n / 1e6, "note": note})[0] == "burn"
 
 
 # ---- gold: buy tokenized gold (GLD) with the gold share and keep it as a reserve ----
@@ -554,10 +571,11 @@ def gold(rpc, db, acct):
     from .tx import send_tx
     data = gold_calldata(n, min_out, C.WALLET)
 
+    note = f"{int(round(C.GOLD_SHARE * 100))}% of income: buy gold (GLD) for the reserve"
+
     def pending(h):
         db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
-             (int(time.time()), "gold_pending", "USDG", n / 1e6, h,
-              f"{int(round(C.GOLD_SHARE * 100))}% of income: buy gold (GLD) for the reserve"))
+             (int(time.time()), "gold_pending", "USDG", n / 1e6, h, note))
         watch("gold", f"buying gold (GLD) for its reserve with {n / 1e6:.2f} USDG", h)
 
     try:
@@ -565,7 +583,7 @@ def gold(rpc, db, acct):
     except Exception as e:
         db.add_event("error", f"gold buy failed: {str(e)[:120]}")
         return False
-    return finish(db, h, rc, C.WALLET)[0] == "gold"
+    return finish(db, h, rc, C.WALLET, fallback={"kind": "gold_pending", "amount": n / 1e6, "note": note})[0] == "gold"
 
 
 def cycle(rpc, db, acct):

@@ -30,7 +30,8 @@ CREATE_PAGE = "https://www.ponsfamily.com/launchpad/create"
 TOKEN_PARAMS_T = "(string,string,string,string,(string,string,string,string,string),address,uint16,bool,bytes32,bytes32)"
 LAUNCH_SIG = f"launchToken({TOKEN_PARAMS_T},uint256,address)"
 LIMITS = {"name": 64, "symbol": 16, "logo": 512, "description": 2048, "social": 256}
-GAS_FLOOR = 4_500_000        # a real launch+buy used 3.85M; the estimate (+30%) is used when it is higher
+GAS_FLOOR = 4_500_000
+PENDING_MAX_AGE_S = 3600     # a launch the node no longer knows after this long is written off        # a real launch+buy used 3.85M; the estimate (+30%) is used when it is higher
 
 def _pct(x):
     return int(round(x * 100))
@@ -130,6 +131,18 @@ def refuse_if_done(live):
         print("NOTE      ", msg)
     if C.TOKEN:
         msg = f"WH_TOKEN={C.TOKEN} is already set: the worm has its token. Remove the line from .env to launch another."
+        if live:
+            raise SystemExit(msg)
+        print("NOTE      ", msg)
+    try:                                              # the worm may have launched from inside: its database knows
+        from .db import DB
+        db = DB()
+        own, inflight = db.meta_get("own_token") or "", db.meta_get("launch_pending") or ""
+    except Exception:
+        own, inflight = "", ""
+    if own or inflight:
+        msg = (f"the worm already launched its token ({own})" if own
+               else f"the worm's own launch is in flight ({inflight})") + ": refusing to launch another"
         if live:
             raise SystemExit(msg)
         print("NOTE      ", msg)
@@ -242,7 +255,14 @@ def go(rpc, db, acct, say=None):
     pending = db.meta_get("launch_pending") or ""
     if pending:                                       # sent before a restart: settle it from the receipt, send nothing
         rc = rpc.call("eth_getTransactionReceipt", [pending])
-        return _settle(db, pending, rc, db.meta_get("launch_label") or "its token") if rc else None
+        if rc:
+            return _settle(db, pending, rc, db.meta_get("launch_label") or "its token")
+        sent = float(db.meta_get("launch_pending_ts") or 0)
+        if sent and time.time() - sent > PENDING_MAX_AGE_S and not rpc.call("eth_getTransactionByHash", [pending]):
+            db.meta_set("launch_pending", "")         # the node dropped it: nothing was launched, a new one may go
+            db.add_event("error", f"the launch {pending[:12]}… was never mined and the node has dropped it; written off")
+            watch("launch", "the launch was never mined; it can be asked for again", pending, done=True)
+        return None
     if not C.LIVE or acct is None:
         db.add_event("launch", "a launch was asked for, but WH_LIVE=0: nothing signed, nothing sent")
         return None
@@ -260,6 +280,7 @@ def go(rpc, db, acct, say=None):
 
     def pending_(h):
         db.meta_set("launch_pending", h)
+        db.meta_set("launch_pending_ts", int(time.time()))
         watch("launch", f"launching its own token {label}: sent as {h[:12]}…, waiting for the block", h)
 
     try:

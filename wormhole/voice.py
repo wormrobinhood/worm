@@ -84,7 +84,7 @@ def _clean(text, n=40):
     """A stranger's token name, made safe to print: one line, no quotes, bounded."""
     if not text:
         return ""
-    return re.sub(r"[\s\"'`<>{}\[\]]+", " ", str(text)).strip()[:n]
+    return re.sub(r"[^A-Za-z0-9 $._-]+", " ", str(text)).strip()[:n]     # letters, digits and a few marks: no instructions
 
 
 def allowed_numbers(obj, acc=None, key=None):

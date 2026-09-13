@@ -69,6 +69,23 @@ def test_dropped_socket_then_already_known_is_a_success(rpc, acct, live):
     assert seen == [h] and h == tx_hash(s[0]) and rc["status"] == "0x1"
 
 
+def test_nonce_too_low_is_only_a_success_when_the_node_holds_our_hash(rpc, acct, live):
+    rpc.script = ["nonce too low"]                                    # the fake delivers the tx on this verdict
+    h, rc = tx.send_tx(rpc, acct, C.FACTORY)
+    assert rc["status"] == "0x1"
+    rpc.script = ["nonce too low"]
+    rpc._deliver = lambda raw: None                                   # another sender used the nonce: our bytes are not in
+    with pytest.raises(Exception, match="nonce already used"):
+        tx.send_tx(rpc, acct, C.FACTORY)
+
+
+def test_a_failing_broadcast_callback_does_not_hide_a_sent_transaction(rpc, acct, live):
+    def boom(h):
+        raise RuntimeError("disk full")
+    h, rc = tx.send_tx(rpc, acct, C.FACTORY, on_broadcast=boom)
+    assert rc["status"] == "0x1" and len(sends(rpc)) == 1              # sent once, receipt returned all the same
+
+
 def test_delivered_but_unanswered_is_found_by_hash(rpc, acct, live):
     rpc.script = ["delivered-network"]
     h, rc = tx.send_tx(rpc, acct, C.FACTORY)

@@ -65,7 +65,9 @@ def broadcast(rpc, raw, h_local, say):
         except RpcError as e:
             msg = str(e)
             if any(s in msg.lower() for s in KNOWN):
-                return h_local
+                if "nonce too low" in msg.lower() and not rpc.call("eth_getTransactionByHash", [h_local]):
+                    raise RpcError(f"nonce already used by another transaction, not this one: {msg[:120]}")
+                return h_local                      # the node holds these exact bytes already
             if _node_answered(msg):
                 raise
             last = e
@@ -121,7 +123,11 @@ def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=Tr
         h = broadcast(rpc, raw, h_local, say)
         say(f"broadcast {h}")
         if on_broadcast:
-            on_broadcast(h)
+            try:
+                on_broadcast(h)
+            except Exception as e:              # the transaction is out: never let a bookkeeping failure hide it
+                log.error("broadcast callback failed for %s: %s", h, str(e)[:200])
+                say(f"the ledger write for {h} failed ({str(e)[:80]}); the receipt will rebuild it")
     if not wait:
         return h, None
     return h, wait_receipt(rpc, h, say)

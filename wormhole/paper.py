@@ -91,7 +91,10 @@ class Paper:
             if not px or not p["entry_usd"] or not p["qty"]:
                 continue
             cost = p["cost"] if p.get("cost") is not None else COST
-            policy, _ = lab.parse_arm(p["policy"] or lab.DEFAULT)
+            try:
+                policy, _ = lab.parse_arm(p["policy"] or lab.DEFAULT)
+            except KeyError:                       # an arm that no longer exists: exit by the default rule, never stall the book
+                policy, _ = lab.parse_arm(lab.DEFAULT)
             st = {"entry": p["entry_usd"], "entry_ts": p["opened_ts"], "qty_left": (p["qty_left"] if p["qty_left"] is not None else p["qty"]) / p["qty"],
                   "tp_done": json.loads(p["tp_done"] or "[]"), "peak": max(p["peak_usd"] or 0, px), "trail_on": bool(p["trail_on"])}
             realized = p["realized_usd"] or 0.0

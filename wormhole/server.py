@@ -1,5 +1,6 @@
 """The live site: one page, a JSON snapshot, and a websocket that pushes fresh snapshots."""
 import asyncio
+from urllib.parse import urlparse
 import collections
 import hashlib
 from contextlib import asynccontextmanager
@@ -42,6 +43,8 @@ PENDING_MAX = 20            # broadcaster inbox: past this many waiting items th
 PENDING_HARD_MAX = 200      # and past this the oldest item of any kind is dropped (memory backstop)
 SNAPSHOT_MAX_AGE_S = 3.0    # /api/state and the websocket reuse one built snapshot for this long
 LOOPBACK = ("127.0.0.1", "::1")
+WS_MAX_CLIENTS = 300        # live viewers at once; beyond this the page falls back to polling /api/state
+WS_MAX_PER_IP = 8
 
 # The page's own inline script and styles, Google Fonts, the same-origin API and websocket, and token
 # logos (same-origin /ipfs proxy, data: frames from the screen, and the https logos the launchpad lists).
@@ -49,13 +52,13 @@ PAGE_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; "
             "img-src 'self' data: blob: https:; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 
-IPFS_GATEWAYS = ("https://ipfs.io/ipfs/", "https://dweb.link/ipfs/", "https://cloudflare-ipfs.com/ipfs/")
+IPFS_GATEWAYS = ("https://ipfs.io/ipfs/", "https://dweb.link/ipfs/", "https://w3s.link/ipfs/")
 IMG_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"}   # raster only: no SVG, no HTML
 IMG_MAX_BYTES = 400_000
 IMG_TIMEOUT_S = 6           # per gateway
 IMG_BUDGET_S = 10           # for all gateways together, so one slot is never held for three full timeouts
 IMG_NEG_TTL_S = 600         # a CID that yielded nothing is not asked for again for this long
-IMG_CACHE_MAX = 500
+IMG_CACHE_MAX = 60          # at most 60 x IMG_MAX_BYTES in memory: the container has 1 GB with Chromium in it
 IMG_HEADERS = {"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff",
                "Content-Security-Policy": "default-src 'none'; sandbox", "Content-Disposition": "inline"}
 _CID = re.compile(r"^[A-Za-z0-9]{40,100}(?:/(?!\.+$)[A-Za-z0-9._-]{1,80})?$")   # one optional file segment, never just dots
@@ -419,6 +422,8 @@ class SecurityHeaders:
                 h.setdefault("x-content-type-options", "nosniff")
                 h.setdefault("referrer-policy", "no-referrer")
                 h.setdefault("x-frame-options", "DENY")
+                h.setdefault("strict-transport-security", "max-age=31536000")
+                h.setdefault("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=()")
                 if h.get("content-type", "").lower().startswith("text/html"):
                     h.setdefault("content-security-policy", PAGE_CSP)
                 if path == "/api/state":
@@ -434,9 +439,9 @@ def rescan_allowed(request):
     """The real TCP peer is loopback (run.py starts uvicorn with proxy_headers=False, so a forwarded header
     cannot forge it) or the caller presents WH_RESCAN_TOKEN. No token configured: loopback only."""
     host = request.client.host if request.client else ""
-    if host in LOOPBACK:
-        return True
     want = os.environ.get("WH_RESCAN_TOKEN", "")
+    if host in LOOPBACK and not want:              # once a token is configured, even loopback presents it
+        return True
     got = request.headers.get("x-rescan-token", "")
     return bool(want) and bool(got) and secrets.compare_digest(want.encode(), got.encode())
 
@@ -444,9 +449,9 @@ def rescan_allowed(request):
 def ops_allowed(request):
     """Loopback, or the caller presents WH_OPS_TOKEN: the guard on the one route that moves real money."""
     host = request.client.host if request.client else ""
-    if host in LOOPBACK:
-        return True
     want = os.environ.get("WH_OPS_TOKEN", "")
+    if host in LOOPBACK and not want:              # once a token is configured, even loopback presents it (a browser cannot)
+        return True
     got = request.headers.get("x-ops-token", "")
     return bool(want) and bool(got) and secrets.compare_digest(want.encode(), got.encode())
 
@@ -557,7 +562,7 @@ def make_app(rpc, db, brain, paper, hub):
             return Response(status_code=404)
         hit = _img_get(cid)
         if hit is None:
-            if not _img_slots.acquire(timeout=IMG_TIMEOUT_S):
+            if not _img_slots.acquire(blocking=False):     # never park a request thread: the pool serves the pages
                 return Response(status_code=503, headers={"Retry-After": "5"})
             try:
                 hit = _img_get(cid)          # another thread may have fetched it while this one waited
@@ -626,6 +631,14 @@ def make_app(rpc, db, brain, paper, hub):
 
     @app.websocket("/ws")
     async def ws(sock: WebSocket):
+        origin, host = sock.headers.get("origin", ""), sock.headers.get("host", "")
+        if origin and (urlparse(origin).hostname or "") != host.split(":")[0]:   # the page's own origin only
+            await sock.close(code=1008)
+            return
+        peer = sock.client.host if sock.client else ""
+        if len(clients) >= WS_MAX_CLIENTS or sum(1 for c in clients if c.client and c.client.host == peer) >= WS_MAX_PER_IP:
+            await sock.close(code=1013)
+            return
         await sock.accept()
         clients.add(sock)
         try:
@@ -634,7 +647,13 @@ def make_app(rpc, db, brain, paper, hub):
             if hub.frame_latest:
                 await asyncio.wait_for(sock.send_text(json.dumps({"type": "frame", "data": hub.frame_latest})), timeout=5)
             while True:
-                await asyncio.sleep(30)
+                try:                                  # drain whatever the client sends (nothing is read from it)
+                    msg = await asyncio.wait_for(sock.receive(), timeout=30)
+                    if msg.get("type") == "websocket.disconnect":
+                        break
+                    continue
+                except asyncio.TimeoutError:
+                    pass
                 await asyncio.wait_for(sock.send_text(json.dumps({"type": "ping"})), timeout=5)
         except (WebSocketDisconnect, RuntimeError, Exception):
             pass

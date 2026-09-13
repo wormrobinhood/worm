@@ -348,8 +348,8 @@ def _say_hourly(db, text):
 def topups_today(db, now):
     """Top-ups (done or in flight) in the last 24 h: their count and the time of the latest."""
     ensure_tables(db)
-    r = db.one("SELECT COUNT(*) n, MAX(ts) t FROM ledger WHERE kind IN ('compute','compute_pending') AND ts>=?",
-               (now - 86400,))
+    r = db.one("SELECT COUNT(*) n, MAX(ts) t FROM ledger WHERE kind IN ('compute','compute_pending','compute_failed',"
+               "'compute_dropped') AND ts>=?", (now - 86400,))
     return (r["n"], r["t"]) if r else (0, None)
 
 

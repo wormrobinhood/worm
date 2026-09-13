@@ -36,7 +36,7 @@ def _is_deterministic(err):
 
 
 class Rpc:
-    def __init__(self, url, timeout=90, min_interval=0.08):
+    def __init__(self, url, timeout=90, min_interval=0.11):   # the public node allows about 10 requests a second
         self.url = url
         self.timeout = timeout
         self.s = requests.Session()

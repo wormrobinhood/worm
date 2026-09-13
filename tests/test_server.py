@@ -240,14 +240,14 @@ def test_ipfs_timeouts_and_5xx_fall_through(site, monkeypatch):
     client = site[0]
     seen = gateways(monkeypatch, {"ipfs.io": requests.Timeout("slow"),
                                   "dweb.link": FakeResponse(status=502, ctype="text/html", body=b"bad gateway"),
-                                  "cloudflare-ipfs.com": FakeResponse(ctype="image/webp; charset=binary", body=b"RIFF" + b"\0" * 20)})
+                                  "w3s.link": FakeResponse(ctype="image/webp; charset=binary", body=b"RIFF" + b"\0" * 20)})
     cid = "Qm" + "T" * 44
     r = client.get(f"/ipfs/{cid}")
     assert r.status_code == 200 and r.headers["content-type"] == "image/webp"
-    assert [u.split("/")[2] for u in seen] == ["ipfs.io", "dweb.link", "cloudflare-ipfs.com"]
+    assert [u.split("/")[2] for u in seen] == ["ipfs.io", "dweb.link", "w3s.link"]
     cid2 = "Qm" + "U" * 44
     gateways(monkeypatch, {"ipfs.io": requests.ConnectionError("down"), "dweb.link": requests.Timeout("slow"),
-                           "cloudflare-ipfs.com": FakeResponse(status=503, ctype="text/plain", body=b"")})
+                           "w3s.link": FakeResponse(status=503, ctype="text/plain", body=b"")})
     assert client.get(f"/ipfs/{cid2}").status_code == 404
 
 
@@ -493,6 +493,7 @@ def test_launch_trigger_is_guarded_and_queues_once(site, db, monkeypatch):
     assert client.post("/api/launch").status_code == 403                    # not loopback, no token
     monkeypatch.setenv("WH_OPS_TOKEN", "ops-token-for-tests")
     assert client.post("/api/launch", headers={"X-Ops-Token": "wrong"}).status_code == 403
+    assert loopback(site)[0].post("/api/launch").status_code == 403         # once a token is set, even loopback presents it
     monkeypatch.setattr(server.C, "TOKEN", "")
     monkeypatch.setattr(server.C, "LIVE", False)
     r = client.post("/api/launch", headers={"X-Ops-Token": "ops-token-for-tests"})

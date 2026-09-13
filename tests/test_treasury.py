@@ -395,6 +395,38 @@ def gold_receipts(rpc, qty_units=GLD_UNITS):
     rpc.receipt_for = receipt
 
 
+def test_reconcile_leaves_rows_without_a_hash_alone(db, rpc, acct, live):
+    """An x402 payment in flight has no chain hash: it is compute's own row, never written off by the treasury
+    (which would reopen the daily cap), and it does not block the cycle."""
+    ledger(db, "compute_pending", 5.0, tx=None, note="top-up in flight")
+    chain(rpc, claimable=0)
+    auto_receipts(rpc, C.WALLET)
+    assert T.reconcile(rpc, db, ("compute_pending",), C.WALLET) == 0
+    assert rows(db, "compute_pending") and rows(db, "compute_dropped") == []
+
+
+def test_a_forward_is_reconciled_against_the_wallet_it_went_to(db, rpc, acct, live, monkeypatch):
+    """The recipient is stored with the row: changing WH_OWNER_WALLET later cannot fail an old forward and pay twice."""
+    old = "0x" + "aa" * 20
+    h = "0x" + "bb" * 32
+    T.ensure_tables(db)
+    db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note,to_addr) VALUES(?,?,?,?,?,?,?)",
+         (int(time.time()), "forward_pending", "USDG", 2.0, h, "60% of income to the creator", old))
+    rpc.receipts[h] = {"transactionHash": h, "status": "0x1", "blockNumber": "0x10", "logs": [transfer_log(C.USDG, C.WALLET, old, 2_000_000)]}
+    monkeypatch.setattr(C, "OWNER_WALLET", "0x" + "cc" * 20)
+    T.reconcile(rpc, db, ("forward_pending",), C.WALLET, lambda r: C.OWNER_WALLET)
+    assert [r["kind"] for r in db.q("SELECT kind FROM ledger")] == ["forward"]
+
+
+def test_finish_rebuilds_a_row_the_broadcast_callback_failed_to_write(db, rpc, acct, live):
+    T.ensure_tables(db)
+    h = "0x" + "dd" * 32
+    rc = {"transactionHash": h, "status": "0x1", "blockNumber": "0x10", "logs": [transfer_log(C.USDG, C.WALLET, OWNER, 3_000_000)]}
+    kind, amount = T.finish(db, h, rc, C.WALLET, to=OWNER, fallback={"kind": "forward_pending", "amount": 3.0, "note": "n", "to_addr": OWNER})
+    assert kind == "forward" and amount == 3.0 and rows(db, "forward")[0]["tx"] == h
+    assert "rebuilt from the receipt" in db.one("SELECT text FROM events WHERE kind='error'")["text"]
+
+
 def test_owed_to_gold_accumulates_and_waits_for_the_minimum(db, rpc, acct, live):
     ledger(db, "claim", 30.0)                              # gold share 3.00, under the 5.00 minimum
     gold_chain(rpc)

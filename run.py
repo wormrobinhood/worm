@@ -203,6 +203,9 @@ def main():
             def housekeeping():
                 if cycle_n % 12 == 1:                 # once an hour
                     prune_launches(db)
+                    now_ = int(time.time())
+                    db.x("DELETE FROM curve_buyers WHERE ts<?", (now_ - 3 * 86400,))          # the fleet window is a day
+                    db.x("DELETE FROM events WHERE ts<? AND kind NOT IN ('lesson','launch')", (now_ - 60 * 86400,))
                     if hasattr(idx, "refetch_metadata"):
                         idx.refetch_metadata()
 
@@ -236,7 +239,8 @@ def main():
 
     import uvicorn
     # proxy_headers=False: request.client.host is the real TCP peer, never a spoofable X-Forwarded-For
-    uvicorn.run(make_app(rpc, db, brain, paper, hub), host=a.host, port=a.port, log_level="warning", proxy_headers=False)
+    uvicorn.run(make_app(rpc, db, brain, paper, hub), host=a.host, port=a.port, log_level="warning", proxy_headers=False,
+                ws_max_size=4096)
 
 
 if __name__ == "__main__":
