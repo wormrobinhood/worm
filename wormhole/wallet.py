@@ -15,7 +15,7 @@ from . import config as C
 from .chain import Rpc, call_data, decode_result
 from .config import parse_dotenv
 
-ENV = C.ROOT / ".env"
+ENV = C.ENV_FILE                      # .env, or the file WH_ENV_FILE names (a rehearsal keeps its own)
 
 
 def account():

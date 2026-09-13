@@ -44,7 +44,8 @@ def _load_dotenv(path):
     return secret
 
 
-_file_secret = _load_dotenv(ROOT / ".env")
+ENV_FILE = Path(os.environ.get("WH_ENV_FILE") or ROOT / ".env")     # another env file, e.g. a rehearsal's, read and written instead of .env
+_file_secret = _load_dotenv(ENV_FILE)
 DATA_DIR = Path(os.environ.get("WH_DATA_DIR", ROOT / "data"))
 DB_PATH = DATA_DIR / "wormhole.db"
 if os.environ.get("WH_DATA_DIR") and not os.path.ismount(DATA_DIR):
