@@ -23,6 +23,7 @@ VIEW = {"width": 1100, "height": 690}
 LAUNCHPAD = "https://www.ponsfamily.com/launchpad"
 NEWEST_LAUNCHES = LAUNCHPAD + "?sort=newest"      # the Explore section, newest first; the site keeps the sort in the URL
 BIGGEST_CURVES = LAUNCHPAD + "?sort=marketCap"    # the Explore section by market cap: closest to the graduation threshold
+CREATE_PAGE = LAUNCHPAD + "/create"               # where a launch happens on the site: shown while the worm's own goes out
 
 
 def page_gone(page, exc):
@@ -110,13 +111,13 @@ class Screen(threading.Thread):
         page.goto(url, wait_until="domcontentloaded", timeout=45000)
         page.wait_for_timeout(wait)
 
-    def _frame(self, page, note, focus=None, idle=False, action=None, done=False):
+    def _frame(self, page, note, focus=None, idle=False, action=None, done=False, lag=None):
         """One frame to the page: the screenshot, a caption, where the worm's eye should go, whether the worm
         is between digs (the page then says it is waiting for the next graduation), and, for a transaction
-        it sent, which action it was and whether it has settled."""
+        it sent, which action it was, whether it has settled and how many seconds the screen was behind."""
         raw = page.screenshot(type="jpeg", quality=45)
         self.hub.frame({"jpg": base64.b64encode(raw).decode(), "note": note[:160], "focus": focus,
-                        "url": page.url, "ts": int(time.time()), "idle": idle, "action": action, "done": done})
+                        "url": page.url, "ts": int(time.time()), "idle": idle, "action": action, "done": done, "lag_s": lag})
 
     def _focus(self, page, text, click=False):
         return self._focus_loc(page, page.get_by_text(text, exact=False).first, click)
@@ -147,6 +148,8 @@ class Screen(threading.Thread):
 
     def _dig_step(self, page, ev):
         step, token, d = ev["step"], ev["token"], ev.get("data", {})
+        if ev.get("ts"):
+            log.info("screen lag %ss on dig step %s", max(0, int(time.time()) - int(ev["ts"])), step)
         try:
             if step == "start":
                 self._goto(page, f"{LAUNCHPAD}/{token}")
@@ -172,11 +175,14 @@ class Screen(threading.Thread):
         key and signs nothing; it only shows."""
         token = ev.get("token")
         try:
-            url = f"{LAUNCHPAD}/{token}" if token else NEWEST_LAUNCHES
+            url = f"{LAUNCHPAD}/{token}" if token else (CREATE_PAGE if ev["action"] == "launch" else NEWEST_LAUNCHES)
             if page.url != url:
                 self._goto(page, url)
             spot = ACTION_SPOTS.get(ev["action"], "Market cap")
-            self._frame(page, ev["text"], self._focus(page, spot), action=ev["action"], done=bool(ev.get("done")))
+            lag = max(0, int(time.time()) - int(ev.get("ts") or time.time()))
+            note = ev["text"] + (f" · on screen {lag}s after it happened" if lag else " · on screen as it happened")
+            log.info("screen lag %ss on %s", lag, ev["action"])
+            self._frame(page, note, self._focus(page, spot), action=ev["action"], done=bool(ev.get("done")), lag=lag)
         except Exception as e:
             if page_gone(page, e):
                 raise

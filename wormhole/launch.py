@@ -12,6 +12,7 @@ One launch only. The moment the node has the transaction its hash is written to 
 WH_TOKEN_PENDING_TX; a second run refuses while that line exists, so a lost receipt can never turn
 into a second $WORM. On success WH_TOKEN replaces it."""
 import argparse
+import logging
 import os
 import time
 
@@ -22,6 +23,9 @@ from . import config as C
 from .chain import Rpc, RpcError, call_fn, selector
 from .pons import TOKEN_LAUNCHED
 from .wallet import account, update_env
+
+log = logging.getLogger("wormhole.launch")
+CREATE_PAGE = "https://www.ponsfamily.com/launchpad/create"
 
 TOKEN_PARAMS_T = "(string,string,string,string,(string,string,string,string,string),address,uint16,bool,bytes32,bytes32)"
 LAUNCH_SIG = f"launchToken({TOKEN_PARAMS_T},uint256,address)"
@@ -218,3 +222,62 @@ def _ago(ts):
     if not ts:
         return ""
     return f"{d}s ago" if d < 60 else f"{d // 60}m ago" if d < 3600 else f"{d // 3600}h {d % 3600 // 60}m ago"
+
+
+# ---- the launch from inside the running worm --------------------------------------------------------
+
+def go(rpc, db, acct, say=None):
+    """The command's steps, done by the worm itself so the screen and the page follow them as they happen.
+    The token is kept in the database (a host's environment cannot be rewritten) and picked up from there
+    at the next start. Never sends twice: a token already set, or a launch in flight, ends it."""
+    from .treasury import watch
+    from .tx import send_tx
+    say = say or log.info
+    if C.TOKEN:
+        return None
+    pending = db.meta_get("launch_pending") or ""
+    if pending:                                       # sent before a restart: settle it from the receipt, send nothing
+        rc = rpc.call("eth_getTransactionReceipt", [pending])
+        return _settle(db, pending, rc, db.meta_get("launch_label") or "its token") if rc else None
+    if not C.LIVE or acct is None:
+        db.add_event("launch", "a launch was asked for, but WH_LIVE=0: nothing signed, nothing sent")
+        return None
+    wallet = acct.address
+    p = params(wallet)
+    fee = launch_fee(rpc)
+    data, econ, salt = encode_call(rpc, p, wallet, False)
+    pred, err = dry_run(rpc, wallet, data, fee)
+    if err:
+        db.add_event("error", f"launch dry run failed: {err[:120]}")
+        return None
+    label = f"{p['name']} (${p['symbol']})"
+    db.meta_set("launch_label", label)
+    watch("launch", f"launching its own token {label}: signing the launch for pons", None)
+
+    def pending_(h):
+        db.meta_set("launch_pending", h)
+        watch("launch", f"launching its own token {label}: sent as {h[:12]}…, waiting for the block", h)
+
+    try:
+        h, rc = send_tx(rpc, acct, C.FACTORY, data, value=fee, gas=None, gas_floor=GAS_FLOOR, say=say, on_broadcast=pending_)
+    except Exception as e:
+        db.add_event("error", f"launch failed: {str(e)[:120]}")
+        watch("launch", f"the launch did not go out: {str(e)[:80]}", None, done=True)
+        return None
+    return _settle(db, h, rc, label)
+
+
+def _settle(db, h, rc, label):
+    from .treasury import watch
+    token = launched_token(rc) if rc.get("status") == "0x1" else None
+    db.meta_set("launch_pending", "")
+    if not token:
+        db.add_event("error", f"launch reverted or no TokenLaunched event: {h}")
+        watch("launch", f"the launch reverted: {h[:12]}…", h, done=True)
+        return None
+    token = token.lower()
+    db.meta_set("own_token", token)
+    C.TOKEN = token
+    db.add_event("launch", f"launched its own token {label} · tx {h}", token)
+    watch("launch", f"launched its own token {label} just now: {h[:12]}…", h, done=True)
+    return token

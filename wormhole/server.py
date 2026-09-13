@@ -105,6 +105,7 @@ class Hub:
         self.rescan = None       # set by run.py: callable(token) that queues a rescore
         self.frame_latest = None
         self.action_latest = None
+        self.launch_wanted = False   # set by /api/launch; the runner's launch stage acts on it once
         self._queued = {}        # token -> when /api/rescan queued it; cleared by mark_scoring
         self._started = {}       # token -> when the worker started scoring it
         self._qlock = threading.Lock()
@@ -440,6 +441,16 @@ def rescan_allowed(request):
     return bool(want) and bool(got) and secrets.compare_digest(want.encode(), got.encode())
 
 
+def ops_allowed(request):
+    """Loopback, or the caller presents WH_OPS_TOKEN: the guard on the one route that moves real money."""
+    host = request.client.host if request.client else ""
+    if host in LOOPBACK:
+        return True
+    want = os.environ.get("WH_OPS_TOKEN", "")
+    got = request.headers.get("x-ops-token", "")
+    return bool(want) and bool(got) and secrets.compare_digest(want.encode(), got.encode())
+
+
 def make_app(rpc, db, brain, paper, hub):
     @asynccontextmanager
     async def lifespan(app):
@@ -483,6 +494,22 @@ def make_app(rpc, db, brain, paper, hub):
     @app.get("/api/state")
     def state():
         return JSONResponse(snap.get())
+
+    @app.post("/api/launch")
+    def launch_(request: Request):
+        """The creator's trigger: the worm launches its own token on its next cycle, from inside its own
+        process, so the screen shows it as it happens. Loopback or WH_OPS_TOKEN only; nothing signs unless
+        WH_LIVE=1; never twice."""
+        if not ops_allowed(request):
+            return JSONResponse({"error": "local only"}, status_code=403)
+        if C.TOKEN:
+            return {"queued": False, "token": C.TOKEN, "why": "the worm already has its token"}
+        if not C.LIVE:
+            return JSONResponse({"queued": False, "why": "WH_LIVE=0: the worm would not sign"}, status_code=409)
+        if db.meta_get("launch_pending"):
+            return {"queued": False, "why": "a launch is already in flight"}
+        hub.launch_wanted = True
+        return {"queued": True, "why": "the worm launches on its next cycle; watch the screen"}
 
     @app.get("/api/rescan/{addr}")
     def rescan(addr: str, request: Request):

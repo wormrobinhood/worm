@@ -45,6 +45,8 @@ def build():
     hub.screen_on = screen is not None            # the page hides the screen panel on a host that runs no browser
 
     hub.restore(db)                               # the last dig survives a restart
+    if not C.TOKEN:                               # launched from inside the worm: the token lives in its database
+        C.TOKEN = (db.meta_get("own_token") or "").lower()
 
     def watch(ev):                                # every transaction the worm sends: the page and the screen follow it
         hub.act(ev)
@@ -205,7 +207,12 @@ def main():
                         idx.refetch_metadata()
 
             # exits and bookkeeping run before entries; every stage is isolated so one failure cannot skip the rest
-            stages = [("own", lambda: L.announce(db)), ("prices", lambda: refresh_scored(db)), ("lab", lambda: lab.tick(db)),
+            def launch_now():
+                hub.launch_wanted = False
+                L.go(rpc, db, acct)
+
+            stages = [("launch", lambda: hub.launch_wanted and launch_now()), ("own", lambda: L.announce(db)),
+                      ("prices", lambda: refresh_scored(db)), ("lab", lambda: lab.tick(db)),
                       ("paper", paper.retry_pending), ("paper mark", paper.mark), ("brain", brain.check),
                       ("advisor", lambda: advisor.due(db)[0] and advisor.run(db, brain.summary(), lab.summary(db))),
                       ("exits", lambda: trader.mark(rpc, db, C.LIVE, acct)), ("treasury", lambda: T.cycle(rpc, db, acct)),

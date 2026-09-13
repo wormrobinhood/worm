@@ -486,3 +486,23 @@ def test_rescan_refuses_the_worms_own_token(site, db, monkeypatch):
     add_grad(db, mine)
     r = client.get(f"/api/rescan/{mine}")
     assert r.status_code == 400 and "own token" in r.json()["error"] and queued == []
+
+
+def test_launch_trigger_is_guarded_and_queues_once(site, db, monkeypatch):
+    client, hub, queued = site
+    assert client.post("/api/launch").status_code == 403                    # not loopback, no token
+    monkeypatch.setenv("WH_OPS_TOKEN", "ops-token-for-tests")
+    assert client.post("/api/launch", headers={"X-Ops-Token": "wrong"}).status_code == 403
+    monkeypatch.setattr(server.C, "TOKEN", "")
+    monkeypatch.setattr(server.C, "LIVE", False)
+    r = client.post("/api/launch", headers={"X-Ops-Token": "ops-token-for-tests"})
+    assert r.status_code == 409 and "WH_LIVE=0" in r.json()["why"] and hub.launch_wanted is False
+    monkeypatch.setattr(server.C, "LIVE", True)
+    r = client.post("/api/launch", headers={"X-Ops-Token": "ops-token-for-tests"})
+    assert r.status_code == 200 and r.json()["queued"] is True and hub.launch_wanted is True
+    db.meta_set("launch_pending", "0x" + "ab" * 32)
+    assert client.post("/api/launch", headers={"X-Ops-Token": "ops-token-for-tests"}).json()["queued"] is False
+    db.meta_set("launch_pending", "")
+    monkeypatch.setattr(server.C, "TOKEN", "0x" + "cd" * 20)
+    r = client.post("/api/launch", headers={"X-Ops-Token": "ops-token-for-tests"}).json()
+    assert r["queued"] is False and r["token"] == "0x" + "cd" * 20

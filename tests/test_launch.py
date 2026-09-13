@@ -204,3 +204,37 @@ def test_the_worm_announces_its_own_token_once(db, monkeypatch):
     rows = db.q("SELECT kind, text, token FROM events WHERE kind='launch'")
     assert len(rows) == 1 and rows[0]["token"] == token
     assert rows[0]["text"] == "launched its own token Worm ($WORM) · tx 0x" + "ab" * 32
+
+
+def test_the_worm_launches_from_inside_and_tells_the_screen(ready, live, acct, db, monkeypatch):
+    """go(): dry run, broadcast (the screen hears it twice: signing, sent), receipt, token kept in the
+    database and in the running config, one log line; a second call sends nothing."""
+    from wormhole import treasury as T
+    heard = []
+    monkeypatch.setattr(T, "WATCH", heard.append)
+    ready.logs = [launched_log(TOKEN, CURVE, acct.address)]
+    token = L.go(ready, db, acct)
+    assert token == TOKEN.lower() and C.TOKEN == TOKEN.lower()
+    assert db.meta_get("own_token") == TOKEN.lower() and not db.meta_get("launch_pending")
+    assert len(ready.raw) == 1 and decode_tx(ready.raw[0])["to"] == C.FACTORY
+    assert [(e["action"], e["done"], e["token"]) for e in heard] == [("launch", False, None), ("launch", False, None), ("launch", True, TOKEN.lower())]
+    assert heard[0]["text"].startswith("launching its own token Worm ($WORM): signing")
+    assert heard[1]["text"].startswith("launching its own token Worm ($WORM): sent as 0x") and heard[1]["tx"] == tx_hash(ready.raw[0])
+    assert heard[2]["text"].startswith("launched its own token Worm ($WORM) just now")
+    ev = db.q("SELECT text, token FROM events WHERE kind='launch'")
+    assert len(ev) == 1 and ev[0]["token"] == TOKEN.lower() and "launched its own token Worm ($WORM)" in ev[0]["text"]
+    assert L.go(ready, db, acct) is None and len(ready.raw) == 1           # it has its token: never twice
+    assert L.announce(db) is False                                          # the log line is not written again
+
+
+def test_go_signs_nothing_in_demo_and_settles_a_launch_left_in_flight(ready, acct, db, monkeypatch):
+    from wormhole import treasury as T
+    monkeypatch.setattr(T, "WATCH", None)
+    assert L.go(ready, db, acct) is None and ready.raw == []               # WH_LIVE=0
+    assert "WH_LIVE=0" in db.one("SELECT text FROM events WHERE kind='launch'")["text"]
+    h = "0x" + "77" * 32                                                    # a launch sent before a restart
+    db.meta_set("launch_pending", h); db.meta_set("launch_label", "Worm ($WORM)")
+    ready.receipts[h] = None                                                # not mined yet: wait, send nothing
+    assert L.go(ready, db, acct) is None and ready.raw == [] and db.meta_get("launch_pending") == h
+    ready.receipts[h] = {"transactionHash": h, "status": "0x1", "blockNumber": "0x10", "logs": [launched_log(TOKEN, CURVE, acct.address)]}
+    assert L.go(ready, db, acct) == TOKEN.lower() and C.TOKEN == TOKEN.lower() and not db.meta_get("launch_pending")
