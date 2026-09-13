@@ -1,5 +1,5 @@
 # Every dependency pinned to the version installed and tested on 2026-09-12.
-# Next step: a hash-pinned lock (pip-compile --generate-hashes) so a build cannot pull a substituted wheel.
+# Deployment installs requirements.lock with --require-hashes. Regenerate it when updating dependencies.
 Pillow==12.3.0
 eth-abi==6.0.0
 eth-account==0.13.7

@@ -1,21 +1,10 @@
-"""Money in, money out, in the open.
+"""Fee accounting and treasury actions.
 
-- income: USDG creator fees. pons credits them to an escrow; the worm claims them with claimToken(USDG).
-- the split of every claim (WH_OWNER_SHARE / WH_GOLD_SHARE / WH_BURN_SHARE / the rest): the creator's share
-  is owed to WH_OWNER_WALLET and forwarded; the burn share is owed to the burn and, once at least MIN_BURN_USD
-  is owed and $WORM has a pool, buys $WORM on that pool and sends it to the burn address in the same
-  transaction; the gold share, once at least MIN_GOLD_USD is owed, buys tokenized gold (GLD) on its Uniswap v3
-  pool through Uniswap's SwapRouter02 (approved for exactly that amount, just before) and keeps it in the
-  wallet as a reserve that the runway never counts;
-  the rest stays in the wallet for compute, gas and the reserve. Every owed balance is derived from the ledger
-  (claims minus what went out, in flight included), so small claims add up instead of being dropped and a
-  crash between two steps changes nothing.
-- every movement is written to the ledger table and shown on the site. A row is written as
-  '<kind>_pending' the moment the node has the transaction and settled from the receipt: 'claim',
-  'forward', 'burn' or 'gold' on success (amount taken from the ClaimedToken or Transfer log, a burn's
-  token count from the Transfer to the burn address, a gold buy's GLD from the Transfer to the wallet),
-  '<kind>_failed' on a revert, '<kind>_dropped'
-  when the node lost it. Pending rows are reconciled at the top of every cycle, before anything new is sent."""
+Claims retain their original allocation policy. Outstanding obligations and pending spends are
+reserved; an accounting error pauses spending. Pending records are persisted before submission.
+Successful receipts require event evidence, confirmed reverts release obligations, and unknown
+outcomes remain pending until reconciliation. New chain submissions use the private durable outbox.
+"""
 import logging
 import os
 import time
@@ -42,7 +31,7 @@ _gold_price = (0.0, None)
 PERMIT2_MAX = 2 ** 160 - 1
 EXPIRY_MAX = 2 ** 48 - 1
 TAKE = b"\x0e"             # Uniswap v4 router action: take a currency to a recipient (amount 0 = the whole open delta)
-PENDING_MAX_AGE_S = 3600   # a pending tx the node no longer knows after this long is written off
+PENDING_MAX_AGE_S = 3600   # legacy setting; elapsed time never releases a pending obligation
 CLAIMED_TOPIC = topic("ClaimedToken(address,address,uint256)")     # PonsV2FeeEscrow: recipient, token indexed
 TRANSFER_TOPIC = topic("Transfer(address,address,uint256)")
 
@@ -50,11 +39,23 @@ TRANSFER_TOPIC = topic("Transfer(address,address,uint256)")
 def ensure_tables(db):
     db.x("CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, asset TEXT,"
          " amount REAL, tx TEXT, note TEXT, qty REAL)")
-    for col in ("qty REAL", "to_addr TEXT"):                # tokens burned / bought; the recipient a transfer was sent to
-        try:
+    for col in ("qty REAL", "to_addr TEXT", "authorization TEXT", "owner_share REAL", "burn_share REAL", "gold_share REAL"):                # tokens burned / bought; the recipient a transfer was sent to
+        name = col.split()[0]
+        if name not in {r['name'] for r in db.q('PRAGMA table_info(ledger)')}:
             db.x(f"ALTER TABLE ledger ADD COLUMN {col}")
-        except Exception:
-            pass
+
+
+def pin_claim_shares(db):
+    """Legacy claims need an explicit migration policy; never guess from current settings."""
+    ensure_tables(db)
+    if db.one("SELECT 1 FROM ledger WHERE kind IN ('claim','claim_pending') AND owner_share IS NULL"):
+        values = [os.environ.get('WH_LEGACY_' + k + '_SHARE') for k in ('OWNER','BURN','GOLD')]
+        if any(v is None for v in values):
+            raise RuntimeError('legacy claim allocations require WH_LEGACY_OWNER/BURN/GOLD_SHARE before payments resume')
+        owner, burn_, gold_ = map(float, values)
+        if not (all(0 <= v <= 1 for v in (owner,burn_,gold_)) and owner+burn_+gold_ <= 1):
+            raise RuntimeError('invalid legacy claim split')
+        db.x("UPDATE ledger SET owner_share=?,burn_share=?,gold_share=? WHERE kind IN ('claim','claim_pending') AND owner_share IS NULL", (owner,burn_,gold_))
 
 
 def units(usd):
@@ -75,27 +76,33 @@ def usdg_balance(rpc, wallet):
 
 def owed_to_owner(db):
     """The creator's share of every claim so far, minus what was forwarded or is on its way."""
-    c = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind='claim'")["s"]
+    pin_claim_shares(db)
+    c = db.one("SELECT COALESCE(SUM(amount * owner_share),0) s FROM ledger WHERE kind='claim'")["s"]
     f = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind IN ('forward','forward_pending')")["s"]
-    return c * C.OWNER_SHARE - f
+    return c - f
 
 
 def owed_to_burn(db):
     """The burn share of every claim so far, minus what was burned or is on its way, in USDG."""
-    c = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind='claim'")["s"]
+    pin_claim_shares(db)
+    c = db.one("SELECT COALESCE(SUM(amount * burn_share),0) s FROM ledger WHERE kind='claim'")["s"]
     b = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind IN ('burn','burn_pending')")["s"]
-    return c * C.BURN_SHARE - b
+    return c - b
 
 
 def owed_to_gold(db):
     """The gold share of every claim so far, minus what bought gold or is on its way, in USDG."""
-    c = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind='claim'")["s"]
+    pin_claim_shares(db)
+    c = db.one("SELECT COALESCE(SUM(amount * gold_share),0) s FROM ledger WHERE kind='claim'")["s"]
     g = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind IN ('gold','gold_pending')")["s"]
-    return c * C.GOLD_SHARE - g
+    return c - g
 
 
 def owed_total(db):
-    return max(0.0, owed_to_owner(db)) + max(0.0, owed_to_burn(db)) + max(0.0, owed_to_gold(db))
+    outstanding = max(0.0, owed_to_owner(db)) + max(0.0, owed_to_burn(db)) + max(0.0, owed_to_gold(db))
+    # Pending sends are not owed a second time, but their funds must remain reserved until settlement.
+    pending = db.one("SELECT COALESCE(SUM(amount),0) n FROM ledger WHERE kind IN ('forward_pending','burn_pending','gold_pending','compute_pending') AND asset='USDG'")['n']
+    return outstanding + pending
 
 
 def free_usd(db, usd_real):
@@ -103,10 +110,12 @@ def free_usd(db, usd_real):
     to the burn and to gold. Runway, surplus and readiness are sized from this, never from money passing through."""
     try:
         ensure_tables(db)
+        if db.one("SELECT 1 FROM ledger WHERE kind='claim_pending'"):
+            return 0.0
         return round(max(0.0, float(usd_real or 0.0) - owed_total(db)), 2)
     except Exception as e:
         log.info("owed read failed: %s", e)
-        return round(max(0.0, float(usd_real or 0.0)), 2)
+        return 0.0
 
 
 # ---- receipts ----------------------------------------------------------------
@@ -202,8 +211,10 @@ def settle(db, row, rc, wallet, to=None):
     to = row.get("to_addr") or to                  # the recipient it was sent to, not whoever is configured now
     if ok and base == "claim":
         got = claimed_in(rc, wallet)               # what the escrow actually paid, not the pre-tx read
-        if got is not None:
-            amount = got
+        if got is None:
+            _say_hourly(db, 'error', f'claim receipt incomplete; funds reserved pending verification: {row["tx"]}')
+            return row['kind'], row['amount']
+        amount = got
     elif ok and base == "burn":
         qty = burned_in(rc)                        # the tokens that reached the burn address, from the receipt
         ok, why = qty is not None, "no $WORM reached the burn address"
@@ -213,6 +224,9 @@ def settle(db, row, rc, wallet, to=None):
     elif ok:
         ok = transferred(rc, C.USDG, wallet, to, units(row["amount"]))
         why = "no Transfer log for the amount"
+    if rc.get('status') not in ('0x0', '0x1') or (rc.get('status') == '0x1' and not ok):
+        _say_hourly(db, 'error', f'{base} receipt evidence incomplete; retained pending: {row["tx"]}')
+        return row['kind'], row['amount']
     kind = base if ok else f"{base}_failed"
     note = row["note"] if ok else f"{row['note']} ({why})"
     db.x("UPDATE ledger SET kind=?, amount=?, note=?, qty=? WHERE id=?", (kind, amount, note, qty, row["id"]))
@@ -243,9 +257,8 @@ def finish(db, h, rc, wallet, to=None, fallback=None):
 
 
 def reconcile(rpc, db, kinds, wallet, to_for=None):
-    """Settle pending rows from the chain: the receipt when there is one, written off when the node no
-    longer knows the transaction after PENDING_MAX_AGE_S. to_for(row) gives a transfer's expected
-    recipient. Returns how many rows are still pending."""
+    """Settle verified receipts; preserve unknown outcomes regardless of age.
+    to_for(row) supplies the expected recipient. Returns unresolved chain rows."""
     still = 0
     marks = ",".join("?" * len(kinds))
     for row in db.q(f"SELECT * FROM ledger WHERE kind IN ({marks}) ORDER BY id", tuple(kinds)):
@@ -253,12 +266,9 @@ def reconcile(rpc, db, kinds, wallet, to_for=None):
             continue
         rc = rpc.call("eth_getTransactionReceipt", [row["tx"]])
         if rc:
-            settle(db, row, rc, wallet, to_for(row) if to_for else None)
-        elif (time.time() - row["ts"] > PENDING_MAX_AGE_S
-              and not rpc.call("eth_getTransactionByHash", [row["tx"]])):
-            base = row["kind"].removesuffix("_pending")
-            db.x("UPDATE ledger SET kind=?, note=? WHERE id=?", (f"{base}_dropped", f"{row['note']} (never mined)", row["id"]))
-            db.add_event("error", f"{base} tx {row['tx']} was never mined and the node has dropped it; written off")
+            kind, _ = settle(db, row, rc, wallet, to_for(row) if to_for else None)
+            if kind.endswith('_pending'):
+                still += 1
         else:
             still += 1
     return still
@@ -300,12 +310,17 @@ def summary(rpc, db):
             out["gold_total"] = round(r["s"], 4)
     out["burned_qty"] = round(db.one("SELECT COALESCE(SUM(qty),0) q FROM ledger WHERE kind='burn'")["q"] or 0.0, 2)
     out["gold_qty"] = round(db.one("SELECT COALESCE(SUM(qty),0) q FROM ledger WHERE kind='gold'")["q"] or 0.0, 6)
-    out["owed_to_owner"] = round(max(0.0, owed_to_owner(db)), 4)
-    out["owed_to_burn"] = round(max(0.0, owed_to_burn(db)), 4)
-    out["owed_to_gold"] = round(max(0.0, owed_to_gold(db)), 4)
-    out["burn_state"] = burn_state(out["owed_to_burn"])
-    out["gold_state"] = gold_state(out["owed_to_gold"])
-    out["ledger"] = db.q("SELECT * FROM ledger ORDER BY id DESC LIMIT 20")
+    try:
+        out["owed_to_owner"] = round(max(0.0, owed_to_owner(db)), 4)
+        out["owed_to_burn"] = round(max(0.0, owed_to_burn(db)), 4)
+        out["owed_to_gold"] = round(max(0.0, owed_to_gold(db)), 4)
+        out["burn_state"] = burn_state(out["owed_to_burn"])
+        out["gold_state"] = gold_state(out["owed_to_gold"])
+    except RuntimeError as e:
+        out.update(owed_to_owner=None, owed_to_burn=None, owed_to_gold=None,
+                   burn_state='paused: accounting needs review', gold_state='paused: accounting needs review',
+                   accounting_error=str(e))
+    out["ledger"] = db.q("SELECT id,ts,kind,asset,amount,tx,note,qty FROM ledger ORDER BY id DESC LIMIT 20")
     return out
 
 
@@ -315,8 +330,8 @@ def claim(rpc, db, acct, claimable):
     note = "creator fees claimed from pons escrow"
 
     def pending(h):
-        db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
-             (int(time.time()), "claim_pending", "USDG", claimable, h, note))
+        db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note,owner_share,burn_share,gold_share) VALUES(?,?,?,?,?,?,?,?,?)",
+             (int(time.time()), "claim_pending", "USDG", claimable, h, note, C.OWNER_SHARE, C.BURN_SHARE, C.GOLD_SHARE))
         watch("claim", f"claiming {claimable:.2f} USDG of creator fees from the pons escrow", h)
 
     try:
@@ -593,6 +608,7 @@ def cycle(rpc, db, acct):
     if not (C.LIVE and acct and C.WALLET):
         return
     try:
+        pin_claim_shares(db)
         if reconcile(rpc, db, ("claim_pending", "forward_pending", "burn_pending", "gold_pending", "compute_pending"), C.WALLET,
                      lambda r: C.AISURPLUS_DEPOSIT if r["kind"].startswith("compute") else C.OWNER_WALLET):
             return                      # something is still in flight: settle it before sending more
@@ -605,7 +621,9 @@ def cycle(rpc, db, acct):
         log.info("claimable read failed: %s", e)
         return
     if claimable >= MIN_CLAIM_USD:
-        claim(rpc, db, acct, claimable)
-    forward(rpc, db, acct)
-    burn(rpc, db, acct)
-    gold(rpc, db, acct)
+        if not claim(rpc, db, acct, claimable):
+            return
+    for action in (forward, burn, gold):
+        if db.one("SELECT 1 FROM ledger WHERE kind LIKE '%_pending' AND tx IS NOT NULL"):
+            return
+        action(rpc, db, acct)

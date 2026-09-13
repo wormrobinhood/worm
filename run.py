@@ -22,7 +22,7 @@ from wormhole import treasury as T
 from wormhole import voice, trader, compute, lab, advisor
 from wormhole import launch as L
 from wormhole.budget import projection
-from wormhole import readiness
+from wormhole import readiness, tx, launch_schedule
 import os
 from wormhole.growth import treasury
 from wormhole import budget
@@ -31,9 +31,14 @@ from wormhole.prices import refresh_scored
 log = logging.getLogger("wormhole")
 
 
+def launch_cycle(rpc, db, acct, hub):
+    return launch_schedule.tick(rpc, db, acct, hub)
+
+
 def build():
     rpc = Rpc(C.RPC)
     db = DB()
+    launch_schedule.initialize(db)
     advisor.load(db)                              # learned exit arms into the lab before anything parses an arm name
     brain = Brain(db)
     paper = Paper(db)
@@ -41,7 +46,11 @@ def build():
     newest = lambda: db.one("SELECT token,name,symbol,grad_ts FROM launches WHERE graduated=1"
                             " ORDER BY grad_block DESC LIMIT 1")
     own = lambda: L.own_token(db)                # its own token, once launched and indexed: a page the screen visits too
-    screen = Screen(hub, newest=newest, own=own) if os.environ.get("WH_SCREEN", "1") != "0" else None
+    screen_enabled = os.environ.get("WH_SCREEN", "1") != "0"
+    if C.LIVE and not os.environ.get('WH_SCREEN_CDP_URL', '').strip():
+        screen_enabled = False
+        log.warning('live screen requires an isolated browser service: configure WH_SCREEN_CDP_URL')
+    screen = Screen(hub, newest=newest, own=own) if screen_enabled else None
     hub.screen_on = screen is not None            # the page hides the screen panel on a host that runs no browser
 
     hub.restore(db)                               # the last dig survives a restart
@@ -210,11 +219,13 @@ def main():
                         idx.refetch_metadata()
 
             # exits and bookkeeping run before entries; every stage is isolated so one failure cannot skip the rest
-            def launch_now():
-                hub.launch_wanted = False
-                L.go(rpc, db, acct)
-
-            stages = [("launch", lambda: hub.launch_wanted and launch_now()), ("own", lambda: L.announce(db)),
+            try:
+                payments_ready = tx.recover(rpc)
+            except Exception as e:
+                payments_ready = False
+                log.error('payments paused: %s', e)
+                T._say_hourly(db, 'error', 'payments paused: transaction journal needs reconciliation')
+            stages = [("own", lambda: L.announce(db)),
                       ("prices", lambda: refresh_scored(db)), ("lab", lambda: lab.tick(db)),
                       ("paper", paper.retry_pending), ("paper mark", paper.mark), ("brain", brain.check),
                       ("advisor", lambda: advisor.due(db)[0] and advisor.run(db, brain.summary(), lab.summary(db))),
@@ -223,6 +234,8 @@ def main():
                       ("voice", lambda: voice.cycle(db, extra={"stage": box["tre"].get("stage_name"), "treasury_usd": box["tre"].get("usd_real")})),
                       ("housekeeping", housekeeping)]
             for name, fn in stages:
+                if not payments_ready and name in ('launch', 'treasury', 'compute', 'entries', 'exits'):
+                    continue
                 try:
                     fn()
                 except KeyError as e:
@@ -232,7 +245,15 @@ def main():
             hub.notify("mark")
             time.sleep(C.MARK_EVERY_S)
 
-    for fn in (pipeline, worker, marker, watchdog):
+    def launch_clock():
+        while True:
+            try:
+                launch_cycle(rpc, db, acct, hub)
+            except Exception:
+                log.exception('launch scheduler paused; review pending state')
+            time.sleep(1)
+
+    for fn in (pipeline, worker, marker, watchdog, launch_clock):
         threading.Thread(target=fn, daemon=True, name=fn.__name__).start()
     if screen:
         screen.start()

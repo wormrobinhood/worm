@@ -193,3 +193,42 @@ const launchTape=document.querySelector('.ticker');launchTape.setAttribute('role
 function updateLaunchTape(s){const empty=!(s.ticker||[]).length;launchTape.classList.toggle('is-empty',empty);if(empty)document.querySelector('#ticker').textContent='Waiting for new launches…'}
 const preTapeRender=render;render=function(s){preTapeRender(s);updateLaunchTape(s)};
 if(lastState)updateLaunchTape(lastState);
+
+
+// Server-authoritative launch countdown. Reaching zero never sends a browser-side launch request.
+(()=>{
+ const panel=document.getElementById('launch-clock');
+ const digits=document.getElementById('launch-clock-digits'),note=document.getElementById('launch-clock-note');
+ const date=document.getElementById('launch-clock-date'),tokenLink=document.getElementById('launch-clock-token');
+ let schedule=null,received=0,inflight=false,lastError=false;
+ function draw(){
+  if(!schedule){digits.textContent='—';note.textContent=lastError?'Launch schedule temporarily unavailable.':'Connecting to launch schedule…';return}
+  const elapsed=(performance.now()-received)/1000,now=schedule.server_now+elapsed;
+  const stale=elapsed>20||lastError;
+  panel.dataset.state=schedule.state;
+  date.textContent=schedule.at?new Date(schedule.at*1000).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'long'}):'';
+  if(schedule.at)date.dateTime=new Date(schedule.at*1000).toISOString();else date.removeAttribute('datetime');
+  tokenLink.hidden=true;
+  if(schedule.state==='launched'){
+   digits.textContent='LAUNCHED';note.textContent='WORM’s token is on-chain.';
+   if(/^0x[0-9a-f]{40}$/i.test(schedule.token||'')){tokenLink.href='https://robinhoodchain.blockscout.com/token/'+schedule.token;tokenLink.hidden=false}
+  }else if(schedule.state==='launching'||schedule.state==='pending'){
+   digits.textContent=schedule.state==='pending'?'AWAITING CONFIRMATION':'LAUNCH STARTED';
+   note.textContent='Follow the launch in the live screen and activity log.';
+  }else if(['failed','review'].includes(schedule.state)){
+   digits.textContent='NEEDS REVIEW';note.textContent='The launch needs an operator check before another attempt.';
+  }else if(schedule.at&&['scheduled','due'].includes(schedule.state)){
+   const remaining=Math.max(0,Math.ceil(schedule.at-now));
+   const d=Math.floor(remaining/86400),h=Math.floor(remaining%86400/3600),m=Math.floor(remaining%3600/60),sec=remaining%60;
+   digits.textContent=remaining?[d+'d',String(h).padStart(2,'0')+'h',String(m).padStart(2,'0')+'m',String(sec).padStart(2,'0')+'s'].join(' : '):'LAUNCH WINDOW OPEN';
+   note.textContent=schedule.reason||(remaining?(schedule.live_enabled?'WORM begins its launch checks when the countdown reaches zero.':'Launch time is set. Live execution is not enabled yet.'):'Waiting for the server to confirm launch status.');
+  }else{digits.textContent='TO BE ANNOUNCED';note.textContent='The launch time will appear here when it is set.'}
+  if(stale)note.textContent='Live status delayed. Reconnecting to confirm the launch state…';
+ }
+ async function refresh(){
+  if(inflight||document.hidden)return;inflight=true;
+  try{const r=await fetch('/api/launch/status',{cache:'no-store',signal:AbortSignal.timeout(8000)});if(!r.ok)throw Error();const data=await r.json();if(!Number.isFinite(data.server_now))throw Error();schedule=data;received=performance.now();lastError=false}
+  catch{lastError=true}finally{inflight=false;draw()}
+ }
+ setInterval(draw,1000);setInterval(refresh,5000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});refresh();
+})();

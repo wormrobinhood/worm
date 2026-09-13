@@ -18,8 +18,8 @@ S = C.OWNER_SHARE
 
 def ledger(db, kind, amount, ts=None, tx=None, note=""):
     T.ensure_tables(db)
-    db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
-         (ts or int(time.time()), kind, "USDG", amount, tx, note))
+    db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note,owner_share,burn_share,gold_share) VALUES(?,?,?,?,?,?,?,?,?)",
+         (ts or int(time.time()), kind, "USDG", amount, tx, note, C.OWNER_SHARE, C.BURN_SHARE, C.GOLD_SHARE))
 
 
 def rows(db, kind):
@@ -106,12 +106,13 @@ def test_claim_amount_comes_from_the_escrow_log_then_the_share_is_forwarded(db, 
     assert texts == ["claimed 5.25 USDG of creator fees", f"forwarded {5.25 * S:.2f} USDG ({int(round(S * 100))}%) to the creator"]
 
 
-def test_claim_without_the_log_keeps_the_pre_tx_amount(db, rpc, acct, live):
+def test_claim_without_event_keeps_funds_reserved(db, rpc, acct, live):
     chain(rpc, claimable=2.0, usdg=50)
     auto_receipts(rpc, C.WALLET)                             # status 0x1, no ClaimedToken log
     T.cycle(rpc, db, acct)
-    c = rows(db, "claim")
-    assert len(c) == 1 and c[0]["amount"] == 2.0
+    assert rows(db, 'claim') == []
+    assert len(rows(db, 'claim_pending')) == 1
+    assert T.free_usd(db, 50) == 0
 
 
 def test_a_transfer_needs_its_transfer_log(db, rpc, acct, live):
@@ -119,9 +120,9 @@ def test_a_transfer_needs_its_transfer_log(db, rpc, acct, live):
         ledger(db, "claim", a)
     chain(rpc, claimable=0, usdg=50)                         # status 0x1 but no log: the token returned false
     T.cycle(rpc, db, acct)
-    assert rows(db, "forward") == [] and len(rows(db, "forward_failed")) == 1
-    assert abs(T.owed_to_owner(db) - 3.55 * S) < 1e-6        # still owed
-    assert "no Transfer log" in db.one("SELECT text FROM events WHERE kind='error'")["text"]
+    assert rows(db, "forward") == [] and len(rows(db, "forward_pending")) == 1
+    assert abs(T.owed_to_owner(db)) < 1e-6        # reserved in pending, not due for another send
+    assert "receipt evidence incomplete" in db.one("SELECT text FROM events WHERE kind='error'")["text"]
 
 
 def test_a_transfer_log_with_another_amount_does_not_count(db, rpc, acct, live):
@@ -129,7 +130,7 @@ def test_a_transfer_log_with_another_amount_does_not_count(db, rpc, acct, live):
     chain(rpc, claimable=0, usdg=50)
     rpc.logs = [transfer_log(C.USDG, C.WALLET, OWNER, 1_999_999)]
     T.cycle(rpc, db, acct)
-    assert rows(db, "forward") == [] and len(rows(db, "forward_failed")) == 1
+    assert rows(db, "forward") == [] and len(rows(db, "forward_pending")) == 1
 
 
 def test_reconcile_settles_a_pending_claim_from_its_receipt(db, rpc, acct, live):
@@ -158,14 +159,14 @@ def test_reconcile_reverted_pending_forward_returns_the_amount_to_owed(db, rpc, 
     assert len(rows(db, "forward")) == 1 and abs(T.owed_to_owner(db)) < 1e-6
 
 
-def test_reconcile_writes_off_a_tx_the_node_dropped(db, rpc, acct, live):
+def test_reconcile_preserves_unknown_transaction_regardless_of_age(db, rpc, acct, live):
     h = "0x" + "cc" * 32
     ledger(db, "forward_pending", 0.5, ts=int(time.time()) - 7200, tx=h, note="20% of income to the creator")
     rpc.receipts[h] = None
     chain(rpc, claimable=0, usdg=50)
     T.cycle(rpc, db, acct)
-    assert len(rows(db, "forward_dropped")) == 1 and rows(db, "forward_pending") == []
-    assert "written off" in db.one("SELECT text FROM events WHERE kind='error'")["text"]
+    assert rows(db, "forward_dropped") == [] and len(rows(db, "forward_pending")) == 1
+    assert rpc.raw == []  # absence on one node is not proof of failure
 
 
 def test_young_pending_rows_wait(db, rpc, acct, live):
@@ -345,9 +346,9 @@ def test_a_burn_settles_only_when_tokens_reach_the_burn_address(db, rpc, acct, l
     burn_chain(rpc, approved=True)
     burn_receipts(rpc, qty_tokens=0)                       # status 0x1, nothing at the burn address
     T.cycle(rpc, db, acct)
-    assert rows(db, "burn") == [] and len(rows(db, "burn_failed")) == 1
-    assert abs(T.owed_to_burn(db) - 6.0) < 1e-9            # still owed
-    assert "no $WORM reached the burn address" in db.one("SELECT text FROM events WHERE kind='error'")["text"]
+    assert rows(db, "burn") == [] and len(rows(db, "burn_pending")) == 1
+    assert abs(T.owed_to_burn(db)) < 1e-9            # reserved in pending, not due for another send
+    assert "receipt evidence incomplete" in db.one("SELECT text FROM events WHERE kind='error'")["text"]
 
 
 def test_burn_is_capped_by_the_wallet_balance_and_a_pending_burn_blocks_another(db, rpc, acct, live, monkeypatch):
@@ -466,10 +467,10 @@ def test_a_gold_buy_settles_only_when_gld_reaches_the_wallet(db, rpc, acct, live
     gold_chain(rpc)
     gold_receipts(rpc, qty_units=0)                        # status 0x1, no GLD arrived
     T.cycle(rpc, db, acct)
-    assert rows(db, "gold") == [] and len(rows(db, "gold_failed")) == 1
+    assert rows(db, "gold") == [] and len(rows(db, "gold_pending")) == 1
     assert [decode_tx(r)["to"] for r in rpc.raw] == [C.USDG, C.SWAP_ROUTER_V3]  # standing allowance reused, no new approval
-    assert abs(T.owed_to_gold(db) - 6.0) < 1e-9
-    assert "no GLD reached the wallet" in db.one("SELECT text FROM events WHERE kind='error'")["text"]
+    assert abs(T.owed_to_gold(db)) < 1e-9
+    assert "receipt evidence incomplete" in db.one("SELECT text FROM events WHERE kind='error'")["text"]
     h = "0x" + "cc" * 32
     ledger(db, "gold_pending", 5.0, tx=h, note="in flight")
     rpc.receipts[h] = None

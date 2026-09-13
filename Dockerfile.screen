@@ -1,0 +1,13 @@
+# Isolated browser service: no wallet secrets, application database or shared volume.
+FROM python:3.11-slim
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright PYTHONUNBUFFERED=1
+COPY requirements-build.lock requirements.lock ./
+RUN python -m pip install --require-hashes -r requirements-build.lock \
+    && python -m pip install --require-hashes -r requirements.lock \
+    && python -m playwright install --with-deps chromium \
+    && apt-get update && apt-get install -y --no-install-recommends socat \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 1001 --create-home browser
+COPY scripts/browser-service.py /browser-service.py
+USER browser
+CMD ["python", "/browser-service.py"]

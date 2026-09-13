@@ -1,2 +1,2 @@
-pytest>=8
-httpx2>=2      # FastAPI's TestClient (starlette.testclient) imports httpx2
+pytest==9.1.1
+httpx2==2.12.0      # FastAPI's TestClient (starlette.testclient) imports httpx2

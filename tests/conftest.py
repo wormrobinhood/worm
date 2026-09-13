@@ -52,3 +52,9 @@ def live(monkeypatch):
     monkeypatch.setattr(C, "LIVE", True)
     monkeypatch.setattr(tx, "RECEIPT_POLL_S", 0)
     monkeypatch.setattr(tx, "BROADCAST_RETRY_S", 0)
+
+
+@pytest.fixture(autouse=True)
+def private_outbox(tmp_path, monkeypatch):
+    from wormhole import config as C
+    monkeypatch.setattr(C, 'DATA_DIR', tmp_path / 'private')

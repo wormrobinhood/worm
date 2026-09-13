@@ -50,7 +50,7 @@ class DB:
         self.lock = threading.RLock()
         with self.lock:
             self.c.execute("PRAGMA journal_mode=WAL")       # readers never wait for the writer
-            self.c.execute("PRAGMA synchronous=NORMAL")
+            self.c.execute("PRAGMA synchronous=FULL")
             self.c.executescript(SCHEMA)
             self._migrate()
             self.c.commit()
@@ -75,6 +75,11 @@ class DB:
             self.c.execute(sql, args)
             self.c.commit()
 
+    def insert(self, sql, args=()):
+        """Return the ID of this insert while holding the connection lock."""
+        with self.lock, self.c:
+            return self.c.execute(sql, args).lastrowid
+
     def xc(self, sql, args=()):
         """Like x(), returning the number of rows the statement changed."""
         with self.lock:
@@ -86,6 +91,12 @@ class DB:
         with self.lock:
             self.c.executemany(sql, rows)
             self.c.commit()
+
+    def atomic(self, statements):
+        """Commit a related group of writes together, rolling back on any failure."""
+        with self.lock, self.c:
+            for sql, args in statements:
+                self.c.execute(sql, args)
 
     def meta_get(self, key, default=None):
         r = self.one("SELECT value FROM meta WHERE key=?", (key,))

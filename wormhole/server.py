@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.datastructures import MutableHeaders
 
 from . import config as C
+from . import launch_schedule
 from .growth import treasury
 from .learn import creator_trust
 from .budget import projection
@@ -235,7 +236,7 @@ def snapshot(rpc, db, brain, paper, hub=None):
     runway = projection(db, T.free_usd(db, char.get("usd_real", char["usd"])))   # real money only, minus what is owed away
     brain_sum, lab_sum = brain.summary(), LB.summary(db)
     ready = RD.compute(brain_sum, lab_sum, runway, TR.MAX_POSITION_USD)
-    return {"now": now, "stats": st, "scout": _scout(db), "readiness": ready, "lessons": _lessons(db), "feed": feed, "ticker": ticker,
+    return {"now": now, "launch": launch_schedule.status(db, now), "stats": st, "scout": _scout(db), "readiness": ready, "lessons": _lessons(db), "feed": feed, "ticker": ticker,
             "dig": (hub.dig if hub else []), "screen_on": bool(getattr(hub, "screen_on", True)) if hub else True,
             "treasury": _treasury_cached(rpc, db), "voice": V.summary(db), "trader": TR.summary(db),
             "compute": _compute_cached(), "live": C.LIVE, "lab": lab_sum,
@@ -445,11 +446,9 @@ def rescan_allowed(request):
 
 
 def ops_allowed(request):
-    """Loopback, or the caller presents WH_OPS_TOKEN: the guard on the one route that moves real money."""
+    """Every caller presents WH_OPS_TOKEN: the guard on the one route that moves real money."""
     host = request.client.host if request.client else ""
     want = os.environ.get("WH_OPS_TOKEN", "")
-    if host in LOOPBACK and not want:              # once a token is configured, even loopback presents it (a browser cannot)
-        return True
     got = request.headers.get("x-ops-token", "")
     return bool(want) and bool(got) and secrets.compare_digest(want.encode(), got.encode())
 
@@ -500,21 +499,45 @@ def make_app(rpc, db, brain, paper, hub):
     def state():
         return JSONResponse(snap.get())
 
+    @app.get('/api/launch/status')
+    def launch_status():
+        return JSONResponse(launch_schedule.status(db), headers={'Cache-Control':'no-store'})
+
+    @app.post('/api/launch/schedule')
+    async def set_launch_schedule(request: Request):
+        if not ops_allowed(request):
+            return JSONResponse({'error':'operations authentication required'}, status_code=403)
+        body = await request.body()
+        if len(body) > 1024:
+            return JSONResponse({'error':'request too large'}, status_code=413)
+        try:
+            data = json.loads(body)
+            if not isinstance(data, dict) or set(data) != {'at'}:
+                raise ValueError('provide only at: a timezone-qualified date, or null to cancel')
+            with launch_schedule.LOCK:
+                if hub.launch_wanted:
+                    raise ValueError('a manual launch is already queued')
+                result = launch_schedule.configure(db, data['at'])
+            return JSONResponse(result)
+        except (ValueError, TypeError):
+            return JSONResponse({'error':'invalid schedule: use a future ISO date with timezone; an existing launch cannot be replaced'}, status_code=400)
+
     @app.post("/api/launch")
     def launch_(request: Request):
         """The creator's trigger: the worm launches its own token on its next cycle, from inside its own
-        process, so the screen shows it as it happens. Loopback or WH_OPS_TOKEN only; nothing signs unless
+        process, so the screen shows it as it happens. WH_OPS_TOKEN required for every caller; nothing signs unless
         WH_LIVE=1; never twice."""
         if not ops_allowed(request):
-            return JSONResponse({"error": "local only"}, status_code=403)
-        if C.TOKEN:
-            return {"queued": False, "token": C.TOKEN, "why": "the worm already has its token"}
-        if not C.LIVE:
-            return JSONResponse({"queued": False, "why": "WH_LIVE=0: the worm would not sign"}, status_code=409)
-        if db.meta_get("launch_pending"):
-            return {"queued": False, "why": "a launch is already in flight"}
-        hub.launch_wanted = True
-        return {"queued": True, "why": "the worm launches on its next cycle; watch the screen"}
+            return JSONResponse({"error": "operations authentication required"}, status_code=403)
+        with launch_schedule.LOCK:
+            if C.TOKEN:
+                return {"queued": False, "token": C.TOKEN, "why": "the worm already has its token"}
+            if not C.LIVE:
+                return JSONResponse({"queued": False, "why": "WH_LIVE=0: the worm would not sign"}, status_code=409)
+            if db.meta_get("launch_pending"):
+                return {"queued": False, "why": "a launch is already in flight"}
+            hub.launch_wanted = True
+            return {"queued": True, "why": "the worm launches on its next cycle; watch the screen"}
 
     @app.get("/api/rescan/{addr}")
     def rescan(addr: str, request: Request):

@@ -3,5 +3,6 @@
 # Hosts mount volumes as root; without this the worm could not create its database.
 set -e
 mkdir -p /data
-chown -R worm:worm /data /app 2>/dev/null || true
+chown -R worm:worm /data
+chmod 700 /data
 exec runuser -u worm -- python run.py

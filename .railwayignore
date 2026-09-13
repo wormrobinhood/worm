@@ -1,12 +1,34 @@
-# Nothing outside the committed tree is ever uploaded to Railway.
-.env
-.env.*
+# scripts/deploy.sh uploads only a separately scanned Git archive.
+# Keep private files out of build and upload contexts, including nested directories.
+**/.env
+**/.env.*
 !.env.example
-data/
-rehearsal/
-brand/
-.venv/
-*.db
-*.db-*
-.git/
-__pycache__/
+**/.leakcheck.local
+**/data
+**/rehearsal
+**/brand
+**/backups
+**/.venv
+**/venv
+**/__pycache__
+**/node_modules
+**/.git
+**/.githooks
+**/.claude
+**/.pytest_cache
+**/.DS_Store
+**/*.pyc
+**/*.db
+**/*.db-*
+**/*.sqlite*
+**/*.log
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore
+**/id_rsa
+**/id_ed25519
+**/id_ecdsa
+**/id_dsa

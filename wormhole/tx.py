@@ -7,6 +7,8 @@ signed bytes, a node that answers "already known" or "nonce too low" has the tra
 and a broadcast that got no answer is checked by hash before the same bytes are sent again."""
 import fcntl
 import logging
+import math
+import os
 import re
 import threading
 import time
@@ -16,6 +18,7 @@ from eth_utils import to_checksum_address
 
 from . import config as C
 from .chain import RpcError
+from . import outbox
 
 log = logging.getLogger("wormhole.tx")
 _lock = threading.Lock()
@@ -57,7 +60,7 @@ def _node_answered(msg):
 def broadcast(rpc, raw, h_local, say):
     """Send the signed bytes and return the hash. A node that already has the transaction says so; a
     node that gave no answer is asked by hash before the same bytes go out again (the node de-duplicates
-    by hash, so a resend can never make a second transaction). Only a real rejection raises."""
+    by hash, so a resend can never make a second transaction). An unresolved transport failure also raises; callers must retain the pending intent."""
     last = None
     for attempt in range(BROADCAST_TRIES):
         try:
@@ -93,17 +96,42 @@ def wait_receipt(rpc, h, say):
     raise RpcError(f"no receipt for {h} after {RECEIPT_WAIT_S}s")
 
 
+def recover(rpc):
+    """Resume only durably prepared submissions. Unknown preparation blocks for operator review."""
+    with sender_lock():
+        unresolved = False
+        for item in outbox.pending():
+            if item['state'] == 'preparing':
+                raise RuntimeError('transaction preparation interrupted; inspect private outbox before continuing')
+            rc = rpc.call('eth_getTransactionReceipt', [item['hash']])
+            if rc and rc.get('status') in ('0x0', '0x1'):
+                outbox.state(item['hash'], 'settled')
+            else:
+                unresolved = True
+                if C.LIVE and not (C.DATA_DIR / 'payments.paused').exists():
+                    if item['sender'] != C.WALLET.lower():
+                        raise RuntimeError('outbox signer differs from configured wallet; operator review required')
+                    broadcast(rpc, item['raw'], item['hash'], log.info)
+        return not unresolved
+
+
 def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=True, say=None, on_broadcast=None):
     """Sign, broadcast, wait for the receipt. Returns (hash, receipt), or (hash, None) with wait=False.
     gas: a fixed limit, or None to estimate and add 30%; gas_floor is a minimum either way.
-    on_broadcast(hash) runs as soon as the node has the transaction, before the wait: callers use it
-    to write a pending ledger row so a crash or a lost receipt can be reconciled later."""
+    on_broadcast is a legacy name: it now MUST persist the pending record BEFORE submission.
+    A failed callback stops submission and leaves the private journal for operator review."""
     say = say or log.info
+    if (C.DATA_DIR / 'payments.paused').exists():
+        raise RuntimeError('payments paused by operator')
     if not C.LIVE:
         raise RuntimeError("WH_LIVE=0: refusing to sign. Set WH_LIVE=1 to arm real transactions.")
+    if outbox.pending():
+        raise RuntimeError('unresolved transaction: reconcile before sending anything new')
     to = to_checksum_address(to)        # config keeps addresses lowercase for comparisons; the signer wants EIP-55
     frm = acct.address
     with sender_lock():
+        if outbox.pending():
+            raise RuntimeError('unresolved transaction: reconcile before sending anything new')
         nonce = int(rpc.call("eth_getTransactionCount", [frm, "pending"]), 16)
         gas_price = int(int(rpc.call("eth_gasPrice", []), 16) * 1.25)
         if gas is None:
@@ -111,6 +139,14 @@ def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=Tr
             gas = int(est * 1.3)
         gas = max(int(gas), int(gas_floor or 0))
         bal = int(rpc.call("eth_getBalance", [frm, "latest"]), 16)
+        fee = gas * gas_price / 1e18
+        max_fee = float(os.environ.get('WH_MAX_TX_FEE_ETH', '0.002'))
+        daily_fee = float(os.environ.get('WH_MAX_DAILY_FEE_ETH', '0.01'))
+        max_value = float(os.environ.get('WH_MAX_TX_VALUE_ETH', '0.01'))
+        if not (all(math.isfinite(v) for v in (fee, max_fee, daily_fee, max_value))
+                and 0 < max_fee <= daily_fee and fee <= max_fee and outbox.fees_today() + fee <= daily_fee
+                and 0 <= value / 1e18 <= max_value):
+            raise RuntimeError('transaction exceeds configured ETH fee/value limits')
         need = value + gas * gas_price
         if bal < need:
             raise RuntimeError(f"insufficient ETH: have {bal / 1e18:.6f}, need about {need / 1e18:.6f}")
@@ -120,14 +156,16 @@ def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=Tr
         raw = _hex(signed.raw_transaction)
         h_local = _hex(signed.hash)
         say(f"sending tx to {to[:12]}… nonce {nonce}, gas {gas:,} @ {gas_price / 1e9:.3f} gwei, value {value / 1e18:.6f} ETH")
+        outbox.record(h_local, frm, raw, fee)
+        if on_broadcast:
+            on_broadcast(h_local)  # exceptions MUST prevent submission
+        outbox.state(h_local, 'ready')
         h = broadcast(rpc, raw, h_local, say)
         say(f"broadcast {h}")
-        if on_broadcast:
-            try:
-                on_broadcast(h)
-            except Exception as e:              # the transaction is out: never let a bookkeeping failure hide it
-                log.error("broadcast callback failed for %s: %s", h, str(e)[:200])
-                say(f"the ledger write for {h} failed ({str(e)[:80]}); the receipt will rebuild it")
     if not wait:
         return h, None
-    return h, wait_receipt(rpc, h, say)
+    rc = wait_receipt(rpc, h, say)
+    if rc.get('status') not in ('0x0', '0x1'):
+        raise RuntimeError('invalid receipt status; transaction retained for reconciliation')
+    outbox.state(h, 'settled')
+    return h, rc

@@ -1,0 +1,38 @@
+# Payment recovery and deployment
+
+Keep rehearsal wallets and data separate from production. Paper trading remains enabled independently; live trading remains blocked until its sell implementation exists. Publishing code does not enable live payments or schedule a launch.
+
+## Before deploying
+
+1. Back up state with all writers stopped. Preserve BOTH `wormhole.db` and `transactions.sqlite3`. The latter contains signed payment material; encrypt backups, restrict permissions, and never publish it. `python scripts/backup-state.py /absolute/data /absolute/new-backup --service-stopped` makes consistent SQLite backups and verifies them. Restore both files to an isolated directory and run with LIVE=0; the backup includes a `payments.paused` marker. Never operate the original and restored wallet simultaneously.
+2. Use one active signer and one persistent data volume for each wallet. Local file locks do not coordinate different hosts. Keep `/data` private and mounted durably. No production backup, restore or infrastructure change was performed by this patch.
+3. Set a strong random `WH_OPS_TOKEN` privately. `/api/launch` now requires `X-Ops-Token` even on localhost. Do not embed it in the website. Existing `WH_RESCAN_TOKEN` remains separate.
+4. Old claims with no saved split pause monetary accounting until their historical policy is explicitly supplied as `WH_LEGACY_OWNER_SHARE`, `WH_LEGACY_BURN_SHARE`, `WH_LEGACY_GOLD_SHARE`. Values are fractions. These settings pin only rows without a policy; new claims save the current split before submission. Review the history first: a 60% owner payout does not establish what all other historical allocations were. If history contains multiple policies, migrate rows individually after review rather than applying one global legacy policy. The patch does not modify live/rehearsal databases.
+5. Default ETH caps are 0.002 ETH maximum fee per transaction, 0.01 ETH total reserved fees over 24 hours, and 0.01 ETH maximum native value per transaction. Configure `WH_MAX_TX_FEE_ETH`, `WH_MAX_DAILY_FEE_ETH`, `WH_MAX_TX_VALUE_ETH` for the approved budget. These are ETH amounts, not dollar values. Uncertain transactions keep their fee reservation. ERC-20 obligations retain their own allocation limits.
+6. Venice requires `WH_VENICE_PAY_TO` set to the independently verified provider recipient. `WH_TOPUP_MAX_USD` defaults to the configured top-up; `WH_TOPUP_MAX_DAILY_USD` defaults to top-up amount times daily count. A larger provider minimum is rejected rather than increasing the signed amount. Authorization lifetime is capped at 300 seconds. AI Surplus retains its configured deposit address.
+7. Container browser work runs in a separate service: build `Dockerfile.screen` with no application secrets and no shared volumes. Connect only over the private service network with `WH_SCREEN_CDP_URL=http://<private-browser-service>:9223`. The client handles Chromium's localhost discovery and the relay supports IPv4 and IPv6. Never expose CDP publicly; CDP provides browser control. Apply memory/process limits and, where the platform supports them, dropped capabilities, read-only root filesystems, and network egress restrictions. Permit browser Internet access while denying metadata/private infrastructure except the required CDP connection. Verify the hosting platform's actual isolation before funding unattended operation. Non-live developer previews use Chromium's sandbox; the application container has no local Chromium installation or unsandboxed fallback.
+8. Run the regression suite and a separately authorized, limited rehearsal with the final 50/10/20/20 policy. The installed Python environment was checked with OSV: advisories were returned for pip 24.0 and setuptools 79.0.1. Build locks use pip 26.2.1 and setuptools 84.0.0, for which the same query returned no advisories. Docker installs the hash-locked application dependencies. Re-scan the final Linux image, including OS/Chromium, before deployment; the local venv build tools were not upgraded.
+
+## What happens on failure
+
+- Before submitting a transaction, WORM saves signed bytes in its private outbox and persists the caller's pending bookkeeping. If either write fails, no submission occurs.
+- A ready transaction with no known outcome blocks new transactions. Each runner cycle checks its receipt and, when live, may submit **the exact same signed bytes**. It never constructs a replacement with a new nonce merely because a node cannot find the hash.
+- A record left in `preparing` means the process may have stopped partway through caller bookkeeping. Automatic sends stop for operator review. Inspect the outbox and corresponding ledger/launch state with the service stopped. Do not blindly clear pending rows. A preparing entry was not submitted by this sender path, but its pending bookkeeping may already exist. Repair the association, then explicitly authorize its ready transition only after verifying the intended payment, or cancel both together with evidence it never left the process. No public endpoint performs this operation.
+- Successful receipts missing expected transfer/launch events remain unresolved. A receipt with status 0x0 is a confirmed revert. Missing evidence is not a revert.
+- Pending launches are reconciled by the runner even after restart. Token identity and pending clearance commit together.
+- Inability to calculate obligations makes spendable funds zero. Unknown claims also block spendable funds. Paper learning can continue.
+- Unknown Venice authorizations block further compute top-ups indefinitely, not just for a cooldown. Their nonce, recipient, amount and validity are saved privately. Reconcile with provider records and Base authorization/transfer evidence; a balance reading alone is not proof of a particular payment. The patch deliberately does not guess settlement or release old reservations automatically. Confirmed success or confirmed unused/expired authorization requires operator bookkeeping review.
+
+## Emergency stop
+
+Create an empty `payments.paused` file in the configured data directory. This blocks new chain submissions, recovery rebroadcasts, and live Venice payment calls. It cannot cancel a transaction already submitted or an authorization already issued. For an immediate incident, stop all signer instances and secure credentials. Set WH_LIVE=0 before restart to keep monitoring without chain execution. Remove the pause marker only after review.
+
+## Remaining verification
+
+The local tests exercise crashes and ambiguous replies with disposable keys/data. They cannot certify host isolation, volume durability, encrypted off-host backups, provider recipient identity, contract security, or successful production restores. Those must be verified before funding unattended operation. No real payments should be sent just to test a code deployment without separate authorization.
+
+## Scheduled launch
+
+The Live page includes a server-authoritative countdown. Set a future `WH_LAUNCH_AT` with an explicit timezone for first-time initialization, or use authenticated `POST /api/launch/schedule` with JSON `{"at":"<future ISO timestamp with timezone>"}` and `X-Ops-Token`. Send `{"at":null}` to cancel before it begins. A stored schedule takes precedence over startup environment edits. No deadline is supplied in this patch.
+
+The server checks every second and starts launch checks when due, even if no viewer has the website open. It does not arm LIVE, choose a wallet, bypass unknown payments, or imply instant block confirmation. Downtime spanning the deadline causes the persisted request to become due on restart. Review `CLAUDE_HANDOFF.md` for the full configuration and validation notes.

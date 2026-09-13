@@ -6,6 +6,7 @@
     python3 scripts/leakcheck.py --push <remote> <url>   pre-push: every commit about to leave (ref lines on stdin)
     python3 scripts/leakcheck.py --all               tracked and untracked files in the working tree
     python3 scripts/leakcheck.py --rev <rev>         the whole tree at one commit
+    python3 scripts/leakcheck.py --history <rev>     every reachable commit and its metadata
 
 Exit status 1 blocks the commit or push. Matches are printed redacted; a secret
 value never appears in full. Standard library only, runs on the system python3.
@@ -36,8 +37,15 @@ import sys
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 
+class ScanError(RuntimeError):
+    """A failed read cannot be treated as a clean scan."""
+
+
 def git(*args: str, inp: Optional[bytes] = None) -> bytes:
     r = subprocess.run(["git", *args], capture_output=True, input=inp, cwd=ROOT)
+    if r.returncode:
+        # Git errors can contain remote credentials or private file names.
+        raise ScanError("git %s failed; scan incomplete (diagnostic output withheld)" % args[0])
     return r.stdout
 
 
@@ -49,8 +57,9 @@ ENV_FILE = os.path.join(ROOT, ".env")
 EXAMPLE_FILE = os.path.join(ROOT, ".env.example")
 MAX_BYTES = 5 * 1024 * 1024
 
-FORBIDDEN_DIRS = {"data", ".venv", "venv", "__pycache__", "node_modules", ".claude", ".git"}
+FORBIDDEN_DIRS = {"data", "rehearsal", ".venv", "venv", "__pycache__", "node_modules", ".claude", ".git"}
 FORBIDDEN_SUFFIX = (".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".log", ".pem",
+                    ".sqlite-wal", ".sqlite-shm", ".sqlite3-wal", ".sqlite3-shm",
                     ".key", ".p12", ".pfx", ".jks", ".keystore", ".pyc")
 FORBIDDEN_NAMES = {".env", ".leakcheck.local", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"}
 
@@ -96,7 +105,7 @@ def read_lines(path: str) -> List[str]:
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             return [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
-    except OSError:
+    except FileNotFoundError:
         return []
 
 
@@ -214,12 +223,15 @@ def blobs_at(rev: str) -> List[Tuple[str, str]]:
             continue
         meta, path = entry.split(b"\t", 1)
         mode, typ, sha = meta.split()
+        if mode == b"120000" or typ != b"blob":
+            raise ScanError("symlinks and submodules need separate review; scan blocked")
         if typ == b"blob":
             files.append((path.decode("utf-8", "replace"), sha.decode()))
     return files
 
 
-def main(argv: List[str]) -> int:
+def scan_main(argv: List[str]) -> int:
+    git("rev-parse", "--show-toplevel")
     rules = Rules()
     findings: Dict[str, List[str]] = {}
     scanned = 0
@@ -229,6 +241,10 @@ def main(argv: List[str]) -> int:
             findings.setdefault(where, []).extend(items)
 
     mode = argv[1] if len(argv) > 1 else "--all"
+    counts = {"--all": (1, 2), "--staged": (2,), "--message": (3,), "--rev": (3,),
+              "--history": (3,), "--push": (4,)}
+    if mode not in counts or len(argv) not in counts[mode]:
+        raise ScanError("invalid scan arguments")
 
     if mode == "--staged":
         for w, key in (("git user.name", "user.name"), ("git user.email", "user.email")):
@@ -246,32 +262,41 @@ def main(argv: List[str]) -> int:
         add("commit message", rules.scan("COMMIT_MSG", msg))
         return report(findings, 1, "commit message")
 
-    if mode == "--push":
-        remote = argv[2] if len(argv) > 2 else ""
-        url = argv[3] if len(argv) > 3 else ""
-        add("push url", rules.scan_identity("push url", url))
+    if mode in ("--push", "--history"):
+        remote = argv[2] if mode == "--push" else "history"
         commits: List[str] = []
-        for line in sys.stdin.read().splitlines():
-            p = line.split()
-            if len(p) != 4 or set(p[1]) == {"0"}:
-                continue
-            rng = [p[1], "--not", "--remotes"] if set(p[3]) == {"0"} else ["%s..%s" % (p[3], p[1])]
-            commits += git("rev-list", *rng).decode().split()
-        seen: Dict[str, List[str]] = {}
-        for c in commits:
+        if mode == "--history":
+            rev = git("rev-parse", "--verify", argv[2] + "^{commit}").decode().strip()
+            commits = git("rev-list", rev).decode().split()
+        else:
+            add("push url", rules.scan_identity("push url", argv[3]))
+            for line in sys.stdin.read().splitlines():
+                p = line.split()
+                if len(p) != 4 or not all(re.fullmatch(r"[0-9a-f]{40,64}", p[i]) for i in (1, 3)):
+                    raise ScanError("invalid pre-push input")
+                if set(p[1]) == {"0"}:
+                    continue   # deletion carries no new objects
+                git("rev-parse", "--verify", p[1] + "^{commit}")
+                # A new remote branch may expose any ancestor, including ones present on other remotes.
+                rng = [p[1]] if set(p[3]) == {"0"} else ["%s..%s" % (p[3], p[1])]
+                commits += git("rev-list", *rng).decode().split()
+        seen: Dict[Tuple[str, str], List[str]] = {}
+        for c in dict.fromkeys(commits):
             an, ae, cn, ce = git("log", "-1", "--format=%an%n%ae%n%cn%n%ce", c).decode().split("\n")[:4]
             for w, v in (("author name", an), ("author email", ae), ("committer name", cn), ("committer email", ce)):
                 add("commit %s %s" % (c[:10], w), rules.scan_identity(w, v))
             add("commit %s message" % c[:10], rules.scan("COMMIT_MSG", git("log", "-1", "--format=%B", c)))
             for path, sha in blobs_at(c):
-                if sha not in seen:
-                    seen[sha] = rules.scan(path, git("cat-file", "blob", sha))
+                key = (path, sha)   # file-name rules must run even when identical bytes were already scanned
+                if key not in seen:
+                    seen[key] = rules.scan(path, git("cat-file", "blob", sha))
                     scanned += 1
-                add("commit %s %s" % (c[:10], path), seen[sha])
+                add("commit %s %s" % (c[:10], path), seen[key])
         return report(findings, scanned, "%d commit(s) to %s" % (len(commits), remote or "remote"))
 
     if mode == "--rev":
-        for path, sha in blobs_at(argv[2]):
+        rev = git("rev-parse", "--verify", argv[2] + "^{commit}").decode().strip()
+        for path, sha in blobs_at(rev):
             add(path, rules.scan(path, git("cat-file", "blob", sha)))
             scanned += 1
         return report(findings, scanned, "tree at %s" % argv[2])
@@ -281,11 +306,22 @@ def main(argv: List[str]) -> int:
     for n in sorted({x for x in names if x}):
         path = n.decode("utf-8", "replace")
         full = os.path.join(ROOT, path)
+        if os.path.islink(full):
+            raise ScanError("symlinks need separate review; scan blocked")
         if os.path.isfile(full):
             with open(full, "rb") as f:
                 add(path, rules.scan(path, f.read()))
             scanned += 1
     return report(findings, scanned, "working tree")
+
+
+def main(argv: List[str]) -> int:
+    try:
+        return scan_main(argv)
+    except (ScanError, OSError, ValueError) as exc:
+        detail = str(exc) if isinstance(exc, ScanError) else "unable to read scan inputs"
+        print("leakcheck: BLOCKED: " + detail, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

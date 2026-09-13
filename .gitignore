@@ -10,6 +10,15 @@ data/
 *.log
 *.pem
 *.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+id_ecdsa
+id_dsa
+backups/
 
 # machine-specific
 .venv/
@@ -19,6 +28,7 @@ __pycache__/
 .DS_Store
 .claude/
 node_modules/
+.pytest_cache/
 
 # stray images dropped in the project root (the logo lives in web/)
 /*.png

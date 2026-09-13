@@ -140,3 +140,16 @@ body[data-view=scans] #grid{grid-template-columns:minmax(0,2.2fr) minmax(0,1fr)}
 @media(min-width:1440px){
  .wrap,.topline{max-width:1600px;width:100%;margin-left:auto;margin-right:auto}
 }
+
+/* Launch time is public; scheduling and execution stay on the authenticated server. */
+.launch-clock{display:none;margin:24px 0;padding:22px 26px;border:1px solid #315641;border-radius:8px;background:linear-gradient(110deg,rgba(27,64,41,.5),rgba(5,13,8,.9));gap:24px;align-items:center;justify-content:space-between}
+body[data-view="overview"] .launch-clock{display:flex}
+.launch-clock-eyebrow{font-family:monospace;font-size:10px;letter-spacing:.2em;color:var(--dim)}
+.launch-clock h2{font-size:28px;font-weight:400;margin:6px 0}
+.launch-clock p{margin:0;color:var(--dim);font-size:13px;max-width:48ch}
+.launch-clock-time{text-align:right;min-width:0}
+#launch-clock-digits{font-family:monospace;font-variant-numeric:tabular-nums;font-size:clamp(22px,3vw,38px);color:var(--g);letter-spacing:.04em;white-space:nowrap}
+#launch-clock-date,#launch-clock-token{display:block;font-size:11px;margin-top:8px;color:var(--dim)}
+#launch-clock-token[hidden]{display:none}
+.launch-clock[data-state="failed"],.launch-clock[data-state="review"],.launch-clock[data-state="launching"]{border-color:#9b8858}
+@media(max-width:600px){body[data-view="overview"] .launch-clock{align-items:flex-start;flex-direction:column;padding:18px;gap:16px}.launch-clock-time{text-align:left}.launch-clock h2{font-size:24px}#launch-clock-digits{font-size:clamp(16px,5vw,23px)}}

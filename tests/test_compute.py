@@ -132,7 +132,7 @@ def test_top_up_live_needs_wh_live(acct, monkeypatch):
         CP.top_up(acct, 5.0, live=True)
 
 
-def test_top_up_live_sends_the_payment_header_and_respects_the_minimum(acct, monkeypatch, live):
+def test_top_up_rejects_a_minimum_above_the_approved_amount(acct, monkeypatch, live):
     posts = []
 
     def post(url, **kw):
@@ -142,10 +142,9 @@ def test_top_up_live_sends_the_payment_header_and_respects_the_minimum(acct, mon
         return Resp(200, {"data": {"balanceUsd": 7.0}})
 
     monkeypatch.setattr(CP.requests, "post", post)
-    r = CP.top_up(acct, 5.0, live=True)
-    assert r["sent"] and r["amount_usd"] == 7.0
-    payload = json.loads(base64.b64decode(posts[1]["headers"]["X-402-Payment"]))
-    assert authorization(payload)["value"] == "7000000" and authorization(payload)["to"] == PAY_TO
+    with pytest.raises(RuntimeError, match='minimum exceeds'):
+        CP.top_up(acct, 5.0, live=True)
+    assert len(posts) == 1  # never sign more than the approved amount
 
 
 def test_top_up_refuses_a_non_402_answer(acct, monkeypatch):
@@ -169,7 +168,7 @@ def planner(monkeypatch, balance=0.5, fail=None):
     monkeypatch.setattr(CP, "balance", lambda acct: {"balanceUsd": balance})
     calls = []
 
-    def top_up(acct, amount, live):
+    def top_up(acct, amount, live, before_payment=None):
         calls.append((amount, live))
         if fail:
             raise fail
@@ -208,7 +207,7 @@ def test_plan_venice_top_up_is_watched(db, acct, live, venice, monkeypatch):
     seen.clear()
     planner(monkeypatch, fail=RuntimeError("socket closed"))
     CP.plan(db, acct, 20.0, True, True)
-    assert [s[:2] for s in seen] == [("compute", False), ("compute", True)] and "did not go through" in seen[1][2]
+    assert [s[:2] for s in seen] == [("compute", False), ("compute", True)] and "needs reconciliation" in seen[1][2]
     assert T.BUSY_SINCE == 0.0
     seen.clear()
     CP.plan(db, acct, 20.0, True, False)                                # demo: nothing goes out, nothing to watch

@@ -52,7 +52,7 @@ Everything from scouting to fee handling is built and was rehearsed with real mo
 
 ```bash
 python3.11 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.lock
 python run.py                 # http://127.0.0.1:4670
 python run.py --once 5        # backfill, score the 5 newest graduations, print them, exit
 ```
@@ -84,7 +84,7 @@ Token settings live in `.env`: `WH_TOKEN_NAME`, `WH_TOKEN_SYMBOL`, `WH_TOKEN_X` 
 (default 200 = 2%), `WH_SITE_URL` (logo and website links). `WH_OWNER_WALLET` receives `WH_OWNER_SHARE` (default 0.50)
 of every fee claim; `WH_GOLD_SHARE` (default 0.10) buys tokenized gold (GLD) the worm keeps as a reserve that the runway never
 counts; `WH_BURN_SHARE` (default 0.20) buys $WORM on its pool and sends it to the burn address; the rest is
-the worm's operations money. The live screen (`WH_SCREEN=1`, default on) needs Chromium: `python -m playwright install chromium`.
+the worm's operations money. The local non-live screen needs sandboxed Chromium: `python -m playwright install chromium`. Live execution uses an isolated browser service through `WH_SCREEN_CDP_URL`; see [payment recovery and deployment](docs/PAYMENT-RECOVERY.md).
 
 ## Verified addresses (chain 4663)
 
@@ -112,7 +112,7 @@ fund the wallet to make the same code sign and send. Phase 3 to 5 settings:
 |---|---|
 | `WH_VOICE_MODEL` | `stub` (free templates), `aisurplus:<model>` (its own AI Surplus balance, paid in USDG on Robinhood Chain), `venice:<model>` (its own Venice balance, USDC on Base), `anthropic:<model>` (ANTHROPIC_API_KEY), `openai:<model>` (WH_LLM_BASE_URL + WH_LLM_API_KEY) |
 | `WH_COMPUTE_PROVIDER` | `aisurplus` (default: paid with plain USDG transfers on Robinhood Chain, nothing bridged) or `venice` (USDC on Base through x402) |
-| `WH_OPS_TOKEN` | lets a remote caller trigger the launch of the worm's own token (`POST /api/launch`, header X-Ops-Token); unset: loopback only. Nothing signs unless `WH_LIVE=1`, and never twice |
+| `WH_OPS_TOKEN` | required for every launch trigger (`POST /api/launch`, header X-Ops-Token), including localhost; unset: launch control disabled. Nothing signs unless `WH_LIVE=1` |
 | `WH_AISURPLUS_FALLBACK` | the paid model used when the free open lane is out of its shared weekly quota (`gpt-5.6-luna`); empty disables the fallback |
 | `WH_AISURPLUS_KEY`, `WH_AISURPLUS_DEPOSIT` | the key minted at aisurplus.io/app/keys (a secret, popped from the environment like the wallet key) and the deposit address aisurplus.io/app/wallet shows for Robinhood Chain |
 | `WH_VOICE_EVERY_MIN` | minutes between journal entries (120) |
@@ -190,3 +190,9 @@ python3 scripts/leakcheck.py --all
 
 Public hashes that look like keys go in `scripts/leakcheck_allow.txt`, one per line, only after
 proving they are public.
+
+## Payment safety changes
+
+Before deploying the recovery changes, follow [PAYMENT-RECOVERY.md](docs/PAYMENT-RECOVERY.md): back up both databases, explicitly migrate any historical claim policy, configure authenticated operations and the isolated browser, and verify the final environment. Unknown payments stay reserved until verified; paper learning can continue.
+
+For the local security changes and the server-triggered launch countdown, see [Claude handoff](CLAUDE_HANDOFF.md). No launch time is configured until the operator explicitly sets one.

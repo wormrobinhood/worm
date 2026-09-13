@@ -23,6 +23,7 @@ Venice:
 import base64
 import json
 import logging
+import math
 import os
 import secrets
 import time
@@ -113,7 +114,7 @@ def payment_header(acct, requirement, amount_usd, x402_version=2, now=None, nonc
     now = int(time.time()) if now is None else int(now)
     nonce = nonce or ("0x" + secrets.token_hex(32))
     auth = {"from": acct.address, "to": requirement["payTo"], "value": str(value), "validAfter": str(now - VALID_AFTER_SKEW_S),
-            "validBefore": str(now + int(requirement.get("maxTimeoutSeconds", 300))), "nonce": nonce}
+            "validBefore": str(now + max(1, min(300, int(requirement.get("maxTimeoutSeconds", 300))))), "nonce": nonce}
     typed = {
         "types": {"EIP712Domain": [{"name": "name", "type": "string"}, {"name": "version", "type": "string"},
                                    {"name": "chainId", "type": "uint256"}, {"name": "verifyingContract", "type": "address"}],
@@ -135,9 +136,11 @@ def payment_header(acct, requirement, amount_usd, x402_version=2, now=None, nonc
     return base64.b64encode(json.dumps(payload).encode()).decode(), payload
 
 
-def top_up(acct, amount_usd, live):
+def top_up(acct, amount_usd, live, before_payment=None):
     """Returns a dict describing what happened (or what would have). Dry run: the rail and the amount
     are worked out and nothing is signed. Live needs WH_LIVE=1 as well as live=True."""
+    if live and (C.DATA_DIR / 'payments.paused').exists():
+        raise RuntimeError('payments paused by operator')
     if live and not C.LIVE:
         raise RuntimeError("WH_LIVE=0: refusing to sign a payment authorization")
     r = requests.post(f"{API}/api/v1/x402/top-up", timeout=30)
@@ -146,11 +149,21 @@ def top_up(acct, amount_usd, live):
     req = r.json()
     a = pick_rail(req.get("accepts", []))
     minimum = int(a["amount"]) / 1e6
-    amount = max(amount_usd, minimum)
+    ceiling = float(os.environ.get('WH_TOPUP_MAX_USD', str(TOPUP_USD)))
+    if not (math.isfinite(amount_usd) and math.isfinite(minimum) and math.isfinite(ceiling)
+            and 0 < minimum <= amount_usd <= ceiling):
+        raise RuntimeError('provider minimum exceeds approved top-up or invalid payment amount')
+    amount = amount_usd
+    recipient = os.environ.get('WH_VENICE_PAY_TO', '').strip().lower()
+    if live and (not recipient or str(a.get('payTo', '')).lower() != recipient):
+        raise RuntimeError('Venice payment recipient must match WH_VENICE_PAY_TO')
     if not live:
         return {"sent": False, "amount_usd": amount, "payTo": a["payTo"], "rail": a,
                 "note": "dry run: nothing signed, nothing sent"}
+    if before_payment is None:
+        raise RuntimeError('live Venice payments require durable authorization bookkeeping')
     header, payload = payment_header(acct, a, amount, req.get("x402Version", 2))
+    before_payment(payload['payload']['authorization'])
     r2 = requests.post(f"{API}/api/v1/x402/top-up", headers={"X-402-Payment": header}, timeout=60)
     if not r2.ok:
         raise RuntimeError(f"top-up failed {r2.status_code}: {r2.text[:200]}")
@@ -358,6 +371,10 @@ def plan(db, acct, wallet_usd, runway_ok, live, budget_per_day=None, rpc=None):
     wallet_usd: what the wallet could put into a top-up (free USDG on Robinhood Chain for AI Surplus, USDC on
     Base for Venice). budget_per_day: the runway's compute budget (the operations share of measured income);
     a month of it must cover one top-up. rpc: the Robinhood Chain node, needed to send a USDG transfer."""
+    ensure_tables(db)
+    if live and db.one("SELECT 1 FROM ledger WHERE kind='compute_pending'"):
+        _say_hourly(db, 'compute payment unresolved: new top-ups paused until reconciliation')
+        return {'provider': PROVIDER, 'error': 'payment pending reconciliation'}
     st = status(acct, wallet_usd)
     if st["balance_usd"] is None or st["balance_usd"] >= TOPUP_BELOW_USD:
         return st
@@ -379,6 +396,11 @@ def plan(db, acct, wallet_usd, runway_ok, live, budget_per_day=None, rpc=None):
         return st
     now = int(time.time())
     n, last = topups_today(db, now)
+    dollars = db.one("SELECT COALESCE(SUM(amount),0) n FROM ledger WHERE kind IN ('compute','compute_pending','compute_failed','compute_dropped') AND ts>=?", (now-86400,))['n']
+    max_daily = float(os.environ.get('WH_TOPUP_MAX_DAILY_USD', str(TOPUP_USD * TOPUP_MAX_PER_DAY)))
+    if not (math.isfinite(TOPUP_USD) and 0 < TOPUP_USD <= float(os.environ.get('WH_TOPUP_MAX_USD', str(TOPUP_USD))) and dollars + TOPUP_USD <= max_daily):
+        _say_hourly(db, 'compute dollar budget blocks a top-up')
+        return st
     if n >= TOPUP_MAX_PER_DAY or (last and now - last < TOPUP_COOLDOWN_S):
         _say_hourly(db, f"{low}: top-up wanted but the cooldown ({TOPUP_COOLDOWN_S // 3600} h) or the daily cap ({TOPUP_MAX_PER_DAY}) blocks it")
         return st
@@ -391,14 +413,18 @@ def plan(db, acct, wallet_usd, runway_ok, live, budget_per_day=None, rpc=None):
             db.add_event("error", f"compute top-up failed: {str(e)[:120]}")
         return st
     if live:                                # the row exists before any payment leaves; it stays if the call dies half way
-        db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
-             (now, "compute_pending", "USDC", TOPUP_USD, None, "top-up in flight"))
+        payment_id = db.insert("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
+                               (now, "compute_pending", "USDC", TOPUP_USD, None, "top-up in flight"))
         watch("compute", f"buying ${TOPUP_USD:.2f} of compute at Venice, paid in USDC on Base", None)
     try:
-        r = top_up(acct, TOPUP_USD, live)
+        def remember(auth):
+            if db.xc("UPDATE ledger SET authorization=? WHERE kind='compute_pending' AND id=? AND asset='USDC'",
+                     (json.dumps(auth), payment_id)) != 1:
+                raise RuntimeError('payment authorization was not saved')
+        r = top_up(acct, TOPUP_USD, live, before_payment=remember)
         if r["sent"]:
-            db.x("UPDATE ledger SET kind='compute', amount=?, note=? WHERE kind='compute_pending' AND ts=?",
-                 (r["amount_usd"], "topped up the Venice compute balance", now))
+            db.x("UPDATE ledger SET kind='compute', amount=?, note=? WHERE kind='compute_pending' AND id=?",
+                 (r["amount_usd"], "topped up the Venice compute balance", payment_id))
             db.add_event("compute", f"topped up ${r['amount_usd']:.2f} of compute at Venice")
             watch("compute", f"bought ${r['amount_usd']:.2f} of compute at Venice", None, done=True)
         else:
@@ -406,5 +432,5 @@ def plan(db, acct, wallet_usd, runway_ok, live, budget_per_day=None, rpc=None):
     except Exception as e:
         db.add_event("error", f"compute top-up failed: {str(e)[:120]}")
         if live:
-            watch("compute", f"the Venice top-up did not go through: {str(e)[:80]}", None, done=True)
+            watch("compute", f"Venice payment outcome needs reconciliation: {str(e)[:80]}", None, done=True)
     return st

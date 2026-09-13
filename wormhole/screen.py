@@ -6,6 +6,9 @@ takes turns between the newest graduation's page, the launchpad's newest launche
 biggest market caps (the next graduations come from there). The launchpad's own Graduated grid sorts by
 market cap with no sort control, so the same five big tokens would sit at the top forever."""
 import base64
+import os
+from urllib.parse import urlsplit, urlunsplit
+import requests
 import logging
 import queue
 import threading
@@ -57,6 +60,26 @@ def _ago(ts):
     return f"{d // 3600}h {d % 3600 // 60}m ago"
 
 
+def connect_remote_browser(playwright, endpoint):
+    """Resolve private CDP discovery without depending on Chromium accepting a service DNS Host."""
+    target = urlsplit(endpoint)
+    if target.scheme not in ("http", "https") or not target.hostname or target.username or target.password or target.query or target.fragment:
+        raise ValueError("CDP endpoint must be a private HTTP service URL without credentials")
+    with requests.Session() as session:
+        session.trust_env = False
+        response = session.get(endpoint.rstrip('/') + '/json/version', headers={"Host": "localhost"},
+                               timeout=10, allow_redirects=False)
+        response.raise_for_status()
+        if response.status_code != 200:
+            raise ValueError("CDP discovery did not return a browser")
+        debugger = urlsplit(response.json().get("webSocketDebuggerUrl", ""))
+    if not debugger.path.startswith('/devtools/browser/') or debugger.query or debugger.fragment:
+        raise ValueError("invalid CDP browser discovery response")
+    # Chromium advertises loopback; retain only its browser path and use the configured private service.
+    socket_url = urlunsplit(('wss' if target.scheme == 'https' else 'ws', target.netloc, debugger.path, '', ''))
+    return playwright.chromium.connect_over_cdp(socket_url, headers={"Host": "localhost"})
+
+
 class Screen(threading.Thread):
     def __init__(self, hub, newest=None, own=None):
         super().__init__(daemon=True, name="screen")
@@ -89,8 +112,14 @@ class Screen(threading.Thread):
 
     def _session(self, sync_playwright):
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"])
-            ctx = browser.new_context(viewport=VIEW, color_scheme="dark", accept_downloads=False)
+            remote = os.environ.get('WH_SCREEN_CDP_URL', '').strip()
+            if remote:
+                browser = connect_remote_browser(p, remote)
+            else:
+                browser = p.chromium.launch(headless=True, chromium_sandbox=True,
+                                            env={k: v for k, v in os.environ.items() if k in ('PATH', 'HOME', 'TMPDIR', 'LANG', 'PLAYWRIGHT_BROWSERS_PATH')},
+                                            args=["--disable-gpu", "--disable-dev-shm-usage"])
+            ctx = browser.new_context(viewport=VIEW, color_scheme="dark", accept_downloads=False, service_workers="block")
             ctx.route("**/*", self._gate)             # nothing private, nothing loopback: the browser cannot reach the worm's own ops routes
             page = ctx.new_page()
             page.on("dialog", lambda d: d.dismiss())
@@ -274,4 +303,3 @@ class Screen(threading.Thread):
                 raise
             self.scroll_steps = None
             log.info("idle failed: %s", str(e)[:120])
-

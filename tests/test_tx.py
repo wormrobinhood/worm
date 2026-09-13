@@ -79,11 +79,12 @@ def test_nonce_too_low_is_only_a_success_when_the_node_holds_our_hash(rpc, acct,
         tx.send_tx(rpc, acct, C.FACTORY)
 
 
-def test_a_failing_broadcast_callback_does_not_hide_a_sent_transaction(rpc, acct, live):
+def test_a_failing_pending_callback_prevents_submission(rpc, acct, live):
     def boom(h):
         raise RuntimeError("disk full")
-    h, rc = tx.send_tx(rpc, acct, C.FACTORY, on_broadcast=boom)
-    assert rc["status"] == "0x1" and len(sends(rpc)) == 1              # sent once, receipt returned all the same
+    with pytest.raises(RuntimeError, match='disk full'):
+        tx.send_tx(rpc, acct, C.FACTORY, on_broadcast=boom)
+    assert len(sends(rpc)) == 0              # persistence failure must prevent submission
 
 
 def test_delivered_but_unanswered_is_found_by_hash(rpc, acct, live):
@@ -100,20 +101,20 @@ def test_rate_limit_is_not_a_verdict(rpc, acct, live):
     assert len(s) == 2 and s[0] == s[1] and seen == [h] and rc["status"] == "0x1"
 
 
-def test_node_rejection_raises_without_retry_or_callback(rpc, acct, live):
+def test_node_rejection_keeps_the_prepared_record(rpc, acct, live):
     rpc.script = ["insufficient funds for gas * price + value"]
     seen = []
     with pytest.raises(RpcError, match="insufficient funds"):
         tx.send_tx(rpc, acct, C.FACTORY, on_broadcast=seen.append)
-    assert seen == [] and rpc.raw == [] and len(sends(rpc)) == 1
+    assert len(seen) == 1 and rpc.raw == [] and len(sends(rpc)) == 1
 
 
-def test_no_answer_three_times_gives_up_without_callback(rpc, acct, live):
+def test_no_answer_keeps_pending_record_for_recovery(rpc, acct, live):
     rpc.script = ["network"] * 3
     seen = []
     with pytest.raises(RpcError, match="unconfirmed"):
         tx.send_tx(rpc, acct, C.FACTORY, on_broadcast=seen.append)
-    assert seen == [] and len(sends(rpc)) == 3
+    assert len(seen) == 1 and len(sends(rpc)) == 3
 
 
 def test_hash_mismatch_is_an_error(rpc, acct, live):
@@ -164,6 +165,7 @@ def test_concurrent_senders_get_distinct_nonces(rpc, acct, live):
         t.start()
     for t in threads:
         t.join()
-    assert errors == []
-    assert sorted(decode_tx(r)["nonce"] for r in rpc.raw) == [7, 8, 9]
+    assert all('unresolved transaction' in str(e) for e in errors)
+    nonces = [decode_tx(r)['nonce'] for r in rpc.raw]
+    assert len(nonces) >= 1 and len(nonces) == len(set(nonces))
     assert (C.DATA_DIR / ".txlock").exists()

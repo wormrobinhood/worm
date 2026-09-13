@@ -257,11 +257,6 @@ def go(rpc, db, acct, say=None):
         rc = rpc.call("eth_getTransactionReceipt", [pending])
         if rc:
             return _settle(db, pending, rc, db.meta_get("launch_label") or "its token")
-        sent = float(db.meta_get("launch_pending_ts") or 0)
-        if sent and time.time() - sent > PENDING_MAX_AGE_S and not rpc.call("eth_getTransactionByHash", [pending]):
-            db.meta_set("launch_pending", "")         # the node dropped it: nothing was launched, a new one may go
-            db.add_event("error", f"the launch {pending[:12]}… was never mined and the node has dropped it; written off")
-            watch("launch", "the launch was never mined; it can be asked for again", pending, done=True)
         return None
     if not C.LIVE or acct is None:
         db.add_event("launch", "a launch was asked for, but WH_LIVE=0: nothing signed, nothing sent")
@@ -287,7 +282,7 @@ def go(rpc, db, acct, say=None):
         h, rc = send_tx(rpc, acct, C.FACTORY, data, value=fee, gas=None, gas_floor=GAS_FLOOR, say=say, on_broadcast=pending_)
     except Exception as e:
         db.add_event("error", f"launch failed: {str(e)[:120]}")
-        watch("launch", f"the launch did not go out: {str(e)[:80]}", None, done=True)
+        watch("launch", f"launch outcome needs reconciliation: {str(e)[:80]}", None, done=True)
         return None
     return _settle(db, h, rc, label)
 
@@ -295,13 +290,19 @@ def go(rpc, db, acct, say=None):
 def _settle(db, h, rc, label):
     from .treasury import watch
     token = launched_token(rc) if rc.get("status") == "0x1" else None
-    db.meta_set("launch_pending", "")
+    if rc.get('status') == '0x1' and not token:
+        db.add_event('error', f'launch receipt missing token identity; retained pending: {h}')
+        return None
     if not token:
+        db.meta_set('launch_pending', '')
         db.add_event("error", f"launch reverted or no TokenLaunched event: {h}")
         watch("launch", f"the launch reverted: {h[:12]}…", h, done=True)
         return None
     token = token.lower()
-    db.meta_set("own_token", token)
+    db.atomic([
+        ("INSERT OR REPLACE INTO meta(key,value) VALUES('own_token',?)", (token,)),
+        ("INSERT OR REPLACE INTO meta(key,value) VALUES('launch_pending','')", ()),
+    ])
     C.TOKEN = token
     db.add_event("launch", f"launched its own token {label} · tx {h}", token)
     watch("launch", f"launched its own token {label} just now: {h[:12]}…", h, done=True)
