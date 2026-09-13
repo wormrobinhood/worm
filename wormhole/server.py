@@ -495,6 +495,8 @@ def make_app(rpc, db, brain, paper, hub):
                      " WHERE l.token=? AND l.graduated=1", (addr,)) if re.fullmatch(r"0x[0-9a-f]{40}", addr) else None
         if not row:
             return JSONResponse({"error": "unknown graduated token"}, status_code=404)
+        if C.TOKEN and addr == C.TOKEN:
+            return JSONResponse({"error": "the worm does not grade its own token"}, status_code=400)
         now = int(time.time())
         if row["scored_at"] and now - row["scored_at"] < RESCAN_DEDUPE_S:
             return {"queued": False, "why": "scored %d s ago" % (now - row["scored_at"])}

@@ -148,6 +148,10 @@ class Scorer:
         L = self.db.one("SELECT * FROM launches WHERE token=?", (token,))
         if not L or not L.get("graduated"):
             return None
+        if C.TOKEN and token.lower() == C.TOKEN:    # the worm does not grade itself: no dig, no verdict, no trade
+            if not self.db.one("SELECT 1 FROM events WHERE kind='launch' AND token=? AND text LIKE 'graduated:%'", (C.TOKEN,)):
+                self.db.add_event("launch", "graduated: its own token. The worm does not grade itself, so no dig, no verdict, no trade", C.TOKEN)
+            return None
         t0 = time.time()
         latest = self.rpc.block_number()
         fired = []          # {rule, points, text}

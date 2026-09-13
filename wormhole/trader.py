@@ -202,12 +202,13 @@ def candidates(db, limit=3):
     """Newest healthy verdicts with complete data that are not held, not pending, not skipped and not
     blocked after a failed buy."""
     now = int(time.time())
-    return db.q("SELECT s.token, s.score, s.scored_at, l.symbol FROM scores s JOIN launches l ON l.token=s.token"
+    return [r for r in db.q("SELECT s.token, s.score, s.scored_at, l.symbol FROM scores s JOIN launches l ON l.token=s.token"
                 " WHERE s.verdict='looks healthy' AND s.score>=? AND s.scored_at>=? AND s.partial=0"
                 " AND s.token NOT IN (SELECT token FROM positions)"
                 " AND s.token NOT IN (SELECT token FROM trades WHERE note='PENDING' AND token IS NOT NULL)"
                 " AND s.token NOT IN (SELECT token FROM trade_intents WHERE status IS NOT NULL OR COALESCE(blocked_until,0)>?)"
                 " ORDER BY s.scored_at DESC LIMIT ?", (MIN_SCORE, now - 3 * 3600, now, limit))
+            if not (C.TOKEN and r["token"].lower() == C.TOKEN)]          # never its own token
 
 
 # ---- decisions --------------------------------------------------------------

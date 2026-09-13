@@ -477,3 +477,12 @@ def test_the_last_dig_survives_a_restart(db):
     assert other.dig == []                                                 # unreadable: start empty, never crash
     hub.scan({"token": "0x" + "ef" * 20, "step": "start", "text": "start", "ts": 2, "data": {}})
     assert len(hub.dig) == 1                                               # a new dig replaces the last one
+
+
+def test_rescan_refuses_the_worms_own_token(site, db, monkeypatch):
+    mine = "0x" + "cd" * 20
+    monkeypatch.setattr(server.C, "TOKEN", mine)
+    client, hub, queued = loopback(site)
+    add_grad(db, mine)
+    r = client.get(f"/api/rescan/{mine}")
+    assert r.status_code == 400 and "own token" in r.json()["error"] and queued == []

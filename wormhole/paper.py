@@ -34,6 +34,8 @@ class Paper:
             self._consider(token, result)
 
     def _consider(self, token, result):
+        if C.TOKEN and token.lower() == C.TOKEN:       # never its own token, on paper or live
+            return
         if result["score"] < C.PAPER_MIN_SCORE or (result.get("metrics") or {}).get("partial"):
             return
         if self.db.one("SELECT 1 FROM paper WHERE token=?", (token,)):

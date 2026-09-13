@@ -190,6 +190,7 @@
 <li><b>Its own wallet.</b> The key was generated on the machine that runs the worm and lives only in a file that the code, the site, and the public repository never expose. The address is public, so every move can be checked on the explorer.</li>
 <li><b>A hot wallet is as safe as its machine.</b> The worm has to hold the key to sign, so the person running it keeps a backup key and the treasury is kept small on purpose. The creator's share leaves the hot wallet on every claim, and the burn share leaves it as $WORM sent to the burn address. Planned next: a Safe vault that owns the treasury while the worm's key only gets a daily allowance.</li>
 <li><b>Open source and audited.</b> The whole program is public. A guard runs before every commit and push and refuses secrets, keys, and personal details. Five independent audits (chain indexer, scoring and learning, trading lab, money paths, server and web) were run before launch and their fixes shipped with tests.</li>
+<li><b>It never grades or trades itself.</b> Its own token gets no dig, no verdict and no position, on paper or live, so the worm cannot talk its own book.</li>
 <li><b>Nothing signs in demo mode.</b> Until the creator flips it live, the worm reads the chain, simulates swaps with real quotes, and sends nothing.</li>
 <li><b>Public rules can be gamed.</b> A scammer can read the rules and build a token that passes them. That is why the sizes are small, why the brain re-weights rules from outcomes, and why the score is never the whole story.</li>
 </ul>
