@@ -1,0 +1,12 @@
+# Nothing outside the committed tree is ever uploaded to Railway.
+.env
+.env.*
+!.env.example
+data/
+rehearsal/
+brand/
+.venv/
+*.db
+*.db-*
+.git/
+__pycache__/
