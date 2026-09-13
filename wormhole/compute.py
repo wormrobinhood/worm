@@ -334,8 +334,8 @@ def status(acct, wallet_usd=None):
         try:
             k = aisurplus_key()
             out.update(balance_usd=k["available_usd"], key_status=k["key_status"], weekly_cap_usd=k["weekly_cap_usd"])
-        except Exception as e:
-            out["error"] = str(e)[:120]
+        except Exception:
+            out["error"] = "compute provider unavailable"
         return out
     out.update(minimum_topup_usd=None, suggested_topup_usd=None, usdc_base=wallet_usd)
     if not acct:
@@ -346,8 +346,8 @@ def status(acct, wallet_usd=None):
         out["balance_usd"] = float(b.get("balanceUsd", b.get("balance", 0)) or 0)
         out["minimum_topup_usd"] = b.get("minimumTopUpUsd")
         out["suggested_topup_usd"] = b.get("suggestedTopUpUsd")
-    except Exception as e:
-        out["error"] = str(e)[:120]
+    except Exception:
+        out["error"] = "compute provider unavailable"
     return out
 
 
@@ -409,8 +409,8 @@ def plan(db, acct, wallet_usd, runway_ok, live, budget_per_day=None, rpc=None):
             r = aisurplus_top_up(rpc, db, acct, TOPUP_USD, live)
             if not r["sent"]:
                 _say_hourly(db, f"demo: would send ${r['amount_usd']:.2f} USDG to AI Surplus for compute (nothing signed)")
-        except Exception as e:
-            db.add_event("error", f"compute top-up failed: {str(e)[:120]}")
+        except Exception:
+            db.add_event("error", "compute top-up failed; operator review required")
         return st
     if live:                                # the row exists before any payment leaves; it stays if the call dies half way
         payment_id = db.insert("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
@@ -429,8 +429,8 @@ def plan(db, acct, wallet_usd, runway_ok, live, budget_per_day=None, rpc=None):
             watch("compute", f"bought ${r['amount_usd']:.2f} of compute at Venice", None, done=True)
         else:
             _say_hourly(db, f"demo: would top up ${r['amount_usd']:.2f} of compute at Venice (nothing signed)")
-    except Exception as e:
-        db.add_event("error", f"compute top-up failed: {str(e)[:120]}")
+    except Exception:
+        db.add_event("error", "compute top-up failed; operator review required")
         if live:
-            watch("compute", f"Venice payment outcome needs reconciliation: {str(e)[:80]}", None, done=True)
+            watch("compute", "Venice payment outcome needs reconciliation", None, done=True)
     return st

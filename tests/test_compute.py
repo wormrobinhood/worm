@@ -227,7 +227,7 @@ def test_plan_skips_when_the_balance_is_unknown_or_fine(db, acct, live, venice, 
     CP.plan(db, acct, 20.0, True, True)
     monkeypatch.setattr(CP, "balance", lambda acct: (_ for _ in ()).throw(RuntimeError("venice balance 500")))
     st = CP.plan(db, acct, 20.0, True, True)
-    assert calls == [] and st["balance_usd"] is None and "500" in st["error"]
+    assert calls == [] and st["balance_usd"] is None and st["error"] == "compute provider unavailable"
 
 
 def test_plan_respects_runway_and_the_base_wallet(db, acct, live, venice, monkeypatch):
@@ -458,7 +458,24 @@ def test_aisurplus_top_up_needs_free_usdg_and_a_deposit_address(db, rpc, acct, l
     monkeypatch.setattr(C, "AISURPLUS_DEPOSIT", "")
     CP.plan(db, acct, 20.0, True, True, budget_per_day=1.0, rpc=rpc)
     assert kinds(db) == [] and rpc.raw == []
-    assert "WH_AISURPLUS_DEPOSIT" in db.one("SELECT text FROM events WHERE kind='error'")["text"]
+    assert db.one("SELECT text FROM events WHERE kind='error'")["text"] == "compute top-up failed; operator review required"
+
+
+@pytest.mark.parametrize("provider", ["venice", "aisurplus"])
+def test_status_never_exposes_provider_exception_details(monkeypatch, acct, provider):
+    monkeypatch.setattr(CP, "PROVIDER", provider)
+    monkeypatch.setattr(C, "AISURPLUS_KEY", KEY)
+    monkeypatch.setattr(CP, "provider_models", lambda: [])
+    monkeypatch.setattr(CP, "all_free", lambda: False)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("private provider diagnostic marker")
+
+    monkeypatch.setattr(CP, "balance", fail)
+    monkeypatch.setattr(CP, "aisurplus_key", fail)
+    result = CP.status(acct)
+    assert result["error"] == "compute provider unavailable"
+    assert "private provider" not in str(result)
 
 
 def test_compute_pending_rows_are_reconciled_by_the_treasury(db, rpc, aisurplus):

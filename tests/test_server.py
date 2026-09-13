@@ -4,6 +4,7 @@ no test can reach a node, a gateway or an API by accident."""
 import re
 import socket
 import time
+from urllib.parse import urlsplit
 
 import pytest
 import requests
@@ -350,7 +351,24 @@ def test_page_loads_only_origins_the_policy_allows():
     for page in ("index.html", "docs.html", "design.css", "design.js"):
         html = (server.WEB / page).read_text(encoding="utf-8")
         for a, b in loads.findall(html):
-            assert (a or b).startswith(("https://fonts.googleapis.com", "https://fonts.gstatic.com")), (page, a or b)
+            url = urlsplit(a or b)
+            assert url.scheme == "https" and url.netloc in {"fonts.googleapis.com", "fonts.gstatic.com"}, (page, a or b)
+
+
+@pytest.mark.parametrize("failure", ["wallet", "provider"])
+def test_public_compute_errors_do_not_expose_exception_details(site, monkeypatch, failure):
+    from wormhole import wallet
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("private diagnostic marker with provider credentials")
+
+    monkeypatch.setattr(server, "_ccache", (0, None))
+    monkeypatch.setattr(wallet, "account", fail if failure == "wallet" else lambda: object())
+    monkeypatch.setattr(server.CP, "status", fail)
+    monkeypatch.setattr(server, "snapshot", lambda *a, **k: {"compute": server._compute_cached()})
+    response = site[0].get("/api/state")
+    assert response.status_code == 200
+    assert response.json() == {"compute": {"error": "compute status unavailable"}}
 
 
 def test_page_assets_are_served_by_exact_name_only(site):

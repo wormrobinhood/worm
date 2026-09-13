@@ -335,8 +335,8 @@ def _compute_cached():
             from .wallet import account
             acct = account()
         v = CP.status(acct)
-    except Exception as e:
-        v = {"error": str(e)[:100]}
+    except Exception:
+        v = {"error": "compute status unavailable"}
     _ccache = (time.time(), v)
     return v
 
