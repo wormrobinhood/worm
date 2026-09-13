@@ -286,7 +286,7 @@ def spending_models():
 def provider_models():
     """The configured models that run at the current provider, without the prefix; at AI Surplus the
     fallback counts too, since it spends the balance whenever the free lane is out."""
-    out = [m.partition(":")[2] for m in spending_models() if m.startswith(PROVIDER + ":")]
+    out = list(dict.fromkeys(m.partition(":")[2] for m in spending_models() if m.startswith(PROVIDER + ":")))
     if out and PROVIDER == "aisurplus" and AISURPLUS_FALLBACK and AISURPLUS_FALLBACK not in out:
         out.append(AISURPLUS_FALLBACK)
     return out
