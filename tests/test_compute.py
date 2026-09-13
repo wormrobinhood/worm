@@ -193,6 +193,27 @@ def test_plan_tops_up_once_then_waits_for_the_cooldown(db, acct, live, venice, m
     assert texts[0] == "topped up $5.00 of compute at Venice"
 
 
+def test_plan_venice_top_up_is_watched(db, acct, live, venice, monkeypatch):
+    """The screen and the busy flag follow a Venice top-up like any other transaction: once when the
+    payment goes out, once when it is done (or failed), and the worm is not left busy."""
+    seen = []
+    monkeypatch.setattr(T, "WATCH", lambda ev: seen.append((ev["action"], ev["done"], ev["text"])))
+    monkeypatch.setattr(CP, "TOPUP_COOLDOWN_S", 0)
+    planner(monkeypatch)
+    CP.plan(db, acct, 20.0, True, True)
+    assert [s[:2] for s in seen] == [("compute", False), ("compute", True)]
+    assert "buying $5.00 of compute at Venice" in seen[0][2] and "bought $5.00" in seen[1][2]
+    assert T.BUSY_SINCE == 0.0
+    seen.clear()
+    planner(monkeypatch, fail=RuntimeError("socket closed"))
+    CP.plan(db, acct, 20.0, True, True)
+    assert [s[:2] for s in seen] == [("compute", False), ("compute", True)] and "did not go through" in seen[1][2]
+    assert T.BUSY_SINCE == 0.0
+    seen.clear()
+    CP.plan(db, acct, 20.0, True, False)                                # demo: nothing goes out, nothing to watch
+    assert seen == []
+
+
 def test_plan_daily_cap(db, acct, live, venice, monkeypatch):
     monkeypatch.setattr(CP, "TOPUP_COOLDOWN_S", 0)
     calls = planner(monkeypatch)

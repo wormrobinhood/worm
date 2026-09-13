@@ -393,14 +393,18 @@ def plan(db, acct, wallet_usd, runway_ok, live, budget_per_day=None, rpc=None):
     if live:                                # the row exists before any payment leaves; it stays if the call dies half way
         db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
              (now, "compute_pending", "USDC", TOPUP_USD, None, "top-up in flight"))
+        watch("compute", f"buying ${TOPUP_USD:.2f} of compute at Venice, paid in USDC on Base", None)
     try:
         r = top_up(acct, TOPUP_USD, live)
         if r["sent"]:
             db.x("UPDATE ledger SET kind='compute', amount=?, note=? WHERE kind='compute_pending' AND ts=?",
                  (r["amount_usd"], "topped up the Venice compute balance", now))
             db.add_event("compute", f"topped up ${r['amount_usd']:.2f} of compute at Venice")
+            watch("compute", f"bought ${r['amount_usd']:.2f} of compute at Venice", None, done=True)
         else:
             _say_hourly(db, f"demo: would top up ${r['amount_usd']:.2f} of compute at Venice (nothing signed)")
     except Exception as e:
         db.add_event("error", f"compute top-up failed: {str(e)[:120]}")
+        if live:
+            watch("compute", f"the Venice top-up did not go through: {str(e)[:80]}", None, done=True)
     return st
