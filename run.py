@@ -19,7 +19,7 @@ from wormhole.scorer import Scorer
 from wormhole.server import Hub, make_app
 from wormhole.screen import Screen
 from wormhole import treasury as T
-from wormhole import voice, trader, giving, compute, lab, advisor
+from wormhole import voice, trader, compute, lab, advisor
 from wormhole import launch as L
 from wormhole.budget import projection
 from wormhole import readiness
@@ -177,7 +177,7 @@ def main():
 
             def books():
                 tre = box["tre"] = treasury(rpc)
-                budget.sample(db, tre["usd_real"], bool(tre.get("demo")))
+                budget.sample(db, tre["usd_real"])
                 box["rw"] = projection(db, T.free_usd(db, tre["usd_real"]))   # the wallet minus what is owed to the creator and the burn
 
             def compute_stage():
@@ -197,7 +197,7 @@ def main():
 
             def entries():
                 tre, rw = box["tre"], box["rw"]
-                rd = readiness.compute(brain.summary(), lab.summary(db), rw, bool(tre.get("demo")), trader.MAX_POSITION_USD)
+                rd = readiness.compute(brain.summary(), lab.summary(db), rw, trader.MAX_POSITION_USD)
                 trader.decide(rpc, db, rw, C.LIVE, acct, rd)
 
             def housekeeping():
@@ -217,7 +217,6 @@ def main():
                       ("advisor", lambda: advisor.due(db)[0] and advisor.run(db, brain.summary(), lab.summary(db))),
                       ("exits", lambda: trader.mark(rpc, db, C.LIVE, acct)), ("treasury", lambda: T.cycle(rpc, db, acct)),
                       ("books", books), ("compute", compute_stage), ("entries", entries),
-                      ("giving", lambda: giving.cycle(rpc, db, acct, box["rw"], C.LIVE and not box["tre"].get("demo"))),
                       ("voice", lambda: voice.cycle(db, extra={"stage": box["tre"].get("stage_name"), "treasury_usd": box["tre"].get("usd_real")})),
                       ("housekeeping", housekeeping)]
             for name, fn in stages:

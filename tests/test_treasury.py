@@ -262,7 +262,7 @@ def test_owed_to_burn_accumulates_and_the_free_treasury_excludes_what_is_owed(db
     for a in (1.0, 1.1, 1.45):
         ledger(db, "claim", a)
     assert abs(T.owed_to_burn(db) - 3.55 * C.BURN_SHARE) < 1e-9
-    assert abs(T.free_usd(db, 10.0) - round(10.0 - 3.55 * (S + C.BURN_SHARE), 2)) < 1e-6
+    assert abs(T.free_usd(db, 10.0) - round(10.0 - 3.55 * (S + C.BURN_SHARE + C.GOLD_SHARE), 2)) < 1e-6
     ledger(db, "burn_pending", 0.5)
     assert abs(T.owed_to_burn(db) - (3.55 * C.BURN_SHARE - 0.5)) < 1e-9
     ledger(db, "burn", 3.55 * C.BURN_SHARE - 0.5)
@@ -365,6 +365,91 @@ def test_burn_is_capped_by_the_wallet_balance_and_a_pending_burn_blocks_another(
     rpc.receipts[h] = None
     T.cycle(rpc, db, acct)
     assert len(rpc.raw) == 1                               # nothing new while a burn is in flight
+
+
+# ---- gold: the gold share buys GLD on its v3 pool and keeps it as a reserve ----
+
+QUOTE_V3_SEL = selector(f"quoteExactInputSingle({T.QUOTE_V3_T})")
+GLD_UNITS = 12_500_000_000_000_000                        # 0.0125 GLD for 5 USDG at $400
+
+
+SWAP_V3_SEL = bytes.fromhex(selector(f"exactInputSingle({T.SWAP_V3_T})")[2:])
+
+
+def gold_chain(rpc, usdg=50.0, out_units=GLD_UNITS, approved=False):
+    chain(rpc, claimable=0, usdg=usdg)
+    rpc.eth_calls[QUOTE_V3_SEL] = uint_result(out_units, 0, 0, 90_000)
+    rpc.eth_calls[ALLOWANCE] = word(2 ** 200 if approved else 0)
+
+
+def gold_receipts(rpc, qty_units=GLD_UNITS):
+    auto_receipts(rpc, C.WALLET)
+    base = rpc.receipt_for
+
+    def receipt(h):
+        r = base(h)
+        raw = next((x for x in rpc.raw if tx_hash(x) == h), None)
+        if r and raw and decode_tx(raw)["to"] == C.SWAP_ROUTER_V3 and qty_units:
+            r["logs"] = [transfer_log(C.GLD, "0x" + "55" * 20, C.WALLET, qty_units)]
+        return r
+    rpc.receipt_for = receipt
+
+
+def test_owed_to_gold_accumulates_and_waits_for_the_minimum(db, rpc, acct, live):
+    ledger(db, "claim", 30.0)                              # gold share 3.00, under the 5.00 minimum
+    gold_chain(rpc)
+    gold_receipts(rpc)
+    T.cycle(rpc, db, acct)
+    assert [decode_tx(r)["to"] for r in rpc.raw] == [C.USDG]        # the creator's forward only
+    assert abs(T.owed_to_gold(db) - 30.0 * C.GOLD_SHARE) < 1e-9 and rows(db, "gold") == []
+    assert T.summary(rpc, db)["gold_state"] == "buys gold once $5 is owed"
+
+
+def test_gold_buys_gld_on_the_v3_pool_and_keeps_it(db, rpc, acct, live):
+    ledger(db, "claim", 60.0)                              # forward 30, gold 6.00 (no token: no burn)
+    gold_chain(rpc)
+    gold_receipts(rpc)
+    T.cycle(rpc, db, acct)
+    txs = [decode_tx(r) for r in rpc.raw]
+    assert [t["to"] for t in txs] == [C.USDG, C.USDG, C.SWAP_ROUTER_V3]          # forward, exact approval, swap
+    assert txs[1]["data"][:4] == APPROVE_SEL
+    spender, allowance = decode(["address", "uint256"], txs[1]["data"][4:])
+    assert spender.lower() == C.SWAP_ROUTER_V3 and allowance == 6_000_000       # this buy's amount, nothing unbounded
+    assert txs[2]["data"][:4] == SWAP_V3_SEL and txs[2]["value"] == 0
+    token_in, token_out, fee, recipient, amount_in, min_out, limit = decode([T.SWAP_V3_T], txs[2]["data"][4:])[0]
+    assert (token_in.lower(), token_out.lower(), fee, recipient.lower(), amount_in, limit) == (C.USDG, C.GLD, 500, C.WALLET, 6_000_000, 0)
+    assert min_out == int(GLD_UNITS * (1 - T.GOLD_SLIPPAGE))
+    g = rows(db, "gold")
+    assert len(g) == 1 and abs(g[0]["amount"] - 6.0) < 1e-9 and abs(g[0]["qty"] - 0.0125) < 1e-12 and g[0]["tx"] == tx_hash(rpc.raw[2])
+    assert rows(db, "gold_pending") == [] and abs(T.owed_to_gold(db)) < 1e-9
+    texts = [e["text"] for e in db.q("SELECT text FROM events WHERE kind='treasury' ORDER BY id")]
+    assert texts[-1] == "bought 0.0125 GLD of gold with 6.00 USDG for its reserve"
+    s = T.summary(rpc, db)
+    assert s["gold_total"] == 6.0 and s["gold_qty"] == 0.0125 and s["owed_to_gold"] == 0.0 and s["gold_share"] == C.GOLD_SHARE
+
+
+def test_a_gold_buy_settles_only_when_gld_reaches_the_wallet(db, rpc, acct, live, monkeypatch):
+    monkeypatch.setattr(C, "OWNER_WALLET", "")
+    ledger(db, "claim", 60.0)
+    gold_chain(rpc)
+    gold_receipts(rpc, qty_units=0)                        # status 0x1, no GLD arrived
+    T.cycle(rpc, db, acct)
+    assert rows(db, "gold") == [] and len(rows(db, "gold_failed")) == 1
+    assert [decode_tx(r)["to"] for r in rpc.raw] == [C.USDG, C.SWAP_ROUTER_V3]  # standing allowance reused, no new approval
+    assert abs(T.owed_to_gold(db) - 6.0) < 1e-9
+    assert "no GLD reached the wallet" in db.one("SELECT text FROM events WHERE kind='error'")["text"]
+    h = "0x" + "cc" * 32
+    ledger(db, "gold_pending", 5.0, tx=h, note="in flight")
+    rpc.receipts[h] = None
+    T.cycle(rpc, db, acct)
+    assert len(rpc.raw) == 2                               # nothing new while a gold buy is in flight
+
+
+def test_gold_never_counts_for_money_decisions(db):
+    ledger(db, "claim", 20.0)
+    ledger(db, "gold", 2.0)
+    assert abs(T.owed_to_gold(db)) < 1e-9
+    assert abs(T.free_usd(db, 50.0) - round(50.0 - 20.0 * (S + C.BURN_SHARE), 2)) < 1e-6
 
 
 def test_a_transaction_in_flight_marks_the_worm_busy_until_it_settles(monkeypatch):

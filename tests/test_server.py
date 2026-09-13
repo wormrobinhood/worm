@@ -302,7 +302,7 @@ def test_state_has_no_secrets_or_local_paths(db, monkeypatch):
     from wormhole.learn import Brain
     from wormhole.paper import Paper
     monkeypatch.setattr(server, "treasury", lambda rpc: {"usd": 0.0, "usd_real": 0.0, "stage": 0, "stage_name": "hatchling",
-                                                         "stages": 7, "next_usd": 20, "demo": False, "wallet": C.WALLET})
+                                                         "stages": 7, "next_usd": 20, "wallet": C.WALLET})
     monkeypatch.setattr(server, "_compute_cached", lambda: {"provider": "venice", "balance_usd": None})
     hub = Hub()
     hub.scan({"step": "start", "token": ADDR, "ts": 1, "text": "opening", "data": {"name": "Tok"}})

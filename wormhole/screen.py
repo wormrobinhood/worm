@@ -17,7 +17,7 @@ CLOSED_MARKERS = ("has been closed", "target closed")   # Playwright's wording w
 ALLOW = {"www.ponsfamily.com", "ponsfamily.com"}
 IDLE_EVERY = 30
 WAITING = "waiting for the next graduation"     # every idle caption starts with it, so a viewer knows the state at a glance
-ACTION_SPOTS = {"claim": "Payable", "forward": "Payable", "burn": "Recent trades", "compute": "Market cap", "give": "Market cap",
+ACTION_SPOTS = {"claim": "Payable", "forward": "Payable", "burn": "Recent trades", "compute": "Market cap", "gold": "Market cap",
                 "launch": "About"}               # where on the page the worm's eye goes for each kind of transaction
 VIEW = {"width": 1100, "height": 690}
 LAUNCHPAD = "https://www.ponsfamily.com/launchpad"

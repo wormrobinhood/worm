@@ -269,7 +269,6 @@ tr.failed td{color:var(--bad)}
     <div class="panel" data-panel="paper"><h2><span class="ttl">training book</span><small>paper trades that teach the exit rules · no real money</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse training book"></button></h2><div class="body"><div id="paper"></div></div></div>
     <div class="panel" data-panel="advisor"><h2><span class="ttl">advisor</span><small>hypotheses from the writer, judged by the records</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse advisor"></button></h2><div class="body"><div id="advisor"></div></div></div>
     <div class="panel" data-panel="bad"><h2><span class="ttl">bad actors</span><small>serial launchers in the window</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse bad actors"></button></h2><div class="body"><div id="serial"></div><h3 class="eyebrow">worst verdicts</h3><div id="worst"></div></div></div>
-    <div class="panel" data-panel="causes"><h2><span class="ttl">causes</span><small>giving from the surplus</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse causes"></button></h2><div class="body"><div id="causes"></div></div></div>
     <div class="panel" data-panel="voice"><h2><span class="ttl">voice</span><small>its journal · copy what you like to X</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse voice"></button></h2><div class="body"><div id="voice"></div></div></div>
   </div>
 </div>
@@ -388,7 +387,7 @@ $('#feed').addEventListener('click',e=>{if(e.target.closest('a'))return;const c=
    nothing to look at. Same digits, same hood, grows with the same treasury. ---------- */
 let eyeFocus=null;
 let lastFrame=null,lastAction=null;
-const ACTIONS={claim:'claiming its fees',forward:'paying the creator',burn:'burning $WORM',compute:'buying compute',give:'giving',launch:'launched its token'};
+const ACTIONS={claim:'claiming its fees',forward:'paying the creator',burn:'burning $WORM',gold:'buying gold',compute:'buying compute',launch:'launched its token'};
 function applyAction(a){if(!a||!a.action)return;lastAction=a;updateBar()}
 function currentAction(){return lastAction&&Date.now()/1000-(lastAction.ts||0)<120?lastAction:null}
 function applyFrame(f){if(!f||!f.jpg)return;lastFrame=f;if(f.action)lastAction={action:f.action,done:f.done,ts:f.ts||Date.now()/1000};const img=$('#screenimg');img.src='data:image/jpeg;base64,'+f.jpg;$('#screennote').textContent=(f.note||'')+(f.url?'  ·  '+f.url.replace(/^https?:\/\//,'').slice(0,70):'');eyeFocus=f.focus||null;scout.arrived=false}
@@ -546,7 +545,7 @@ function render(s){
   $('#liveband').classList.toggle('noscreen',s.screen_on===false);
   if(ch.stage!==hood.stage)buildHood(ch.stage||0);
   const lo=[0,20,100,500,2000,10000,50000][ch.stage||0],hi=ch.next_usd;
-  $('#stage').innerHTML=`<span class="live"></span>${s.live?'':'<span class="demo">DEMO · nothing signs or sends</span> '}stage ${(ch.stage||0)+1}/${num(ch.stages||7)}: <b>${esc(ch.stage_name||'hatchling')}</b> · treasury <b>$${(ch.usd||0).toFixed(2)}</b>${hi?` · next size at $${num(hi)}`:' · fully grown'}${ch.demo?' · demo treasury':''}${ch.wallet?'':' · no wallet yet'}`;
+  $('#stage').innerHTML=`<span class="live"></span>${s.live?'':'<span class="demo">NOT LIVE · nothing signs or sends</span> '}stage ${(ch.stage||0)+1}/${num(ch.stages||7)}: <b>${esc(ch.stage_name||'hatchling')}</b> · treasury <b>$${(ch.usd||0).toFixed(2)}</b>${hi?` · next size at $${num(hi)}`:' · fully grown'}${ch.demo?' · demo treasury':''}${ch.wallet?'':' · no wallet yet'}`;
   $('#stagebar').style.width=(hi?Math.min(100,100*((ch.usd||0)-lo)/(hi-lo)):100)+'%';
   const vd=st.verdicts||{};
   const sco=s.scout||{},rd=s.readiness||{};
@@ -567,8 +566,9 @@ function render(s){
   const tr=s.treasury||{};
   $('#wallet').innerHTML=tr.wallet?`<div class="meta">address, same on Robinhood Chain and Base</div><div class="addr">${esc(tr.wallet)}</div>
     <div class="chips" style="margin-top:8px"><span class="chip">ETH ${tr.eth==null?'…':Number(tr.eth).toFixed(5)}</span><span class="chip">USDG ${tr.usdg==null?'…':Number(tr.usdg).toFixed(2)}</span><span class="chip ${tr.claimable_usdg>0?'good':''}">claimable fees ${tr.claimable_usdg==null?'…':Number(tr.claimable_usdg).toFixed(2)} USDG</span><span class="chip">${tr.live?'armed':'not armed: nothing is signed'}</span>${s.compute?`<span class="chip ${(s.compute.balance_usd||0)>0?'good':''}">compute ${s.compute.balance_usd==null?(s.compute.error?esc(s.compute.error):'…'):'$'+Number(s.compute.balance_usd).toFixed(2)} at ${s.compute.provider==='aisurplus'?'AI Surplus':'Venice'}${s.compute.free?' · free during the pilot':''}</span><span class="chip">pays with ${esc(s.compute.pays_with||'')}</span><span class="chip">top up $${num(s.compute.topup_usd)} when under $${num(s.compute.topup_below_usd)}</span>`:''}</div>
-    <div class="meta" style="margin-top:8px">fee split of every claim: <b>${Math.round((tr.share||0)*100)}%</b> to the creator · <b>${Math.round((tr.burn_share||0)*100)}%</b> buys $WORM and burns it · <b>${Math.round((tr.ops_share||0)*100)}%</b> operations (compute, gas, the reserve)${tr.trading===false?' · trading off by policy':''}</div>
+    <div class="meta" style="margin-top:8px">fee split of every claim: <b>${Math.round((tr.share||0)*100)}%</b> to the creator · <b>${Math.round((tr.gold_share||0)*100)}%</b> buys gold for its reserve · <b>${Math.round((tr.burn_share||0)*100)}%</b> buys $WORM and burns it · <b>${Math.round((tr.ops_share||0)*100)}%</b> operations (compute, gas, the runway)${tr.trading===false?' · trading off by policy':''}</div>
     <div class="meta" style="margin-top:4px">burned so far $${(tr.burned_total||0).toFixed(2)} USDG → ${Number(tr.burned_qty||0).toLocaleString('en-US',{maximumFractionDigits:0})} $WORM to the burn address${tr.owed_to_burn!=null?` · owed to the burn <span class="${tr.owed_to_burn>0?'pos':''}">$${Number(tr.owed_to_burn).toFixed(2)}</span>`:''}${tr.burn_state?` · ${esc(tr.burn_state)}`:''}</div>
+    <div class="meta" style="margin-top:4px">gold reserve <span class="${(tr.gold_held||0)>0?'pos':''}">${tr.gold_held==null?'…':Number(tr.gold_held).toFixed(4)} GLD</span>${tr.gold_usd!=null?` (about $${Number(tr.gold_usd).toFixed(2)})`:''} · bought with $${(tr.gold_total||0).toFixed(2)} USDG so far${tr.owed_to_gold!=null?` · owed to gold <span class="${tr.owed_to_gold>0?'pos':''}">$${Number(tr.owed_to_gold).toFixed(2)}</span>`:''}${tr.gold_state?` · ${esc(tr.gold_state)}`:''} · never counted in the runway</div>
     <div class="meta" style="margin-top:4px">claimed so far $${(tr.claimed_total||0).toFixed(2)} · forwarded to the creator (${Math.round((tr.share||0)*100)}%) $${(tr.forwarded_total||0).toFixed(2)}${tr.owed_to_owner!=null?` · owed to the creator, not yet forwarded <span class="${tr.owed_to_owner>0?'pos':''}">$${Number(tr.owed_to_owner).toFixed(2)}</span>`:''}${tr.owner?'':' · creator wallet not set yet'}${tr.token?` · token <a href="https://www.ponsfamily.com/launchpad/${esc(tr.token)}" target="_blank" rel="noopener noreferrer">$WORM on pons</a>`:' · token not launched yet'}</div>
     ${(tr.ledger||[]).length?'<table style="margin-top:8px"><tr><th>when</th><th>what</th><th class="r">USDG</th></tr>'+tr.ledger.slice(0,8).map(l=>{const k=String(l.kind||''),lc=/_pending$/.test(k)?' class="pending"':/_(failed|dropped)$/.test(k)?' class="failed"':'';return `<tr${lc}><td>${ago(l.ts)}</td><td>${esc(k)}: ${esc(l.note||'')}</td><td class="r">${l.amount==null?'…':Number(l.amount).toFixed(2)}</td></tr>`}).join('')+'</table>':''}`
     :'<div class="empty">no wallet yet</div>';
@@ -576,11 +576,9 @@ function render(s){
   $('#voice').innerHTML=`<div class="meta" style="margin-bottom:8px">writer: ${esc(vo.model||'stub')} · every ${num(vo.every_min)} min · ${esc(vo.posting||'')}. Every number is checked against the packet; a draft with a number that is not in it, or trading language, is dropped.</div>`
     +((vo.entries||[]).filter(e=>e.ok).length?vo.entries.filter(e=>e.ok).slice(0,6).map(e=>`<div class="post"><button class="copy" data-text="${esc(e.text)}">copy</button>${esc(e.text)}<span class="meta">${esc(e.mood||'')} · ${ago(e.ts)} · ${esc(e.model||'')}</span></div>`).join(''):'<div class="empty">no entries yet</div>');
   const trd=s.trader||{},pos=trd.positions||[],tds=trd.trades||[];
-  $('#trades').innerHTML=`<div class="meta" style="margin-bottom:8px">${esc(trd.policy||'')}. ${s.live?'':'Demo: real quotes and simulated swaps, nothing sent.'}</div>`
+  $('#trades').innerHTML=`<div class="meta" style="margin-bottom:8px">${esc(trd.policy||'')}. ${s.live?'':'Not live: real quotes, nothing sent.'}</div>`
     +(pos.length?`<table><tr><th>position</th><th class="r">size</th><th class="r">entry</th><th>state</th></tr>`+pos.slice(0,8).map(x=>`<tr><td>$${esc(x.symbol)} <span class="meta">${esc(x.mode)}</span></td><td class="r">$${Number(x.size_usd).toFixed(2)}</td><td class="r">${usd(x.entry_usd)}</td><td>${x.status==='open'?((x.recovered_usd||0)>0?'<span class="pos">initial cost recovered</span>':'open'):esc('closed: '+(x.reason||''))}</td></tr>`).join('')+'</table>':`<div class="empty">${trd.enabled===false?'no positions: trading is off by policy. The worm learns on paper until its brain is mature; its fees go to its creator, to buying back and burning $WORM, and to its own compute.':`no positions. Locked until readiness reaches ${num(rd.ready_at||80)}%; then only "looks healthy" verdicts, from the surplus above the reserve.`}</div>`)
     +(tds.length?'<div class="meta" style="margin-top:8px">'+tds.slice(0,5).map(t=>`${ago(t.ts)} · ${esc(t.side)} $${esc(t.symbol)} $${Number(t.usd).toFixed(2)} · ${esc(t.note||'')}`).join('<br>')+'</div>':'');
-  const gv=s.giving||{};
-  $('#causes').innerHTML=`<div class="meta">${esc(gv.rule||'')}. given so far $${(gv.given_total||0).toFixed(2)}</div>`+((gv.causes||[]).length?'<table style="margin-top:6px"><tr><th>cause</th><th>wallet</th><th class="r">weight</th></tr>'+gv.causes.map(c=>`<tr><td>${esc(c.name)}</td><td class="meta">${short(c.address)}</td><td class="r">${num(c.weight)}</td></tr>`).join('')+'</table>':'<div class="empty">No causes selected yet.</div>');
   const rw=s.runway||{},sc=rw.scenarios||{};
   $('#runway').innerHTML=((rw.treasury_usd||0)<=0?`<div class="meta" style="margin-bottom:8px;color:var(--g)">not funded yet. The projection below is what a $0 treasury looks like against the planned bills; it starts meaning something once the wallet exists.</div>`:'')+`<div class="meta" style="margin-bottom:8px">treasury <b class="pos">$${(rw.treasury_usd||0).toFixed(2)}</b> · costs ~$${num(rw.cost_per_day_usd)}/day (compute $${num((rw.cost_parts||{}).compute)}, gas $${num((rw.cost_parts||{}).gas)}, bridge $${num((rw.cost_parts||{}).bridge)}) · income $${num(rw.income_per_day_usd)}/day, the ${Math.round((rw.ops_share||0)*100)}% operations share of $${num(rw.claims_per_day_usd)}/day claimed${rw.income_measured?', measured':' (nothing measured yet)'}</div>
     <table><tr><th>90-day scenario</th><th class="r">ends with</th><th class="r">runs out</th></tr>`+Object.entries(sc).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="r ${v.end_balance_usd>=0?'pos':'neg'}">$${num(v.end_balance_usd)}</td><td class="r">${v.runs_out_day!=null?'day '+num(v.runs_out_day):'beyond 90 days'}</td></tr>`).join('')+`</table>
@@ -617,12 +615,12 @@ function render(s){
 }
 /* ---------- panels: collapse (remembered in localStorage), one-line summaries, masonry placement, sticky status bar ---------- */
 let folded=null;try{folded=JSON.parse(localStorage.getItem('irlworm.panels'))}catch(e){}
-if(!folded||typeof folded!=='object')folded=matchMedia('(max-width:599px)').matches?{brain:true,lab:true,paper:true,bad:true,causes:true,voice:true}:{};
+if(!folded||typeof folded!=='object')folded=matchMedia('(max-width:599px)').matches?{brain:true,lab:true,paper:true,bad:true,voice:true}:{};
 function applyFolded(){document.querySelectorAll('.panel[data-panel]').forEach(p=>{const k=p.dataset.panel,c=!!folded[k];p.classList.toggle('collapsed',c);const b=p.querySelector('.tog');if(b){b.setAttribute('aria-expanded',String(!c));b.setAttribute('aria-label',(c?'expand ':'collapse ')+k)}})}
 document.addEventListener('click',e=>{const h=e.target.closest('.panel[data-panel]>h2');if(!h||e.target.closest('a'))return;const k=h.parentElement.dataset.panel;if(folded[k])delete folded[k];else folded[k]=true;
   try{localStorage.setItem('irlworm.panels',JSON.stringify(folded))}catch(e){}applyFolded();place(true)});
 applyFolded();
-function renderSummaries(s){const tr=s.treasury||{},rw=s.runway||{},b=s.brain||{},lb=s.lab||{},p=s.paper||{},ba=s.bad_actors||{},gv=s.giving||{},vo=s.voice||{},trd=s.trader||{},rd=s.readiness||{},feed=s.feed||[],f0=feed[0];
+function renderSummaries(s){const tr=s.treasury||{},rw=s.runway||{},b=s.brain||{},lb=s.lab||{},p=s.paper||{},ba=s.bad_actors||{},vo=s.voice||{},trd=s.trader||{},rd=s.readiness||{},feed=s.feed||[],f0=feed[0];
   const S={feed:f0?`${feed.length} scored · latest $${f0.symbol||'?'} ${f0.verdict||''} [${num(f0.score)}]`:'nothing scored yet',
     wallet:tr.wallet?`ETH ${Number(tr.eth||0).toFixed(4)} · USDG ${Number(tr.usdg||0).toFixed(2)} · ${tr.live?'armed':'not armed'}`:'no wallet yet',
     trades:(trd.positions||[]).length?`${trd.positions.length} open`:'no positions',
@@ -632,13 +630,12 @@ function renderSummaries(s){const tr=s.treasury||{},rw=s.runway||{},b=s.brain||{
     advisor:`${((s.advisor||{}).rules||[]).filter(r=>r.active).length} learned rules · ${((s.advisor||{}).arms||[]).length} learned arms · ${(s.advisor||{}).last_run?'last run '+ago(s.advisor.last_run.ts):'no run yet'}`,
     paper:`realized $${Number(p.realized_usd||0).toFixed(2)} · open $${Number(p.unrealized_usd||0).toFixed(2)} · ${(p.open||[]).length} open`,
     bad:`${(ba.serial||[]).length} serial launchers · ${(ba.worst||[]).length} worst verdicts`,
-    causes:(gv.causes||[]).length?`${gv.causes.length} causes · given $${Number(gv.given_total||0).toFixed(2)}`:'no causes yet',
     voice:`${(vo.entries||[]).filter(e=>e.ok).length} entries · writer ${vo.model||'stub'}`,
     log:`${(s.events||[]).length} events`,
     learning:`readiness ${num(rd.score??0)}% · ${b.resolved||0} verdicts checked · ${(s.lessons||[]).length} lessons`,
     screen:digState().digging?'digging':'waiting for the next graduation',dig:dig.token?(dig.steps.verdict?'last dig · waiting for the next graduation':'digging'):'waiting for the next graduation'};
   for(const k in S){const el=document.querySelector(`.panel[data-panel="${k}"]>h2 .sum`);if(el)el.textContent=S[k]}}
-const ORDER=['feed','wallet','trades','runway','brain','lab','paper','advisor','bad','causes','voice'],grid=$('#grid');let gridCols=0,placedAt=0,placedData=false,placeTimer=null;
+const ORDER=['feed','wallet','trades','runway','brain','lab','paper','advisor','bad','voice'],grid=$('#grid');let gridCols=0,placedAt=0,placedData=false,placeTimer=null;
 function colCount(){return matchMedia('(min-width:1280px)').matches?3:matchMedia('(min-width:900px)').matches?2:1}
 function place(force){}
 addEventListener('resize',()=>{clearTimeout(placeTimer);placeTimer=setTimeout(()=>place(colCount()!==gridCols),200)});

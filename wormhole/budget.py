@@ -6,7 +6,7 @@ the ledger's 'claim' rows (USDG creator fees) over the last week, per day. Treas
 are kept for the chart only; a balance moves with deposits, ETH's price and the worm's own buys, none
 of which is income. The policy is simple and written down: keep a 90-day reserve; compute, gas and
 bridging come only from the operations share of every claim (the rest is forwarded to the creator or
-burned); no trading by policy until the brain is mature; give only from the surplus above the reserve."""
+burned); no trading by policy until the brain is mature."""
 import os
 import time
 
@@ -21,10 +21,8 @@ HORIZON = 90
 INCOME_WINDOW_DAYS = 7
 
 
-def sample(db, usd, demo=False):
-    """One treasury balance an hour, for the chart. A pretend (demo) treasury is not sampled."""
-    if demo:
-        return
+def sample(db, usd):
+    """One treasury balance an hour, for the chart."""
     last = db.one("SELECT ts FROM samples ORDER BY ts DESC LIMIT 1")
     if last and time.time() - last["ts"] < 3600:
         return
@@ -94,5 +92,6 @@ def projection(db, treasury_usd):
         "can_invest": surplus > 0,
         "compute_budget_per_day_usd": round(compute_budget, 3),
         "rule": f"keep a 90-day reserve; compute, gas and bridging come only from the operations share ({ops_pct}% of every claim); "
-                "no trading by policy until the brain is mature; give only from the surplus above the reserve",
+                "the gold share is held as gold and never counted in the runway; "
+                "no trading by policy until the brain is mature",
     }

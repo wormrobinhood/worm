@@ -132,13 +132,19 @@ check_addresses(_wallet_env, _signer, _owner_env)
 WALLET = (_wallet_env or _signer).lower()
 BASE_WALLET = (os.environ.get("WH_BASE_WALLET") or WALLET).lower()
 OWNER_WALLET = _owner_env.lower()                                    # the creator's wallet: receives OWNER_SHARE of every claim
-# The fee policy, of every claim of creator fees: the creator's share is forwarded; the burn share buys $WORM on its
-# own pool and sends it to the burn address; the rest (operations) pays compute, gas, bridging and the reserve.
-OWNER_SHARE = float(os.environ.get("WH_OWNER_SHARE", "0.60"))
+# The fee policy, of every claim of creator fees: the creator's share is forwarded; the gold share buys tokenized
+# gold (GLD) the worm keeps as a reserve; the burn share buys $WORM on its own pool and sends it to the burn address;
+# the rest (operations) pays compute, gas, bridging and the runway reserve.
+OWNER_SHARE = float(os.environ.get("WH_OWNER_SHARE", "0.50"))
 BURN_SHARE = float(os.environ.get("WH_BURN_SHARE", "0.20"))
-OPS_SHARE = round(1.0 - OWNER_SHARE - BURN_SHARE, 6)
-if not (0.0 <= OWNER_SHARE <= 1.0 and 0.0 <= BURN_SHARE <= 1.0 and OPS_SHARE >= 0.0):
-    raise SystemExit("WH_OWNER_SHARE and WH_BURN_SHARE must each be between 0 and 1 and add up to at most 1")
+GOLD_SHARE = float(os.environ.get("WH_GOLD_SHARE", "0.10"))
+OPS_SHARE = round(1.0 - OWNER_SHARE - BURN_SHARE - GOLD_SHARE, 6)
+if not (0.0 <= OWNER_SHARE <= 1.0 and 0.0 <= BURN_SHARE <= 1.0 and 0.0 <= GOLD_SHARE <= 1.0 and OPS_SHARE >= 0.0):
+    raise SystemExit("WH_OWNER_SHARE, WH_BURN_SHARE and WH_GOLD_SHARE must each be between 0 and 1 and add up to at most 1")
+GLD = "0xc9a981fee1f9dec688bb123ccdecc63d0debfc4e"          # SPDR Gold Trust, Robinhood Token: tokenized gold, 18 decimals
+QUOTER_V3 = "0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7"    # Uniswap v3 QuoterV2 on Robinhood Chain: the gold pools are v3
+SWAP_ROUTER_V3 = "0xcaf681a66d020601342297493863e78c959e5cb2"  # Uniswap v3 SwapRouter02 on Robinhood Chain: the gold buy goes through it
+GOLD_POOL_FEE = 500                                          # the GLD/USDG 0.05% pool, the deepest quote
 TRADING = os.environ.get("WH_TRADING", "0") == "1"                   # off by policy until the brain is mature; when on, the readiness gate still applies
 LIVE = os.environ.get("WH_LIVE", "0") == "1"                         # nothing is ever signed unless 1
 SITE_URL = os.environ.get("WH_SITE_URL", "http://127.0.0.1:4670").rstrip("/")

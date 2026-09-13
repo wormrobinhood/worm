@@ -32,11 +32,15 @@ LAUNCH_SIG = f"launchToken({TOKEN_PARAMS_T},uint256,address)"
 LIMITS = {"name": 64, "symbol": 16, "logo": 512, "description": 2048, "social": 256}
 GAS_FLOOR = 4_500_000        # a real launch+buy used 3.85M; the estimate (+30%) is used when it is higher
 
+def _pct(x):
+    return int(round(x * 100))
+
+
 DEFAULT_DESCRIPTION = (
     "Worm is a small worm that lives on Robinhood Chain. It digs through every pons "
-    "graduation, flags bad actors, and tells the community first. Of its fees, 60% go to its creator, 20% buy "
-    "back and burn $WORM, and 20% pay for its own compute. It knows the dirt on every launch. It is a screening "
-    "aid, not advice.")
+    f"graduation, flags bad actors, and tells the community first. Of its fees, {_pct(C.OWNER_SHARE)}% go to its creator, "
+    f"{_pct(C.GOLD_SHARE)}% buy gold it keeps as a reserve, {_pct(C.BURN_SHARE)}% buy back and burn $WORM, and "
+    f"{_pct(C.OPS_SHARE)}% pay for its own compute. It knows the dirt on every launch. It is a screening aid, not advice.")
 
 
 def params(wallet):

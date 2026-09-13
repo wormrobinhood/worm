@@ -1,22 +1,26 @@
 """Money in, money out, in the open.
 
 - income: USDG creator fees. pons credits them to an escrow; the worm claims them with claimToken(USDG).
-- the split of every claim (WH_OWNER_SHARE / WH_BURN_SHARE / the rest): the creator's share is owed to
-  WH_OWNER_WALLET and forwarded; the burn share is owed to the burn and, once at least MIN_BURN_USD is
-  owed and $WORM has a pool, buys $WORM on that pool and sends it to the burn address in the same
-  transaction; the rest stays in the wallet for compute, gas and the reserve. Both owed balances are
-  derived from the ledger (claims minus what went out, in flight included), so small claims add up
-  instead of being dropped and a crash between two steps changes nothing.
+- the split of every claim (WH_OWNER_SHARE / WH_GOLD_SHARE / WH_BURN_SHARE / the rest): the creator's share
+  is owed to WH_OWNER_WALLET and forwarded; the burn share is owed to the burn and, once at least MIN_BURN_USD
+  is owed and $WORM has a pool, buys $WORM on that pool and sends it to the burn address in the same
+  transaction; the gold share, once at least MIN_GOLD_USD is owed, buys tokenized gold (GLD) on its Uniswap v3
+  pool through Uniswap's SwapRouter02 (approved for exactly that amount, just before) and keeps it in the
+  wallet as a reserve that the runway never counts;
+  the rest stays in the wallet for compute, gas and the reserve. Every owed balance is derived from the ledger
+  (claims minus what went out, in flight included), so small claims add up instead of being dropped and a
+  crash between two steps changes nothing.
 - every movement is written to the ledger table and shown on the site. A row is written as
   '<kind>_pending' the moment the node has the transaction and settled from the receipt: 'claim',
-  'forward', 'burn' or 'give' on success (amount taken from the ClaimedToken or Transfer log, a burn's
-  token count from the Transfer to the burn address), '<kind>_failed' on a revert, '<kind>_dropped'
+  'forward', 'burn' or 'gold' on success (amount taken from the ClaimedToken or Transfer log, a burn's
+  token count from the Transfer to the burn address, a gold buy's GLD from the Transfer to the wallet),
+  '<kind>_failed' on a revert, '<kind>_dropped'
   when the node lost it. Pending rows are reconciled at the top of every cycle, before anything new is sent."""
 import logging
 import os
 import time
 
-from eth_abi import encode
+from eth_abi import decode, encode
 
 from . import config as C
 from .chain import addr_from_topic, call_data, call_fn, selector, topic
@@ -29,6 +33,12 @@ BUSY_SINCE = 0.0           # when the transaction now in flight was broadcast; 0
 BUSY_MAX_S = 120           # a transaction that never settles does not stop the digging for longer than this
 MIN_BURN_USD = float(os.environ.get("WH_MIN_BURN_USD", "5.0"))      # a burn is one pool swap: the share is batched so gas and slippage stay small
 BURN_SLIPPAGE = 0.03       # the swap reverts if the pool delivers less than the quote minus this
+MIN_GOLD_USD = float(os.environ.get("WH_MIN_GOLD_USD", "5.0"))      # a gold buy is one v3 swap: batched like the burn
+GOLD_SLIPPAGE = 0.02       # gold's pools are deep; the swap reverts below the quote minus this
+QUOTE_V3_T = "(address,address,uint256,uint24,uint160)"        # QuoterV2.quoteExactInputSingle's struct
+SWAP_V3_T = "(address,address,uint24,address,uint256,uint256,uint160)"   # SwapRouter02.exactInputSingle's struct (no deadline)
+GOLD_PRICE_TTL_S = 300
+_gold_price = (0.0, None)
 PERMIT2_MAX = 2 ** 160 - 1
 EXPIRY_MAX = 2 ** 48 - 1
 TAKE = b"\x0e"             # Uniswap v4 router action: take a currency to a recipient (amount 0 = the whole open delta)
@@ -76,13 +86,20 @@ def owed_to_burn(db):
     return c * C.BURN_SHARE - b
 
 
+def owed_to_gold(db):
+    """The gold share of every claim so far, minus what bought gold or is on its way, in USDG."""
+    c = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind='claim'")["s"]
+    g = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind IN ('gold','gold_pending')")["s"]
+    return c * C.GOLD_SHARE - g
+
+
 def owed_total(db):
-    return max(0.0, owed_to_owner(db)) + max(0.0, owed_to_burn(db))
+    return max(0.0, owed_to_owner(db)) + max(0.0, owed_to_burn(db)) + max(0.0, owed_to_gold(db))
 
 
 def free_usd(db, usd_real):
     """The part of the real treasury that is the worm's own: the balance minus what is owed to the creator and
-    to the burn. Runway, surplus, readiness and giving are sized from this, never from money passing through."""
+    to the burn and to gold. Runway, surplus and readiness are sized from this, never from money passing through."""
     try:
         ensure_tables(db)
         return round(max(0.0, float(usd_real or 0.0) - owed_total(db)), 2)
@@ -131,6 +148,18 @@ def burned_in(rc):
     return total / 1e18 if seen else None
 
 
+def gold_in(rc, wallet):
+    """GLD delivered to the wallet in this receipt, in whole GLD, or None when none arrived."""
+    total, seen = 0, False
+    for lg in rc.get("logs", []):
+        t = lg.get("topics", [])
+        if (lg["address"].lower() == C.GLD and len(t) == 3 and t[0] == TRANSFER_TOPIC
+                and addr_from_topic(t[2]) == wallet.lower()):
+            total += _word(lg["data"])
+            seen = True
+    return total / 1e18 if seen else None
+
+
 def working(max_s=None):
     """True while a transaction the worm sent is still in flight: the digging waits for it."""
     return BUSY_SINCE > 0 and time.time() - BUSY_SINCE < (BUSY_MAX_S if max_s is None else max_s)
@@ -157,8 +186,8 @@ def _event_text(kind, amount, row):
         return f"burned {row.get('qty') or 0:,.0f} $WORM bought with {amount:.2f} USDG"
     if kind == "forward":
         return f"forwarded {amount:.2f} USDG ({int(C.OWNER_SHARE * 100)}%) to the creator"
-    if kind == "give":
-        return f"gave {amount:.2f} USDG {row['note']}"
+    if kind == "gold":
+        return f"bought {row.get('qty') or 0:.4f} GLD of gold with {amount:.2f} USDG for its reserve"
     if kind == "compute":
         return f"paid {amount:.2f} USDG of compute to AI Surplus"
     return f"{kind}: {amount:.2f} USDG"
@@ -176,6 +205,9 @@ def settle(db, row, rc, wallet, to=None):
     elif ok and base == "burn":
         qty = burned_in(rc)                        # the tokens that reached the burn address, from the receipt
         ok, why = qty is not None, "no $WORM reached the burn address"
+    elif ok and base == "gold":
+        qty = gold_in(rc, wallet)                  # the GLD that reached the wallet, from the receipt
+        ok, why = qty is not None, "no GLD reached the wallet"
     elif ok:
         ok = transferred(rc, C.USDG, wallet, to, units(row["amount"]))
         why = "no Transfer log for the amount"
@@ -184,7 +216,7 @@ def settle(db, row, rc, wallet, to=None):
     db.x("UPDATE ledger SET kind=?, amount=?, note=?, qty=? WHERE id=?", (kind, amount, note, qty, row["id"]))
     if ok:
         text = _event_text(kind, amount, dict(row, qty=qty))
-        db.add_event("giving" if base == "give" else "treasury", text)
+        db.add_event("treasury", text)
         watch(base, text, row["tx"], done=True)
     else:
         db.add_event("error", f"{base} {why}: {row['tx']}")
@@ -226,10 +258,12 @@ def reconcile(rpc, db, kinds, wallet, to_for=None):
 def summary(rpc, db):
     ensure_tables(db)
     out = {"wallet": C.WALLET or None, "owner": C.OWNER_WALLET or None, "share": C.OWNER_SHARE, "token": C.TOKEN or None,
-           "burn_share": C.BURN_SHARE, "ops_share": C.OPS_SHARE, "trading": C.TRADING, "burn_min_usd": MIN_BURN_USD,
+           "burn_share": C.BURN_SHARE, "gold_share": C.GOLD_SHARE, "ops_share": C.OPS_SHARE, "trading": C.TRADING,
+           "burn_min_usd": MIN_BURN_USD, "gold_min_usd": MIN_GOLD_USD,
            "live": C.LIVE, "claimable_usdg": None, "usdg": None, "eth": None,
            "claimed_total": 0.0, "forwarded_total": 0.0, "compute_total": 0.0, "burned_total": 0.0, "burned_qty": 0.0,
-           "owed_to_owner": 0.0, "owed_to_burn": 0.0, "burn_state": "", "ledger": []}
+           "gold_total": 0.0, "gold_qty": 0.0, "gold_held": None, "gold_usd": None,
+           "owed_to_owner": 0.0, "owed_to_burn": 0.0, "owed_to_gold": 0.0, "burn_state": "", "gold_state": "", "ledger": []}
     if C.WALLET:
         try:
             out["claimable_usdg"] = round(claimable_usdg(rpc, C.WALLET), 4)
@@ -237,6 +271,11 @@ def summary(rpc, db):
             out["eth"] = round(int(rpc.call("eth_getBalance", [C.WALLET, "latest"]), 16) / 1e18, 6)
         except Exception as e:
             log.info("treasury read failed: %s", e)
+        try:
+            out["gold_held"] = round(gold_held(rpc, C.WALLET), 6)
+            out["gold_usd"] = round(out["gold_held"] * gold_price_usd(rpc), 2)
+        except Exception as e:
+            log.info("gold read failed: %s", e)
     for r in db.q("SELECT kind, COALESCE(SUM(amount),0) s FROM ledger GROUP BY kind"):
         if r["kind"] == "claim":
             out["claimed_total"] = round(r["s"], 4)
@@ -246,10 +285,15 @@ def summary(rpc, db):
             out["compute_total"] = round(r["s"], 4)
         elif r["kind"] == "burn":
             out["burned_total"] = round(r["s"], 4)
+        elif r["kind"] == "gold":
+            out["gold_total"] = round(r["s"], 4)
     out["burned_qty"] = round(db.one("SELECT COALESCE(SUM(qty),0) q FROM ledger WHERE kind='burn'")["q"] or 0.0, 2)
+    out["gold_qty"] = round(db.one("SELECT COALESCE(SUM(qty),0) q FROM ledger WHERE kind='gold'")["q"] or 0.0, 6)
     out["owed_to_owner"] = round(max(0.0, owed_to_owner(db)), 4)
     out["owed_to_burn"] = round(max(0.0, owed_to_burn(db)), 4)
+    out["owed_to_gold"] = round(max(0.0, owed_to_gold(db)), 4)
     out["burn_state"] = burn_state(out["owed_to_burn"])
+    out["gold_state"] = gold_state(out["owed_to_gold"])
     out["ledger"] = db.q("SELECT * FROM ledger ORDER BY id DESC LIMIT 20")
     return out
 
@@ -422,14 +466,116 @@ def burn(rpc, db, acct):
     return finish(db, h, rc, C.WALLET)[0] == "burn"
 
 
+# ---- gold: buy tokenized gold (GLD) with the gold share and keep it as a reserve ----
+
+def gold_held(rpc, wallet):
+    v = call_fn(rpc, C.GLD, "balanceOf(address)", ("uint256",), ("address",), (wallet,))
+    return (v or 0) / 1e18
+
+
+def _quote_v3(rpc, token_in, token_out, amount_in):
+    """QuoterV2.quoteExactInputSingle on the GLD/USDG v3 pool: the amount out, or 0 when nothing is quoted."""
+    data = selector(f"quoteExactInputSingle({QUOTE_V3_T})") + encode(
+        [QUOTE_V3_T], [(token_in, token_out, amount_in, C.GOLD_POOL_FEE, 0)]).hex()
+    raw = rpc.eth_call(C.QUOTER_V3, data)
+    out, _price_after, _ticks, _gas = decode(["uint256", "uint160", "uint32", "uint256"], bytes.fromhex(raw[2:]))
+    return int(out)
+
+
+def quote_gold(rpc, amount_in):
+    """GLD (18 decimals) for amount_in USDG units, from the pool."""
+    return _quote_v3(rpc, C.USDG, C.GLD, amount_in)
+
+
+def gold_price_usd(rpc):
+    """What one GLD sells for in USDG on the pool, cached for a few minutes: the reserve's display value."""
+    global _gold_price
+    if time.time() - _gold_price[0] < GOLD_PRICE_TTL_S and _gold_price[1]:
+        return _gold_price[1]
+    price = _quote_v3(rpc, C.GLD, C.USDG, 10 ** 18) / 1e6
+    _gold_price = (time.time(), price)
+    return price
+
+
+def gold_calldata(amount_in, min_out, recipient):
+    """One SwapRouter02 call: an exact-input Uniswap v3 swap of USDG for GLD on the 0.05% pool, the GLD
+    delivered to the wallet. The swap reverts below min_out, so a gold buy either happens whole or not at all."""
+    return selector(f"exactInputSingle({SWAP_V3_T})") + encode(
+        [SWAP_V3_T], [(C.USDG, C.GLD, C.GOLD_POOL_FEE, recipient, amount_in, min_out, 0)]).hex()
+
+
+def approve_for_gold(rpc, db, acct, need):
+    """SwapRouter02 may spend exactly this buy's USDG: an allowance for the amount, sent only when the standing
+    one is short. Nothing unbounded stands behind the gold step."""
+    from .tx import send_tx
+    have = call_fn(rpc, C.USDG, "allowance(address,address)", ("uint256",), ("address", "address"), (C.WALLET, C.SWAP_ROUTER_V3)) or 0
+    if int(have) >= need:
+        return
+    data = selector("approve(address,uint256)") + encode(["address", "uint256"], [C.SWAP_ROUTER_V3, need]).hex()
+    h, rc = send_tx(rpc, acct, C.USDG, data)
+    if not rc or rc.get("status") != "0x1":
+        raise RuntimeError(f"USDG approval for the gold swap reverted: {h}")
+
+
+def gold_state(owed):
+    """One line for the page: why nothing was bought yet, or that a buy is due."""
+    if owed < MIN_GOLD_USD:
+        return f"buys gold once ${MIN_GOLD_USD:.0f} is owed"
+    return "due: buys gold on the next cycle"
+
+
+def gold(rpc, db, acct):
+    """Buy GLD with the owed gold share once at least MIN_GOLD_USD is owed. Returns True on a settled buy."""
+    owed = owed_to_gold(db)
+    if owed < MIN_GOLD_USD:
+        return False
+    try:
+        have = usdg_balance(rpc, C.WALLET)
+    except Exception as e:
+        log.info("usdg balance read failed: %s", e)
+        return False
+    n = units(min(owed, have))
+    if n < units(MIN_GOLD_USD):
+        return False
+    try:
+        out = quote_gold(rpc, n)
+    except Exception as e:
+        _say_hourly(db, "error", f"gold: quote failed: {str(e)[:100]}")
+        return False
+    if not out:
+        _say_hourly(db, "error", "gold: no liquidity quoted; the gold share stays owed")
+        return False
+    min_out = int(out * (1 - GOLD_SLIPPAGE))
+    try:
+        approve_for_gold(rpc, db, acct, n)
+    except Exception as e:
+        db.add_event("error", f"gold: approval failed: {str(e)[:120]}")
+        return False
+    from .tx import send_tx
+    data = gold_calldata(n, min_out, C.WALLET)
+
+    def pending(h):
+        db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
+             (int(time.time()), "gold_pending", "USDG", n / 1e6, h,
+              f"{int(round(C.GOLD_SHARE * 100))}% of income: buy gold (GLD) for the reserve"))
+        watch("gold", f"buying gold (GLD) for its reserve with {n / 1e6:.2f} USDG", h)
+
+    try:
+        h, rc = send_tx(rpc, acct, C.SWAP_ROUTER_V3, data, on_broadcast=pending)
+    except Exception as e:
+        db.add_event("error", f"gold buy failed: {str(e)[:120]}")
+        return False
+    return finish(db, h, rc, C.WALLET)[0] == "gold"
+
+
 def cycle(rpc, db, acct):
-    """Settle what is in flight, claim fees when worth it, forward the creator's share, then burn.
+    """Settle what is in flight, claim fees when worth it, forward the creator's share, then burn, then buy gold.
     Only ever runs armed (WH_LIVE=1)."""
     ensure_tables(db)
     if not (C.LIVE and acct and C.WALLET):
         return
     try:
-        if reconcile(rpc, db, ("claim_pending", "forward_pending", "burn_pending", "compute_pending"), C.WALLET,
+        if reconcile(rpc, db, ("claim_pending", "forward_pending", "burn_pending", "gold_pending", "compute_pending"), C.WALLET,
                      lambda r: C.AISURPLUS_DEPOSIT if r["kind"].startswith("compute") else C.OWNER_WALLET):
             return                      # something is still in flight: settle it before sending more
     except Exception as e:
@@ -444,3 +590,4 @@ def cycle(rpc, db, acct):
         claim(rpc, db, acct, claimable)
     forward(rpc, db, acct)
     burn(rpc, db, acct)
+    gold(rpc, db, acct)

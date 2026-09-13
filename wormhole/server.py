@@ -21,7 +21,7 @@ from .growth import treasury
 from .learn import creator_trust
 from .budget import projection
 from . import treasury as T
-from . import voice as V, trader as TR, giving as G, compute as CP, lab as LB, readiness as RD, advisor as ADV
+from . import voice as V, trader as TR, compute as CP, lab as LB, readiness as RD, advisor as ADV
 
 log = logging.getLogger("wormhole.server")
 WEB = C.ROOT / "web"
@@ -32,8 +32,8 @@ DISCLOSURE = {
             "curve buys, holders, swaps, prices. A score describes the assessment at scan time; what happened afterwards "
             "is shown separately, and incomplete chain reads are marked.",
     "not_real": "The verdicts are rules written by a person and re-weighted by outcomes: a screening aid, not an audit "
-                "and not advice. Paper trades and the demo treasury are simulated, the runway is a projection, "
-                "and the worm has bought nothing.",
+                "and not advice. Paper trades are simulated, the runway is a projection, and the worm trades nothing "
+                "by policy.",
 }
 
 RESCAN_MAX = 100            # addresses waiting for a rescore before /api/rescan answers 429
@@ -231,11 +231,11 @@ def snapshot(rpc, db, brain, paper, hub=None):
     char = treasury(rpc)
     runway = projection(db, T.free_usd(db, char.get("usd_real", char["usd"])))   # real money only, minus what is owed away
     brain_sum, lab_sum = brain.summary(), LB.summary(db)
-    ready = RD.compute(brain_sum, lab_sum, runway, bool(char.get("demo")), TR.MAX_POSITION_USD)
+    ready = RD.compute(brain_sum, lab_sum, runway, TR.MAX_POSITION_USD)
     return {"now": now, "stats": st, "scout": _scout(db), "readiness": ready, "lessons": _lessons(db), "feed": feed, "ticker": ticker,
             "dig": (hub.dig if hub else []), "screen_on": bool(getattr(hub, "screen_on", True)) if hub else True,
             "treasury": _treasury_cached(rpc, db), "voice": V.summary(db), "trader": TR.summary(db),
-            "giving": G.summary(db), "compute": _compute_cached(), "live": C.LIVE, "lab": lab_sum,
+            "compute": _compute_cached(), "live": C.LIVE, "lab": lab_sum,
             "bad_actors": {"serial": serial, "worst": worst},
             "paper": paper.summary(), "brain": brain_sum, "events": db.events(40), "advisor": ADV.summary(db),
             "character": char, "runway": runway, "disclosure": DISCLOSURE,
@@ -481,6 +481,7 @@ def make_app(rpc, db, brain, paper, hub):
             wallet_shown = C.WALLET or "not created yet"
         fills = {"wallet": wallet_shown, "owner_share": str(int(round(C.OWNER_SHARE * 100))),
                  "burn_share": str(int(round(C.BURN_SHARE * 100))), "ops_share": str(int(round(C.OPS_SHARE * 100))),
+                 "gold_share": str(int(round(C.GOLD_SHARE * 100))),
                  "treasury_share": str(int(round(C.OPS_SHARE * 100))), "ready_at": str(RD.READY_AT),
                  "token": (f'<a href="https://www.ponsfamily.com/launchpad/{C.TOKEN}" target="_blank" rel="noopener noreferrer">$WORM on pons</a>'
                            if C.TOKEN else "not launched yet"),

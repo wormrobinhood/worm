@@ -4,7 +4,7 @@
 [pons](https://www.ponsfamily.com/launchpad) graduation, looks for bad actors, tells the community
 first, and grows longer with the treasury it holds.
 
-Everything from scouting to trading is built and runs in demo mode: its own wallet, its own token $WORM on pons, fee claiming, a 60/20/20 split of every claim (its creator, a buyback that burns $WORM, its own operations), compute paid from its own balance, a strategy lab, a readiness gate and giving. Trading is off by policy (`WH_TRADING`) until the brain is mature. Nothing is signed unless `WH_LIVE=1`. Five independent code audits (chain indexer, scoring and learning, trading lab, money paths, server and web) were run before launch; their fixes shipped with an offline test suite of 300+ tests.
+Everything from scouting to fee handling is built and was rehearsed with real money on Robinhood Chain: its own wallet, its own token $WORM on pons, fee claiming, a 50/10/20/20 split of every claim (its creator, a gold reserve, a buyback that burns $WORM, its own operations), compute paid from its own balance, a strategy lab and a readiness gate. Trading is off by policy (`WH_TRADING`) until the brain is mature. Nothing is signed unless `WH_LIVE=1`. Five independent code audits (chain indexer, scoring and learning, trading lab, money paths, server and web) were run before launch; their fixes shipped with an offline test suite of 300+ tests.
 
 ## What it does
 
@@ -41,7 +41,7 @@ Everything from scouting to trading is built and runs in demo mode: its own wall
   surplus) that has to reach 80 before the trader may buy; demo money counts for nothing.
 - **Runway**: measures income from claimed fees in the ledger, estimates the planned bills (compute, gas,
   bridge) and projects 90 days under three scenarios. Rule: keep a 90-day reserve; compute, gas and
-  bridging come only from the operations share of the claims; no trading by policy; give only from the surplus.
+  bridging come only from the operations share of the claims; no trading by policy.
 - **Live page** in green on black, the worm drawn in 0 and 1. Its screen panel streams the worm's own
   browser: every dig step by step and, when idle, the newest graduation, the launchpad's newest launches and
   the curves with the biggest market caps, which is where the next graduation comes from (the launchpad's own
@@ -57,8 +57,7 @@ python run.py                 # http://127.0.0.1:4670
 python run.py --once 5        # backfill, score the 5 newest graduations, print them, exit
 ```
 
-Optional environment (see `.env.example`): `WH_DEMO_TREASURY` fakes a treasury to look at the growth stages
-(it never counts for runway, readiness, giving or trades).
+Optional environment: see `.env.example`.
 
 Deploying: the image sets `WH_DATA_DIR=/data`; on Railway attach a persistent volume at `/data` (Railway rejects
 a Docker `VOLUME` line), otherwise every redeploy starts from an empty database. The entrypoint starts as root
@@ -82,8 +81,9 @@ writes `WH_TOKEN_PENDING_TX` to `.env` at broadcast and refuses a second launch 
 re-broadcasts blindly, and records a pending ledger row before waiting for the receipt.
 
 Token settings live in `.env`: `WH_TOKEN_NAME`, `WH_TOKEN_SYMBOL`, `WH_TOKEN_X` (also linked from the pages), `WH_TOKEN_TELEGRAM`, `WH_CREATOR_TAX_BPS`
-(default 200 = 2%), `WH_SITE_URL` (logo and website links). `WH_OWNER_WALLET` receives `WH_OWNER_SHARE` (default 0.60)
-of every fee claim; `WH_BURN_SHARE` (default 0.20) buys $WORM on its pool and sends it to the burn address; the rest is
+(default 200 = 2%), `WH_SITE_URL` (logo and website links). `WH_OWNER_WALLET` receives `WH_OWNER_SHARE` (default 0.50)
+of every fee claim; `WH_GOLD_SHARE` (default 0.10) buys tokenized gold (GLD) the worm keeps as a reserve that the runway never
+counts; `WH_BURN_SHARE` (default 0.20) buys $WORM on its pool and sends it to the burn address; the rest is
 the worm's operations money. The live screen (`WH_SCREEN=1`, default on) needs Chromium: `python -m playwright install chromium`.
 
 ## Verified addresses (chain 4663)
@@ -105,7 +105,7 @@ an audit and not advice. The paper book is hypothetical. The worm has bought not
 ## Demo mode and going live
 
 Everything runs with `WH_LIVE=0` by default: the worm scores, writes its journal, quotes and simulates
-buys, plans compute top-ups and giving, and writes every decision as "would". Flip `WH_LIVE=1` and
+buys, plans compute top-ups, and writes every decision as "would". Flip `WH_LIVE=1` and
 fund the wallet to make the same code sign and send. Phase 3 to 5 settings:
 
 | variable | meaning |
@@ -123,10 +123,8 @@ fund the wallet to make the same code sign and send. Phase 3 to 5 settings:
 | `WH_ADVISOR_MODEL`, `WH_ADVISOR_EVERY_MIN`, `WH_ADVISOR_MIN_NEW` | the advisor's writer (default: the voice's), minutes between runs (120), new resolved verdicts a run needs (3) |
 | `WH_RESCAN_TOKEN` | lets a remote caller use `/api/rescan/<token>` by sending the header `X-Rescan-Token`; unset, only loopback clients may rescan (the queue is capped at 100 and an address is not queued twice within 10 minutes) |
 | `WH_BUY_MIN_SCORE`, `WH_MAX_POSITION_USD`, `WH_MAX_OPEN`, `WH_MAX_DAILY_USD` | trader limits (70, 10, 5, 30) |
-| `WH_OWNER_SHARE`, `WH_BURN_SHARE` | of every claim of creator fees: forwarded to the creator (0.60) and spent buying $WORM on its pool and sending it to the burn address (0.20); the rest is operations |
+| `WH_OWNER_SHARE`, `WH_GOLD_SHARE`, `WH_BURN_SHARE` | of every claim of creator fees: forwarded to the creator (0.50), spent on tokenized gold kept as a reserve (0.10), spent buying $WORM on its pool and sending it to the burn address (0.20); the rest is operations |
 | `WH_TRADING` | real-trading switch, off by default (0): the worm learns on paper until its brain is mature; on, the readiness gate still applies |
-| `WH_CAUSES`, `WH_GIVE_SHARE` | `Name\|0xaddr\|weight,...` and the share of the surplus given every 30 days (0.10) |
-| `WH_DEMO_TREASURY` | pretend treasury so the growth, runway, trader and giving logic can be watched before funding |
 
 Posting to X is manual on purpose: entries sit on the site with a copy button.
 
@@ -138,7 +136,6 @@ Posting to X is manual on purpose: entries sit on the site with a copy button.
 4. Buys from the surplus above the 90-day reserve with lab-chosen exits, quoted and simulated on Uniswap v4. Built, demo mode, off by policy (`WH_TRADING`) until the brain is mature;
    real buys stay off until real sells exist (the Permit2 approval step and the exit path), and every buy is written
    down before it is sent and reconciled against the chain afterwards.
-5. Causes: giving from the surplus, on-chain and public. Built, demo mode.
 
 ## The page
 

@@ -7,7 +7,7 @@ Four parts, each 0-100, weighted into one number. None of them can be raised by 
                      more often than average and healthy verdicts less often
   runway             a real treasury that covers the 90-day reserve
   surplus            real money above the reserve to trade with
-Demo treasury counts for nothing. Real trades unlock at READY_AT and start at the minimum size."""
+Real trades unlock at READY_AT and start at the minimum size."""
 import math
 import os
 
@@ -68,7 +68,7 @@ def skill(card):
     return min(1.0, s), info
 
 
-def compute(brain_summary, lab_summary, runway, treasury_is_demo, min_trade_usd=10.0):
+def compute(brain_summary, lab_summary, runway, min_trade_usd=10.0):
     parts = []
 
     # 1. exit rule proven: the best arm with enough cases, judged by its lower confidence bound
@@ -121,15 +121,15 @@ def compute(brain_summary, lab_summary, runway, treasury_is_demo, min_trade_usd=
     # 3. runway, real money only
     treasury = float(runway.get("treasury_usd") or 0)
     reserve_days = runway.get("reserve_days") or 90
-    if treasury_is_demo or treasury <= 0:
-        parts.append({"id": "runway", "label": "runway", "score": 0, "detail": "no real treasury yet; demo money counts for nothing"})
+    if treasury <= 0:
+        parts.append({"id": "runway", "label": "runway", "score": 0, "detail": "no treasury yet"})
     else:
         days = float(runway.get("runway_days_no_income") or 0)
         parts.append({"id": "runway", "label": "runway", "score": _pct(days / reserve_days),
                       "detail": "%.0f days of costs covered; the reserve is %d days" % (days, reserve_days)})
 
     # 4. surplus above the reserve, real money only
-    if treasury_is_demo or treasury <= 0:
+    if treasury <= 0:
         parts.append({"id": "surplus", "label": "surplus", "score": 0, "detail": "no real surplus yet"})
     else:
         surplus = float(runway.get("surplus_usd") or 0)
@@ -137,7 +137,7 @@ def compute(brain_summary, lab_summary, runway, treasury_is_demo, min_trade_usd=
                       "detail": "$%.2f above the reserve; the first trade needs $%.0f" % (surplus, min_trade_usd)})
 
     total = int(round(sum(WEIGHTS[p["id"]] * p["score"] for p in parts)))
-    ready = bool(total >= READY_AT and parts[0]["positive"] and runway.get("can_invest") and not treasury_is_demo)
+    ready = bool(total >= READY_AT and parts[0]["positive"] and runway.get("can_invest"))
     nxt = next((p for p in parts if p["score"] < 100), None)
     return {"score": total, "ready_at": READY_AT, "ready": ready, "parts": parts, "weights": WEIGHTS,
             "next": (nxt["label"] + ": " + nxt["detail"]) if nxt else "every part is at full marks",

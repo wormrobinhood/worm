@@ -70,7 +70,7 @@ def test_income_window_is_seven_days(db):
 def test_other_ledger_kinds_are_not_income(db):
     now = int(time.time())
     T.ensure_tables(db)
-    for kind in ("forward", "compute", "give", "give_demo"):
+    for kind in ("forward", "compute", "gold", "burn"):
         db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)", (now - 2 * 86400, kind, "USDG", 50.0, None, "x"))
     assert B.income_per_day(db) is None
     claim(db, now - 2 * 86400, 4.0)
@@ -83,8 +83,7 @@ def test_sample_is_hourly(db):
     assert db.one("SELECT COUNT(*) n FROM samples")["n"] == 1
 
 
-def test_sample_skips_demo_treasury(db):
-    B.sample(db, 500.0, demo=True)
-    assert db.one("SELECT COUNT(*) n FROM samples")["n"] == 0
-    B.sample(db, 1.0, demo=False)
+def test_sample_keeps_one_balance_an_hour(db):
+    B.sample(db, 500.0)
+    B.sample(db, 1.0)
     assert db.one("SELECT COUNT(*) n FROM samples")["n"] == 1
