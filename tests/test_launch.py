@@ -197,7 +197,9 @@ def test_the_worm_announces_its_own_token_once(db, monkeypatch):
     monkeypatch.setattr(C, "TOKEN", token)
     assert L.own_token(db) is None and L.announce(db) is False            # not indexed yet
     db.x("INSERT INTO launches(token,curve,deployer,pair_token,pair_symbol,config_id,grad_threshold,block,ts,tx,name,symbol)"
-         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (token, "0x" + "ee" * 20, C.WALLET, C.USDG, "USDG", "0", "1", 5, 1000, "0x" + "ab" * 32, "Worm", "WORM"))
+         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (token, "0x" + "ee" * 20, C.WALLET, C.USDG, "USDG", "0", "1", 5, 1000, "0x" + "ab" * 32, None, None))
+    assert L.announce(db) is False                                        # indexed, but the name is not in yet
+    db.x("UPDATE launches SET name='Worm', symbol='WORM' WHERE token=?", (token,))
     assert L.announce(db) is True and L.announce(db) is False
     rows = db.q("SELECT kind, text, token FROM events WHERE kind='launch'")
     assert len(rows) == 1 and rows[0]["token"] == token

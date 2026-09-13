@@ -25,6 +25,8 @@ log = logging.getLogger("wormhole.treasury")
 MIN_CLAIM_USD = float(os.environ.get("WH_MIN_CLAIM_USD", "1.0"))    # do not spend gas on dust (lower it only for a rehearsal)
 MIN_FORWARD_USD = 0.50
 WATCH = None               # set by run.py: callable(ev) that tells the screen and the page what the worm is doing right now
+BUSY_SINCE = 0.0           # when the transaction now in flight was broadcast; 0 when none is
+BUSY_MAX_S = 120           # a transaction that never settles does not stop the digging for longer than this
 MIN_BURN_USD = float(os.environ.get("WH_MIN_BURN_USD", "5.0"))      # a burn is one pool swap: the share is batched so gas and slippage stay small
 BURN_SLIPPAGE = 0.03       # the swap reverts if the pool delivers less than the quote minus this
 PERMIT2_MAX = 2 ** 160 - 1
@@ -129,9 +131,17 @@ def burned_in(rc):
     return total / 1e18 if seen else None
 
 
+def working(max_s=None):
+    """True while a transaction the worm sent is still in flight: the digging waits for it."""
+    return BUSY_SINCE > 0 and time.time() - BUSY_SINCE < (BUSY_MAX_S if max_s is None else max_s)
+
+
 def watch(action, text, tx=None, done=False):
     """Tell the watchers what the worm is doing: a transaction just broadcast (done=False) or settled (done=True).
-    Never raises: watching is a courtesy, not a step of the money path."""
+    Marks the worm busy in between, so no dig starts while money is moving. Never raises: watching is a
+    courtesy, not a step of the money path."""
+    global BUSY_SINCE
+    BUSY_SINCE = 0.0 if done else time.time()
     if not WATCH:
         return
     try:

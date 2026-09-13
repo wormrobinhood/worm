@@ -136,16 +136,19 @@ def main():
                 log.exception("backfill failed, retry in 30s: %s", e)
                 db.add_event("error", f"backfill failed: {str(e)[:120]}")
                 time.sleep(30)
-        cutoff = int(time.time()) - int(C.SCORE_HOURS * 3600)
-        for r in db.q("SELECT token FROM launches WHERE graduated=1 AND grad_ts>=? AND token NOT IN"
-                      " (SELECT token FROM scores) ORDER BY grad_block DESC", (cutoff,)):
-            work.put(r["token"])
+        if C.SCORE_HOURS > 0:                     # by default the worm does not dig old graduations: it starts from now
+            cutoff = int(time.time()) - int(C.SCORE_HOURS * 3600)
+            for r in db.q("SELECT token FROM launches WHERE graduated=1 AND grad_ts>=? AND token NOT IN"
+                          " (SELECT token FROM scores) ORDER BY grad_block DESC", (cutoff,)):
+                work.put(r["token"])
         idx.follow()
 
     def worker():
         while True:
             item = work.get()
             token, tries = item if isinstance(item, tuple) else (item, 1)
+            while T.working():                    # a transaction is out: no digging until it settles
+                time.sleep(1)
             score_one(token, db, scorer, brain, paper, hub, idx.label, requeue, tries)
 
     def watchdog():

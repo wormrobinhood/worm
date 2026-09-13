@@ -364,3 +364,16 @@ def test_burn_is_capped_by_the_wallet_balance_and_a_pending_burn_blocks_another(
     rpc.receipts[h] = None
     T.cycle(rpc, db, acct)
     assert len(rpc.raw) == 1                               # nothing new while a burn is in flight
+
+
+def test_a_transaction_in_flight_marks_the_worm_busy_until_it_settles(monkeypatch):
+    monkeypatch.setattr(T, "WATCH", None)
+    monkeypatch.setattr(T, "BUSY_SINCE", 0.0)
+    assert not T.working()
+    T.watch("claim", "claiming", "0x1")                 # broadcast
+    assert T.working()
+    T.watch("claim", "claimed", "0x1", done=True)        # settled
+    assert not T.working()
+    T.watch("burn", "burning", "0x2")
+    monkeypatch.setattr(T, "BUSY_SINCE", T.BUSY_SINCE - T.BUSY_MAX_S - 1)   # a transaction that never settles
+    assert not T.working()

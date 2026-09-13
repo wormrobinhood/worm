@@ -201,7 +201,7 @@ def announce(db):
     """Once: the log line that the worm launched its own token, written when the indexer has the launch.
     Returns True the one time it writes it."""
     row = own_token(db)
-    if not row:
+    if not row or not row["name"]:                # wait for the name: the indexer fills the metadata a moment after the launch
         return False
     if db.one("SELECT 1 FROM events WHERE kind='launch' AND token=?", (C.TOKEN,)):
         return False
