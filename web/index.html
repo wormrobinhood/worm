@@ -96,14 +96,16 @@ h1{font-family:"Instrument Serif",Georgia,"Times New Roman",serif;font-weight:40
 .pos{color:var(--g)}.neg{color:var(--bad)}
 
 /* ---- live band: the screen next to the dig and the log ---- */
-.liverow{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);grid-template-rows:auto minmax(280px,auto);grid-template-areas:"screen screen" "dig log";gap:var(--gap);margin-top:var(--gap)}
+.liverow{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);grid-template-rows:auto auto minmax(280px,460px);grid-template-areas:"screen screen" "dig feed" "log voice";gap:var(--gap);margin-top:var(--gap)}
+.liverow>[data-panel=feed]{grid-area:feed;min-height:0}.liverow>[data-panel=feed] #feed{max-height:560px;overflow:auto}
+.liverow>[data-panel=voice]{grid-area:voice;min-height:0;display:flex;flex-direction:column}.liverow>[data-panel=voice] .body{flex:1 1 0px;min-height:0;overflow:auto}
 .screenp{grid-area:screen}.digp{grid-area:dig}.logp{grid-area:log}
 .panel.digp{display:flex;flex-direction:column}.panel.digp .body,#dig{flex:1 1 auto;display:flex;flex-direction:column;min-height:0}#dig>*{flex:none}#dig>#vision{flex:1 1 170px}
 .panel.logp{min-height:0;display:flex;flex-direction:column}
 .panel.logp .body{flex:1 1 0px;min-height:0;overflow:auto}
 .panel.logp.collapsed{min-height:auto}
-@media(max-width:1279px){.liverow{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"screen screen" "dig log"}}
-@media(max-width:899px){.liverow{grid-template-columns:1fr;grid-template-rows:auto;grid-template-areas:"screen" "dig" "log"}.panel.logp .body{max-height:320px}}
+@media(max-width:1279px){.liverow{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"screen screen" "dig feed" "log voice"}}
+@media(max-width:899px){.liverow{grid-template-columns:1fr;grid-template-rows:auto;grid-template-areas:"screen" "dig" "feed" "log" "voice"}.panel.logp .body{max-height:320px}}
 .screen{position:relative;background:#000;aspect-ratio:1100/690;overflow:hidden}
 .screen img{width:100%;height:100%;object-fit:cover;display:block;filter:grayscale(.35) sepia(.5) hue-rotate(65deg) saturate(1.5) brightness(.9)}
 .screen img[src=""]{display:none}
@@ -649,7 +651,10 @@ function updateBar(){const s=lastState;if(!s)return;const ch=s.character||{},st=
   const {digging,head,sym}=digState();
   const act=currentAction(),actText=act?(ACTIONS[act.action]||act.action)+(act.done?'':'…'):'';
   const d=$('#sb-dig');d.hidden=!digging&&!act;d.textContent=digging?'digging $'+sym:actText;
-  const sc=$('#screen-state');sc.hidden=false;sc.textContent=digging?'digging $'+sym:act?actText:matchMedia('(max-width:500px)').matches?'waiting for a graduation':'waiting for the next graduation';sc.classList.toggle('on',digging||!!act);
+  const sc=$('#screen-state'),fr=lastFrame||{},fresh=fr.ts&&Date.now()/1000-fr.ts<180,onPage=fresh&&!fr.idle&&!fr.action;
+  let cls='wait',txt=matchMedia('(max-width:500px)').matches?'waiting for a graduation':'waiting for the next graduation';
+  if(act){cls='act';txt=actText}else if(digging){cls='on';txt='digging $'+sym}else if(onPage&&dig.token){cls='on';txt='just dug $'+sym}
+  sc.hidden=false;sc.textContent=txt;sc.className='pstate '+cls;
   $('#dig-sub').textContent=!dig.token?'nothing dug yet, waiting for the first graduation':digging?'what the worm is inside right now':'the last dig, while the worm waits for the next graduation';
   const w=$('#digwait');if(w)w.lastElementChild.textContent=waitText();
   const a=$('#digago');if(a&&head.grad_ts)a.innerHTML=digAgo(head)}
