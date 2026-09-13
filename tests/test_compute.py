@@ -483,6 +483,7 @@ def test_the_fallback_counts_as_a_paid_model_in_use(aisurplus, monkeypatch):
     assert CP.provider_models() == ["deepseek-v4-flash", "gpt-5.6-luna"]
     assert CP.all_free() is False and CP.status(None)["free"] is False              # so the balance is watched
     monkeypatch.setenv("WH_VOICE_MODEL", "stub")
+    monkeypatch.setenv("WH_ADVISOR_MODEL", "")
     assert CP.provider_models() == [] and not CP.uses_compute()                       # nothing at the provider: no fallback either
 
 
