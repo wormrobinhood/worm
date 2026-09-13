@@ -330,7 +330,10 @@ def test_security_headers_on_pages_and_api(site):
     assert r.headers["referrer-policy"] == "no-referrer"
     assert r.headers["x-frame-options"] == "DENY"
     csp = r.headers["content-security-policy"]
-    assert "frame-ancestors 'none'" in csp and "https://fonts.googleapis.com" in csp and "https://fonts.gstatic.com" in csp
+    policy = {parts[0]: set(parts[1:]) for directive in csp.split(";") if (parts := directive.split())}
+    assert policy["frame-ancestors"] == {"'none'"}
+    assert policy["style-src"] == {"'self'", "'unsafe-inline'", "https://fonts.googleapis.com"}
+    assert policy["font-src"] == {"data:", "https://fonts.gstatic.com"}
     assert "script-src 'self' 'unsafe-inline'" in csp and "connect-src 'self' ws: wss:" in csp and "img-src 'self' data: blob: https:" in csp
     assert r.headers["cache-control"] == "no-cache" and r.headers["etag"]          # revalidated on every load: a new build shows at once
     assert client.get("/", headers={"If-None-Match": r.headers["etag"]}).status_code == 304
