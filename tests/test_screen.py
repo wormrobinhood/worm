@@ -152,6 +152,8 @@ def test_a_launch_in_flight_shows_the_create_page_and_the_screen_lag():
     assert f["url"] == CREATE_PAGE and f["action"] == "launch" and f["done"] is False
     assert f["lag_s"] == 3 and f["note"].endswith(" · on screen 3s after it happened")
     tok = "0x" + "cd" * 20
+    n = len(sink.frames)
     s._act(page, {"action": "launch", "text": "launched its own token Worm ($WORM) just now", "token": tok, "done": True, "ts": int(time.time())})
-    f = sink.frames[-1]
-    assert f["url"] == LAUNCHPAD + "/" + tok and f["done"] is True and f["note"].endswith(" · on screen as it happened")
+    first, last = sink.frames[n], sink.frames[-1]
+    assert first["url"] == CREATE_PAGE and first["action"] == "launch" and first["done"] is True     # said at once, on the page that was up
+    assert last["url"] == LAUNCHPAD + "/" + tok and last["done"] is True and last["note"].endswith(" · on screen as it happened")

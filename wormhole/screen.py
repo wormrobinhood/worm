@@ -176,11 +176,17 @@ class Screen(threading.Thread):
         token = ev.get("token")
         try:
             url = f"{LAUNCHPAD}/{token}" if token else (CREATE_PAGE if ev["action"] == "launch" else NEWEST_LAUNCHES)
-            if page.url != url:
-                self._goto(page, url)
             spot = ACTION_SPOTS.get(ev["action"], "Market cap")
-            lag = max(0, int(time.time()) - int(ev.get("ts") or time.time()))
-            note = ev["text"] + (f" · on screen {lag}s after it happened" if lag else " · on screen as it happened")
+
+            def caption():
+                lag = max(0, int(time.time()) - int(ev.get("ts") or time.time()))
+                return lag, ev["text"] + (f" · on screen {lag}s after it happened" if lag else " · on screen as it happened")
+
+            if page.url != url:                       # say it now, on whatever page is up; the right page follows
+                lag, note = caption()
+                self._frame(page, note, None, action=ev["action"], done=bool(ev.get("done")), lag=lag)
+                self._goto(page, url)
+            lag, note = caption()
             log.info("screen lag %ss on %s", lag, ev["action"])
             self._frame(page, note, self._focus(page, spot), action=ev["action"], done=bool(ev.get("done")), lag=lag)
         except Exception as e:
