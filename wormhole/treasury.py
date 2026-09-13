@@ -354,7 +354,7 @@ def burn_calldata(pk, zero_for_one, amount_in, min_out):
     address. The swap reverts below min_out, so a burn either happens whole or not at all."""
     from .trader import SETTLE_ALL, SWAP_EXACT_IN_SINGLE, SWAP_T, V4_SWAP, _key_tuple
     actions = SWAP_EXACT_IN_SINGLE + SETTLE_ALL + TAKE
-    params = [encode([SWAP_T], [(_key_tuple(pk), zero_for_one, amount_in, min_out, b"")]),
+    params = [encode([SWAP_T], [(_key_tuple(pk), zero_for_one, amount_in, min_out, 0, b"")]),
               encode(["address", "uint256"], [C.USDG, amount_in]),
               encode(["address", "address", "uint256"], [C.TOKEN, C.DEAD, 0])]
     inputs = [encode(["bytes", "bytes[]"], [actions, params])]

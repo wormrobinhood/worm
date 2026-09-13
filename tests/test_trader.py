@@ -114,7 +114,8 @@ def test_swap_calldata_roundtrip():
     assert commands == b"\x10" and len(inputs) == 1 and time.time() + 500 < deadline <= time.time() + 600
     actions, params = decode(["bytes", "bytes[]"], inputs[0])
     assert actions == b"\x06\x0c\x0f"
-    key, zfo, amount_in, min_out, hook_data = decode([trader.SWAP_T], params[0])[0]
+    key, zfo, amount_in, min_out, price_limit, hook_data = decode([trader.SWAP_T], params[0])[0]
+    assert price_limit == 0                                   # no price limit: min_out is the guard
     assert key == (C.ZERO, token, 3000, 60, C.HOOK) and zfo is True and amount_in == 4 * 10 ** 15 and min_out == 970
     assert decode(["address", "uint256"], params[1]) == (C.ZERO, 4 * 10 ** 15)
     assert decode(["address", "uint256"], params[2]) == (token, 970)

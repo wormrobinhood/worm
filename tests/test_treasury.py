@@ -309,7 +309,8 @@ def test_burn_buys_on_the_pool_and_sends_the_tokens_to_the_burn_address(db, rpc,
     commands, inputs, _deadline = decode(["bytes", "bytes[]", "uint256"], txs[3]["data"][4:])
     actions, params = decode(["bytes", "bytes[]"], inputs[0])
     assert commands == trader.V4_SWAP and actions == trader.SWAP_EXACT_IN_SINGLE + trader.SETTLE_ALL + T.TAKE
-    key, zero_for_one, amount_in, min_out, _hook = decode([trader.SWAP_T], params[0])[0]
+    key, zero_for_one, amount_in, min_out, price_limit, _hook = decode([trader.SWAP_T], params[0])[0]
+    assert price_limit == 0
     assert (key[0].lower(), key[1].lower(), zero_for_one, amount_in) == (C.USDG, TOKEN, True, 6_000_000)
     assert min_out == int(12_345 * 10 ** 18 * (1 - T.BURN_SLIPPAGE))
     settle_cur, settle_amt = decode(["address", "uint256"], params[1])

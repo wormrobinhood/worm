@@ -30,7 +30,7 @@ QUOTER = "0x8dc178efb8111bb0973dd9d722ebeff267c98f94"
 INIT_TOPIC = "0x" + keccak(text="Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)").hex()
 KEY_T = "(address,address,uint24,int24,address)"
 QUOTE_T = f"({KEY_T},bool,uint128,bytes)"
-SWAP_T = f"({KEY_T},bool,uint128,uint128,bytes)"
+SWAP_T = f"({KEY_T},bool,uint128,uint128,uint160,bytes)"   # the router on this chain still carries sqrtPriceLimitX96 (0: no limit); the quoter does not
 V4_SWAP, SWAP_EXACT_IN_SINGLE, SETTLE_ALL, TAKE_ALL = b"\x10", b"\x06", b"\x0c", b"\x0f"
 MIN_SCORE = int(os.environ.get("WH_BUY_MIN_SCORE", "70"))
 MAX_POSITION_USD = float(os.environ.get("WH_MAX_POSITION_USD", "10"))
@@ -127,7 +127,7 @@ def quote_buy(rpc, pk, token, amount_in):
 
 def swap_calldata(pk, zero_for_one, amount_in, min_out, currency_in, currency_out):
     actions = SWAP_EXACT_IN_SINGLE + SETTLE_ALL + TAKE_ALL
-    params = [encode([SWAP_T], [(_key_tuple(pk), zero_for_one, amount_in, min_out, b"")]),
+    params = [encode([SWAP_T], [(_key_tuple(pk), zero_for_one, amount_in, min_out, 0, b"")]),
               encode(["address", "uint256"], [currency_in, amount_in]),
               encode(["address", "uint256"], [currency_out, min_out])]
     inputs = [encode(["bytes", "bytes[]"], [actions, params])]
