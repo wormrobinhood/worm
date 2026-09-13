@@ -20,6 +20,7 @@ from wormhole.server import Hub, make_app
 from wormhole.screen import Screen
 from wormhole import treasury as T
 from wormhole import voice, trader, giving, compute, lab, advisor
+from wormhole import launch as L
 from wormhole.budget import projection
 from wormhole import readiness
 import os
@@ -39,7 +40,8 @@ def build():
     hub = Hub()
     newest = lambda: db.one("SELECT token,name,symbol,grad_ts FROM launches WHERE graduated=1"
                             " ORDER BY grad_block DESC LIMIT 1")
-    screen = Screen(hub, newest=newest) if os.environ.get("WH_SCREEN", "1") != "0" else None
+    own = lambda: L.own_token(db)                # its own token, once launched and indexed: a page the screen visits too
+    screen = Screen(hub, newest=newest, own=own) if os.environ.get("WH_SCREEN", "1") != "0" else None
     hub.screen_on = screen is not None            # the page hides the screen panel on a host that runs no browser
 
     hub.restore(db)                               # the last dig survives a restart
@@ -194,7 +196,7 @@ def main():
                         idx.refetch_metadata()
 
             # exits and bookkeeping run before entries; every stage is isolated so one failure cannot skip the rest
-            stages = [("prices", lambda: refresh_scored(db)), ("lab", lambda: lab.tick(db)),
+            stages = [("own", lambda: L.announce(db)), ("prices", lambda: refresh_scored(db)), ("lab", lambda: lab.tick(db)),
                       ("paper", paper.retry_pending), ("paper mark", paper.mark), ("brain", brain.check),
                       ("advisor", lambda: advisor.due(db)[0] and advisor.run(db, brain.summary(), lab.summary(db))),
                       ("exits", lambda: trader.mark(rpc, db, C.LIVE, acct)), ("treasury", lambda: T.cycle(rpc, db, acct)),

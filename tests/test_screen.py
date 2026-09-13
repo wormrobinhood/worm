@@ -120,3 +120,23 @@ def test_allowlist_still_fences_the_browser():
     with pytest.raises(ValueError, match="not allowlisted"):
         s._goto(FakePage(), "https://evil.example/launchpad")
     s._goto(FakePage(), LAUNCHPAD + "/" + TOKEN)
+
+
+def test_own_token_joins_the_idle_rotation_once_it_exists():
+    """Without a token of its own the screen cycles three views; with one, a fourth: its own token's page,
+    captioned as waiting like the rest."""
+    sink = Sink()
+    s = Screen(sink, newest=lambda: None, own=lambda: None)
+    for _ in range(4):
+        s._idle(FakePage(), None)
+    newest, biggest = LAUNCHPAD + "?sort=newest", LAUNCHPAD + "?sort=marketCap"
+    assert [f["url"] for f in sink.frames] == [newest, biggest, newest, newest]   # three views; no graduation yet, so newest stands in for it
+    mine = {"token": "0x" + "cd" * 20, "name": "Worm", "symbol": "WORM", "ts": time.time() - 300}
+    sink2 = Sink()
+    s2 = Screen(sink2, newest=lambda: {"token": TOKEN, "name": "Tok", "symbol": "TOK", "grad_ts": time.time() - 60}, own=lambda: mine)
+    for _ in range(4):
+        s2._idle(FakePage(), None)
+    own = [f for f in sink2.frames if f["url"] == LAUNCHPAD + "/" + mine["token"]]
+    assert len(own) == 1 and own[0]["idle"] is True
+    assert own[0]["note"] == WAITING + " · its own token: Worm ($WORM), launched 5m ago"
+    assert len({f["url"] for f in sink2.frames}) == 4

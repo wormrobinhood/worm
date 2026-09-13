@@ -48,11 +48,12 @@ def _ago(ts):
 
 
 class Screen(threading.Thread):
-    def __init__(self, hub, newest=None):
+    def __init__(self, hub, newest=None, own=None):
         super().__init__(daemon=True, name="screen")
         self.hub = hub
         self.q = queue.Queue()
         self.newest = newest or (lambda: None)   # callable: the newest graduated launch row (token, name, symbol, grad_ts)
+        self.own = own or (lambda: None)         # callable: the worm's own token row (token, name, symbol, ts), once launched
         self.idle_n = 0
 
     def on_dig(self, ev):
@@ -155,10 +156,17 @@ class Screen(threading.Thread):
             log.info("screen step %s failed: %s", step, str(e)[:120])
 
     def _idle(self, page, last_dig):
-        """Three views, taken in turns while the worm waits for the next graduation: the newest graduation's
-        page, the curve newest first, the curve biggest first. Every caption says so first."""
+        """Views taken in turns while the worm waits for the next graduation: the newest graduation's page,
+        the curve newest first, the curve biggest first and, once it has one, its own token's page. Every
+        caption says so first."""
         self.idle_n += 1
-        what = ("graduation", "newest", "biggest")[self.idle_n % 3]
+        mine = None
+        try:
+            mine = self.own()
+        except Exception as e:
+            log.info("own token lookup failed: %s", str(e)[:120])
+        views = ("graduation", "newest", "biggest") + (("own",) if mine and mine.get("token") else ())
+        what = views[self.idle_n % len(views)]
         row = None
         try:
             row = self.newest()
@@ -168,7 +176,13 @@ class Screen(threading.Thread):
         if what == "graduation" and not token:
             what = "newest"
         try:
-            if what == "graduation":
+            if what == "own":
+                label = f"{mine.get('name') or 'its token'} (${mine.get('symbol') or '?'})"
+                when = _ago(mine.get("ts"))
+                self._goto(page, f"{LAUNCHPAD}/{mine['token']}", 2500)
+                self._frame(page, f"{WAITING} · its own token: {label}" + (f", launched {when}" if when else ""),
+                            self._focus(page, "Market cap"), idle=True)
+            elif what == "graduation":
                 label = f"{row['name']} (${row['symbol']})" if row and row.get("symbol") else token[:10]
                 when = _ago(row.get("grad_ts")) if row else ""
                 self._goto(page, f"{LAUNCHPAD}/{token}", 2500)

@@ -183,3 +183,29 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+
+
+# ---- after the launch: the worm's own token, as the chain shows it ------------------------------------
+
+def own_token(db):
+    """The launches row of the worm's own token (WH_TOKEN), or None until the indexer has it."""
+    if not C.TOKEN:
+        return None
+    try:
+        return db.one("SELECT token, name, symbol, ts, tx, deployer, graduated, grad_ts FROM launches WHERE token=?", (C.TOKEN,))
+    except Exception:
+        return None
+
+
+def announce(db):
+    """Once: the log line that the worm launched its own token, written when the indexer has the launch.
+    Returns True the one time it writes it."""
+    row = own_token(db)
+    if not row:
+        return False
+    if db.one("SELECT 1 FROM events WHERE kind='launch' AND token=?", (C.TOKEN,)):
+        return False
+    name, sym = row["name"] or "its token", row["symbol"] or "?"
+    who = "" if (row["deployer"] or "").lower() == C.WALLET else " (launched by another wallet)"
+    db.add_event("launch", f"launched its own token {name} (${sym}){who} · tx {row['tx'] or '?'}", C.TOKEN)
+    return True
