@@ -135,3 +135,8 @@ body[data-view=scans] #grid{grid-template-columns:minmax(0,2.2fr) minmax(0,1fr)}
  .liverow.noscreen{grid-template-columns:minmax(0,1fr);grid-template-areas:"dig" "feed" "log" "voice"}
  .livecol>[data-panel=feed]{grid-area:feed}.livecol>[data-panel=voice]{grid-area:voice}
 }
+
+/* Use wide desktop space while keeping balanced margins and readable columns. */
+@media(min-width:1440px){
+ .wrap,.topline{max-width:1600px;width:100%;margin-left:auto;margin-right:auto}
+}
