@@ -17,6 +17,8 @@ CLOSED_MARKERS = ("has been closed", "target closed")   # Playwright's wording w
 ALLOW = {"www.ponsfamily.com", "ponsfamily.com"}
 IDLE_EVERY = 30
 WAITING = "waiting for the next graduation"     # every idle caption starts with it, so a viewer knows the state at a glance
+ACTION_SPOTS = {"claim": "Payable", "forward": "Payable", "burn": "Recent trades", "compute": "Market cap", "give": "Market cap",
+                "launch": "About"}               # where on the page the worm's eye goes for each kind of transaction
 VIEW = {"width": 1100, "height": 690}
 LAUNCHPAD = "https://www.ponsfamily.com/launchpad"
 NEWEST_LAUNCHES = LAUNCHPAD + "?sort=newest"      # the Explore section, newest first; the site keeps the sort in the URL
@@ -59,6 +61,10 @@ class Screen(threading.Thread):
     def on_dig(self, ev):
         self.q.put(ev)
 
+    def on_action(self, ev):
+        """A transaction the worm just sent or settled: shown on the page it concerns, captioned exactly."""
+        self.q.put(ev)
+
     def run(self):
         try:
             from playwright.sync_api import sync_playwright
@@ -86,8 +92,12 @@ class Screen(threading.Thread):
                 except queue.Empty:
                     ev = None
                 if ev:
-                    self._dig_step(page, ev)
-                    last_dig = ev.get("token")
+                    if ev.get("action"):
+                        self._act(page, ev)
+                    else:
+                        self._dig_step(page, ev)
+                        last_dig = ev.get("token")
+                    last_idle = time.time()             # what was just shown holds for a whole turn before the idle views resume
                     continue
                 if time.time() - last_idle > IDLE_EVERY:
                     last_idle = time.time()
@@ -100,12 +110,13 @@ class Screen(threading.Thread):
         page.goto(url, wait_until="domcontentloaded", timeout=45000)
         page.wait_for_timeout(wait)
 
-    def _frame(self, page, note, focus=None, idle=False):
-        """One frame to the page: the screenshot, a caption, where the worm's eye should go, and whether the
-        worm is between digs (the page then says it is waiting for the next graduation)."""
+    def _frame(self, page, note, focus=None, idle=False, action=None, done=False):
+        """One frame to the page: the screenshot, a caption, where the worm's eye should go, whether the worm
+        is between digs (the page then says it is waiting for the next graduation), and, for a transaction
+        it sent, which action it was and whether it has settled."""
         raw = page.screenshot(type="jpeg", quality=45)
         self.hub.frame({"jpg": base64.b64encode(raw).decode(), "note": note[:160], "focus": focus,
-                        "url": page.url, "ts": int(time.time()), "idle": idle})
+                        "url": page.url, "ts": int(time.time()), "idle": idle, "action": action, "done": done})
 
     def _focus(self, page, text, click=False):
         return self._focus_loc(page, page.get_by_text(text, exact=False).first, click)
@@ -154,6 +165,22 @@ class Screen(threading.Thread):
             if page_gone(page, e):
                 raise
             log.info("screen step %s failed: %s", step, str(e)[:120])
+
+    def _act(self, page, ev):
+        """The worm is sending, or has just settled, a transaction: open the page it concerns (its own token's,
+        or the launchpad when it has none yet) and caption exactly what is happening. The browser holds no
+        key and signs nothing; it only shows."""
+        token = ev.get("token")
+        try:
+            url = f"{LAUNCHPAD}/{token}" if token else NEWEST_LAUNCHES
+            if page.url != url:
+                self._goto(page, url)
+            spot = ACTION_SPOTS.get(ev["action"], "Market cap")
+            self._frame(page, ev["text"], self._focus(page, spot), action=ev["action"], done=bool(ev.get("done")))
+        except Exception as e:
+            if page_gone(page, e):
+                raise
+            log.info("screen action %s failed: %s", ev.get("action"), str(e)[:120])
 
     def _idle(self, page, last_dig):
         """Views taken in turns while the worm waits for the next graduation: the newest graduation's page,

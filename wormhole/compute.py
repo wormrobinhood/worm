@@ -32,7 +32,7 @@ from eth_account.messages import encode_defunct, encode_typed_data
 from eth_utils import keccak
 
 from . import config as C
-from .treasury import ensure_tables, units
+from .treasury import ensure_tables, units, watch
 
 log = logging.getLogger("wormhole.compute")
 API = "https://api.venice.ai"
@@ -243,6 +243,7 @@ def aisurplus_top_up(rpc, db, acct, amount_usd, live):
     def pending(h):
         db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
              (int(time.time()), "compute_pending", "USDG", amount_usd, h, "compute top-up on its way to AI Surplus"))
+        watch("compute", f"paying {amount_usd:.2f} USDG of compute to AI Surplus", h)
 
     h, rc = send_tx(rpc, acct, C.USDG, transfer_calldata(to, amount_usd), on_broadcast=pending)
     kind, amount = finish(db, h, rc, C.WALLET, to=to)

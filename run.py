@@ -46,6 +46,12 @@ def build():
 
     hub.restore(db)                               # the last dig survives a restart
 
+    def watch(ev):                                # every transaction the worm sends: the page and the screen follow it
+        hub.act(ev)
+        if screen:
+            screen.on_action(ev)
+    T.WATCH = watch
+
     def progress(ev):
         hub.scan(ev)
         hub.persist(db)

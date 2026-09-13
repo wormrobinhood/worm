@@ -390,6 +390,16 @@ def test_page_says_when_the_worm_is_waiting():
     assert "'last dig done'" not in html and ":'idle'}" not in html      # the old summaries of the two panels
 
 
+def test_docs_tell_the_current_money_story():
+    """The docs page is rewritten by design tools now and then: whatever the layout, it must say who sells the
+    compute and how it is paid, and must not bring back the bridged Venice story or the old name."""
+    html = (server.WEB / "docs.html").read_text(encoding="utf-8")
+    assert "AI Surplus" in html and "USDG" in html
+    assert "bought from Venice AI" not in html and "bridge fees" not in html
+    assert "hooded" not in html.lower() and "IRL Worm" not in html
+    assert "The screen</b> is the worm's own browser and it holds no key" in html
+
+
 def test_docs_placeholders_are_all_filled(site):
     client = site[0]
     page = client.get("/docs").text

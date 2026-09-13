@@ -208,4 +208,13 @@ def announce(db):
     name, sym = row["name"] or "its token", row["symbol"] or "?"
     who = "" if (row["deployer"] or "").lower() == C.WALLET else " (launched by another wallet)"
     db.add_event("launch", f"launched its own token {name} (${sym}){who} · tx {row['tx'] or '?'}", C.TOKEN)
+    from .treasury import watch
+    watch("launch", f"launched its own token {name} (${sym}) {_ago(row['ts'])}", row["tx"], done=True)
     return True
+
+
+def _ago(ts):
+    d = max(0, int(time.time()) - int(ts or 0))
+    if not ts:
+        return ""
+    return f"{d}s ago" if d < 60 else f"{d // 60}m ago" if d < 3600 else f"{d // 3600}h {d % 3600 // 60}m ago"

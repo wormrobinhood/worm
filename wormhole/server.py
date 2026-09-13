@@ -104,6 +104,7 @@ class Hub:
         self.dig = []            # events of the dig in progress (or the last one)
         self.rescan = None       # set by run.py: callable(token) that queues a rescore
         self.frame_latest = None
+        self.action_latest = None
         self._queued = {}        # token -> when /api/rescan queued it; cleared by mark_scoring
         self._started = {}       # token -> when the worker started scoring it
         self._qlock = threading.Lock()
@@ -114,6 +115,11 @@ class Hub:
     def frame(self, data):
         self.frame_latest = data
         self.pending.put({"kind": "frame", "payload": None, "ts": data.get("ts")})
+
+    def act(self, ev):
+        """A transaction the worm sent or settled: the page shows it in the screen's header and the status bar."""
+        self.action_latest = ev
+        self.pending.put({"kind": "action", "payload": ev, "ts": ev.get("ts")})
 
     def scan(self, ev):
         if ev.get("step") == "start":

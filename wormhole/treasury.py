@@ -24,6 +24,7 @@ from .chain import addr_from_topic, call_data, call_fn, selector, topic
 log = logging.getLogger("wormhole.treasury")
 MIN_CLAIM_USD = float(os.environ.get("WH_MIN_CLAIM_USD", "1.0"))    # do not spend gas on dust (lower it only for a rehearsal)
 MIN_FORWARD_USD = 0.50
+WATCH = None               # set by run.py: callable(ev) that tells the screen and the page what the worm is doing right now
 MIN_BURN_USD = float(os.environ.get("WH_MIN_BURN_USD", "5.0"))      # a burn is one pool swap: the share is batched so gas and slippage stay small
 BURN_SLIPPAGE = 0.03       # the swap reverts if the pool delivers less than the quote minus this
 PERMIT2_MAX = 2 ** 160 - 1
@@ -128,6 +129,17 @@ def burned_in(rc):
     return total / 1e18 if seen else None
 
 
+def watch(action, text, tx=None, done=False):
+    """Tell the watchers what the worm is doing: a transaction just broadcast (done=False) or settled (done=True).
+    Never raises: watching is a courtesy, not a step of the money path."""
+    if not WATCH:
+        return
+    try:
+        WATCH({"action": action, "text": text, "tx": tx, "token": C.TOKEN or None, "done": done, "ts": int(time.time())})
+    except Exception as e:
+        log.info("watch failed: %s", e)
+
+
 def _event_text(kind, amount, row):
     if kind == "claim":
         return f"claimed {amount:.2f} USDG of creator fees"
@@ -161,9 +173,12 @@ def settle(db, row, rc, wallet, to=None):
     note = row["note"] if ok else f"{row['note']} ({why})"
     db.x("UPDATE ledger SET kind=?, amount=?, note=?, qty=? WHERE id=?", (kind, amount, note, qty, row["id"]))
     if ok:
-        db.add_event("giving" if base == "give" else "treasury", _event_text(kind, amount, dict(row, qty=qty)))
+        text = _event_text(kind, amount, dict(row, qty=qty))
+        db.add_event("giving" if base == "give" else "treasury", text)
+        watch(base, text, row["tx"], done=True)
     else:
         db.add_event("error", f"{base} {why}: {row['tx']}")
+        watch(base, f"{base} did not go through: {why}", row["tx"], done=True)
     return kind, amount
 
 
@@ -235,6 +250,7 @@ def claim(rpc, db, acct, claimable):
     def pending(h):
         db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
              (int(time.time()), "claim_pending", "USDG", claimable, h, "creator fees claimed from pons escrow"))
+        watch("claim", f"claiming {claimable:.2f} USDG of creator fees from the pons escrow", h)
 
     try:
         h, rc = send_tx(rpc, acct, C.FEE_ESCROW, call_data("claimToken(address)", ("address",), (C.USDG,)),
@@ -266,6 +282,7 @@ def forward(rpc, db, acct):
     def pending(h):
         db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
              (int(time.time()), "forward_pending", "USDG", n / 1e6, h, f"{int(C.OWNER_SHARE * 100)}% of income to the creator"))
+        watch("forward", f"sending {n / 1e6:.2f} USDG, the creator's {int(C.OWNER_SHARE * 100)}%, to the creator's wallet", h)
 
     try:
         h, rc = send_tx(rpc, acct, C.USDG, data, on_broadcast=pending)
@@ -385,6 +402,7 @@ def burn(rpc, db, acct):
         db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
              (int(time.time()), "burn_pending", "USDG", n / 1e6, h,
               f"{int(round(C.BURN_SHARE * 100))}% of income: buy $WORM on its pool and send it to the burn address"))
+        watch("burn", f"buying $WORM with {n / 1e6:.2f} USDG on its pool and sending it to the burn address", h)
 
     try:
         h, rc = send_tx(rpc, acct, C.UNIVERSAL_ROUTER, data, on_broadcast=pending)

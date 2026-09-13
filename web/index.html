@@ -387,8 +387,11 @@ $('#feed').addEventListener('click',e=>{if(e.target.closest('a'))return;const c=
    worm is reading (the focus of the latest frame), circles it while it reads, and roams the page when there is
    nothing to look at. Same digits, same hood, grows with the same treasury. ---------- */
 let eyeFocus=null;
-let lastFrame=null;
-function applyFrame(f){if(!f||!f.jpg)return;lastFrame=f;const img=$('#screenimg');img.src='data:image/jpeg;base64,'+f.jpg;$('#screennote').textContent=(f.note||'')+(f.url?'  ·  '+f.url.replace(/^https?:\/\//,'').slice(0,70):'');eyeFocus=f.focus||null;scout.arrived=false}
+let lastFrame=null,lastAction=null;
+const ACTIONS={claim:'claiming its fees',forward:'paying the creator',burn:'burning $WORM',compute:'buying compute',give:'giving',launch:'launched its token'};
+function applyAction(a){if(!a||!a.action)return;lastAction=a;updateBar()}
+function currentAction(){return lastAction&&Date.now()/1000-(lastAction.ts||0)<120?lastAction:null}
+function applyFrame(f){if(!f||!f.jpg)return;lastFrame=f;if(f.action)lastAction={action:f.action,done:f.done,ts:f.ts||Date.now()/1000};const img=$('#screenimg');img.src='data:image/jpeg;base64,'+f.jpg;$('#screennote').textContent=(f.note||'')+(f.url?'  ·  '+f.url.replace(/^https?:\/\//,'').slice(0,70):'');eyeFocus=f.focus||null;scout.arrived=false}
 const eye=$('#eye'),scx=eye.getContext('2d'),NOTE_H=32;
 const scout={x:0,y:0,h:0,dir:1,trail:[],len:0,cell:4,digits:null,cols:0,rows:0,W:0,H:0,t:0,arrived:false,way:null,wayAt:0,orbit:0,mouse:null,last:0,drawn:0};
 eye.parentElement.addEventListener('mousemove',e=>{const r=eye.getBoundingClientRect();scout.mouse=[(e.clientX-r.left)*scout.W/r.width,(e.clientY-r.top)*scout.H/r.height]});
@@ -647,8 +650,9 @@ function updateBar(){const s=lastState;if(!s)return;const ch=s.character||{},st=
   $('#sb-block').textContent=st.last_block==null?'…':String(st.last_block);
   const m=$('#sb-mode');m.textContent=s.live?'LIVE':'DEMO';m.className='mode'+(s.live?' on':'');
   const {digging,head,sym}=digState();
-  const d=$('#sb-dig');d.hidden=!digging;if(digging)d.textContent='digging $'+sym;
-  const sc=$('#screen-state');sc.hidden=false;sc.textContent=digging?'digging $'+sym:matchMedia('(max-width:500px)').matches?'waiting for a graduation':'waiting for the next graduation';sc.classList.toggle('on',digging);
+  const act=currentAction(),actText=act?(ACTIONS[act.action]||act.action)+(act.done?'':'…'):'';
+  const d=$('#sb-dig');d.hidden=!digging&&!act;d.textContent=digging?'digging $'+sym:actText;
+  const sc=$('#screen-state');sc.hidden=false;sc.textContent=digging?'digging $'+sym:act?actText:matchMedia('(max-width:500px)').matches?'waiting for a graduation':'waiting for the next graduation';sc.classList.toggle('on',digging||!!act);
   $('#dig-sub').textContent=!dig.token?'nothing dug yet, waiting for the first graduation':digging?'what the worm is inside right now':'the last dig, while the worm waits for the next graduation';
   const w=$('#digwait');if(w)w.lastElementChild.textContent=waitText();
   const a=$('#digago');if(a&&head.grad_ts)a.innerHTML=digAgo(head)}
@@ -657,7 +661,7 @@ new IntersectionObserver(es=>{sbar.classList.toggle('on',!es[0].isIntersecting)}
 place(true);
 async function load(){try{const r=await fetch('/api/state');if(!r.ok)throw new Error('unavailable');render(await r.json());window.lastReceived=Date.now();window.loadFailed=false}catch(e){window.loadFailed=true}if(window.updateFreshness)window.updateFreshness()}
 function connect(){const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
-  ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='state'){render(m.data);window.lastReceived=Date.now();window.loadFailed=false}else if(m.type==='scan')applyScan(m.data);else if(m.type==='frame')applyFrame(m.data)};ws.onclose=()=>setTimeout(connect,3000)}
+  ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='state'){render(m.data);window.lastReceived=Date.now();window.loadFailed=false}else if(m.type==='scan')applyScan(m.data);else if(m.type==='frame')applyFrame(m.data);else if(m.type==='action')applyAction(m.data)};ws.onclose=()=>setTimeout(connect,3000)}
 load();connect();setInterval(load,20000);
 </script>
 <script src="/design.js"></script>

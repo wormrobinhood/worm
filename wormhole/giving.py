@@ -54,6 +54,8 @@ def _give(rpc, db, acct, cause, n, note):
     def pending(h):
         db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
              (int(time.time()), "give_pending", "USDG", n / 1e6, h, note))
+        from .treasury import watch
+        watch("give", f"giving {n / 1e6:.2f} USDG {note}", h)
 
     try:
         h, rc = send_tx(rpc, acct, C.USDG, data, on_broadcast=pending)
