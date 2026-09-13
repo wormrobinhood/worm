@@ -428,8 +428,6 @@ class SecurityHeaders:
                     h.setdefault("content-security-policy", PAGE_CSP)
                 if path == "/api/state":
                     h.setdefault("cache-control", "no-store")
-                elif path == "/":
-                    h.setdefault("cache-control", "public, max-age=30")
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
@@ -472,8 +470,9 @@ def make_app(rpc, db, brain, paper, hub):
     app.state.snapshots = snap
 
     @app.get("/", response_class=HTMLResponse)
-    def index():
-        return (WEB / "index.html").read_text(encoding="utf-8")
+    def index(request: Request):
+        """The page, revalidated on every load like its assets: a new build shows at once, never after a cache."""
+        return asset("index.html", request, media_type="text/html; charset=utf-8")
 
     @app.get("/docs", response_class=HTMLResponse)
     def docs():
@@ -582,7 +581,7 @@ def make_app(rpc, db, brain, paper, hub):
 
     asset_tags = {}   # name -> ((mtime_ns, size), etag): the content hash, recomputed when the file changes
 
-    def asset(name, request):
+    def asset(name, request, media_type=None):
         """The page's stylesheet and script, each by its exact name: no directory is mounted, so nothing else under
         web/ (or anywhere) is reachable. no-cache makes the browser revalidate on every page load, and a content
         ETag answers 304 while the file is unchanged, so a new build shows with the page instead of after a cache."""
@@ -595,7 +594,7 @@ def make_app(rpc, db, brain, paper, hub):
         headers = {"Cache-Control": "no-cache", "ETag": tag[1]}
         if request.headers.get("if-none-match", "").replace("W/", "").strip() == tag[1]:
             return Response(status_code=304, headers=headers)
-        return FileResponse(path, media_type=ASSET_TYPES[name], headers=headers)
+        return FileResponse(path, media_type=media_type or ASSET_TYPES[name], headers=headers)
 
     @app.get("/design.css")
     def design_css(request: Request):
