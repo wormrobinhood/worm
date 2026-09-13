@@ -140,3 +140,18 @@ def test_own_token_joins_the_idle_rotation_once_it_exists():
     assert len(own) == 1 and own[0]["idle"] is True
     assert own[0]["note"] == WAITING + " · its own token: Worm ($WORM), launched 5m ago"
     assert len({f["url"] for f in sink2.frames}) == 4
+
+
+def test_a_launch_in_flight_shows_the_create_page_and_the_screen_lag():
+    from wormhole.screen import CREATE_PAGE
+    sink = Sink()
+    s = Screen(sink)
+    page = FakePage()
+    s._act(page, {"action": "launch", "text": "launching its own token Worm ($WORM): sent as 0x12…, waiting for the block", "token": None, "done": False, "ts": int(time.time()) - 3})
+    f = sink.frames[-1]
+    assert f["url"] == CREATE_PAGE and f["action"] == "launch" and f["done"] is False
+    assert f["lag_s"] == 3 and f["note"].endswith(" · on screen 3s after it happened")
+    tok = "0x" + "cd" * 20
+    s._act(page, {"action": "launch", "text": "launched its own token Worm ($WORM) just now", "token": tok, "done": True, "ts": int(time.time())})
+    f = sink.frames[-1]
+    assert f["url"] == LAUNCHPAD + "/" + tok and f["done"] is True and f["note"].endswith(" · on screen as it happened")
