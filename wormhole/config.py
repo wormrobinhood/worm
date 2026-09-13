@@ -150,3 +150,15 @@ BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
 
 GECKO = "https://api.geckoterminal.com/api/v2/networks/robinhood"
 UA = "wormhole/0.1 (+https://github.com)"
+
+
+# ---- compute: who sells the worm its inference and how it pays ----
+# aisurplus: AI Surplus (aisurplus.io), paid by plain USDG transfers on Robinhood Chain to the account's deposit
+# address, so nothing is ever bridged. venice: Venice AI, paid in USDC on Base through x402 (the older rail).
+COMPUTE_PROVIDER = os.environ.get("WH_COMPUTE_PROVIDER", "aisurplus").strip().lower()
+if COMPUTE_PROVIDER not in ("aisurplus", "venice"):
+    raise SystemExit("WH_COMPUTE_PROVIDER must be aisurplus or venice")
+AISURPLUS_KEY = (os.environ.pop("WH_AISURPLUS_KEY", None) or "").strip()     # popped like WH_SECRET: no child process sees it
+AISURPLUS_DEPOSIT = os.environ.get("WH_AISURPLUS_DEPOSIT", "").strip().lower()   # the deposit address AI Surplus shows for the account
+if AISURPLUS_DEPOSIT and not re.fullmatch(r"0x[0-9a-f]{40}", AISURPLUS_DEPOSIT):
+    raise SystemExit("WH_AISURPLUS_DEPOSIT is not an address")

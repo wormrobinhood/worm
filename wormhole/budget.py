@@ -15,7 +15,7 @@ from . import treasury as T
 
 COMPUTE_USD_DAY = float(os.environ.get("WH_COMPUTE_USD_DAY", "0.75"))
 GAS_USD_DAY = float(os.environ.get("WH_GAS_USD_DAY", "0.10"))
-BRIDGE_USD_MONTH = float(os.environ.get("WH_BRIDGE_USD_MONTH", "0.20"))
+BRIDGE_USD_MONTH = float(os.environ.get("WH_BRIDGE_USD_MONTH", "0.20" if C.COMPUTE_PROVIDER == "venice" else "0"))   # AI Surplus is paid on this chain: nothing to bridge
 RESERVE_DAYS = 90
 HORIZON = 90
 INCOME_WINDOW_DAYS = 7

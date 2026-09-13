@@ -171,11 +171,16 @@ def main():
                 tre, rw = box["tre"], box["rw"]
                 try:
                     from wormhole.wallet import balances
-                    usdc = balances(C.WALLET).get("usdc_base") if C.WALLET else None
+                    bal = balances(C.WALLET) if C.WALLET else {}
                 except Exception:
-                    usdc = None
-                compute.plan(db, acct, usdc, rw.get("can_invest") or (tre["usd_real"] > 0), C.LIVE,
-                             budget_per_day=rw.get("compute_budget_per_day_usd"))
+                    bal = {}
+                if compute.PROVIDER == "aisurplus":     # USDG here, minus what is owed to the creator and the burn
+                    usdg = bal.get("usdg_rh")
+                    spendable = None if usdg is None else max(0.0, usdg - T.owed_total(db))
+                else:
+                    spendable = bal.get("usdc_base")
+                compute.plan(db, acct, spendable, rw.get("can_invest") or (tre["usd_real"] > 0), C.LIVE,
+                             budget_per_day=rw.get("compute_budget_per_day_usd"), rpc=rpc)
 
             def entries():
                 tre, rw = box["tre"], box["rw"]

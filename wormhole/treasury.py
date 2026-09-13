@@ -136,6 +136,8 @@ def _event_text(kind, amount, row):
         return f"forwarded {amount:.2f} USDG ({int(C.OWNER_SHARE * 100)}%) to the creator"
     if kind == "give":
         return f"gave {amount:.2f} USDG {row['note']}"
+    if kind == "compute":
+        return f"paid {amount:.2f} USDG of compute to AI Surplus"
     return f"{kind}: {amount:.2f} USDG"
 
 
@@ -398,7 +400,8 @@ def cycle(rpc, db, acct):
     if not (C.LIVE and acct and C.WALLET):
         return
     try:
-        if reconcile(rpc, db, ("claim_pending", "forward_pending", "burn_pending"), C.WALLET, lambda r: C.OWNER_WALLET):
+        if reconcile(rpc, db, ("claim_pending", "forward_pending", "burn_pending", "compute_pending"), C.WALLET,
+                     lambda r: C.AISURPLUS_DEPOSIT if r["kind"].startswith("compute") else C.OWNER_WALLET):
             return                      # something is still in flight: settle it before sending more
     except Exception as e:
         db.add_event("error", f"ledger reconcile failed: {str(e)[:120]}")

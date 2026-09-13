@@ -1,6 +1,6 @@
 """The voice: journal entries written from telemetry. The worm has no language; the narrator does.
 
-Writers (WH_VOICE_MODEL): 'stub' (templates, free, default), 'venice:<model>' (paid from its own balance),
+Writers (WH_VOICE_MODEL): 'stub' (templates, free, default), 'aisurplus:<model>' (its own AI Surplus balance, paid in USDG here), 'venice:<model>' (its own Venice balance),
 'anthropic:<model>' (ANTHROPIC_API_KEY), 'openai:<model>' (WH_LLM_BASE_URL + WH_LLM_API_KEY, any
 OpenAI-compatible endpoint). Check, same as the fly: every number in the entry must appear in the
 packet's measured fields (never in a token name, which strangers write), no trading or promotional
@@ -186,6 +186,9 @@ def _llm(kind, model, system, user, max_tokens=300):
                                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}, timeout=90)
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"], r.json().get("usage", {})
+    if kind == "aisurplus":
+        from .compute import aisurplus_chat
+        return aisurplus_chat(model, [{"role": "system", "content": system}, {"role": "user", "content": user}], max_tokens=max_tokens)
     if kind == "venice":
         from .compute import chat
         from .wallet import account

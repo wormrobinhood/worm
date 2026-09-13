@@ -110,10 +110,12 @@ fund the wallet to make the same code sign and send. Phase 3 to 5 settings:
 
 | variable | meaning |
 |---|---|
-| `WH_VOICE_MODEL` | `stub` (free templates), `venice:<model>` (its own balance), `anthropic:<model>` (ANTHROPIC_API_KEY), `openai:<model>` (WH_LLM_BASE_URL + WH_LLM_API_KEY) |
+| `WH_VOICE_MODEL` | `stub` (free templates), `aisurplus:<model>` (its own AI Surplus balance, paid in USDG on Robinhood Chain), `venice:<model>` (its own Venice balance, USDC on Base), `anthropic:<model>` (ANTHROPIC_API_KEY), `openai:<model>` (WH_LLM_BASE_URL + WH_LLM_API_KEY) |
+| `WH_COMPUTE_PROVIDER` | `aisurplus` (default: paid with plain USDG transfers on Robinhood Chain, nothing bridged) or `venice` (USDC on Base through x402) |
+| `WH_AISURPLUS_KEY`, `WH_AISURPLUS_DEPOSIT` | the key minted at aisurplus.io/app/keys (a secret, popped from the environment like the wallet key) and the deposit address aisurplus.io/app/wallet shows for Robinhood Chain |
 | `WH_VOICE_EVERY_MIN` | minutes between journal entries (120) |
-| `WH_TOPUP_USD`, `WH_TOPUP_BELOW_USD` | compute top-up size and threshold at Venice (5, 1) |
-| `WH_TOPUP_COOLDOWN_S`, `WH_TOPUP_MAX_PER_DAY`, `WH_TOPUP_ALWAYS` | at most one top-up per 6 h and two a day (21600, 2); top-ups only happen while the journal runs on Venice unless `WH_TOPUP_ALWAYS=1` |
+| `WH_TOPUP_USD`, `WH_TOPUP_BELOW_USD` | compute top-up size and threshold (5, 1) |
+| `WH_TOPUP_COOLDOWN_S`, `WH_TOPUP_MAX_PER_DAY`, `WH_TOPUP_ALWAYS` | at most one top-up per 6 h and two a day (21600, 2); top-ups only happen while the journal or the advisor runs at the provider, and never while every AI Surplus model in use is free, unless `WH_TOPUP_ALWAYS=1` |
 | `WH_LAB_MIN_N`, `WH_LAB_LCB_Z`, `WH_LAB_EXPLORE` | cases an exit rule needs (30), the lower-bound factor (1.5), exploration share (0) |
 | `WH_READY_AT` | readiness needed before real trades (80) |
 | `WH_ADVISOR_MODEL`, `WH_ADVISOR_EVERY_MIN`, `WH_ADVISOR_MIN_NEW` | the advisor's writer (default: the voice's), minutes between runs (120), new resolved verdicts a run needs (3) |
@@ -130,7 +132,7 @@ Posting to X is manual on purpose: entries sit on the site with a copy button.
 
 1. Signals and the live page (this).
 2. Its own token on pons, paired with USDG, so creator fees fund it.
-3. The voice: journal entries from telemetry, checked like the fly's; compute paid from its own Venice balance. Built, demo mode.
+3. The voice: journal entries from telemetry, checked like the fly's; compute paid from its own balance at AI Surplus in USDG on Robinhood Chain, with Venice on Base as the fallback. Built, demo mode.
 4. Buys from the surplus above the 90-day reserve with lab-chosen exits, quoted and simulated on Uniswap v4. Built, demo mode, off by policy (`WH_TRADING`) until the brain is mature;
    real buys stay off until real sells exist (the Permit2 approval step and the exit path), and every buy is written
    down before it is sent and reconciled against the chain afterwards.
