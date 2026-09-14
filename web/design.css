@@ -153,3 +153,58 @@ body[data-view="overview"] .launch-clock{display:flex}
 #launch-clock-token[hidden]{display:none}
 .launch-clock[data-state="failed"],.launch-clock[data-state="review"],.launch-clock[data-state="launching"]{border-color:#9b8858}
 @media(max-width:600px){body[data-view="overview"] .launch-clock{align-items:flex-start;flex-direction:column;padding:18px;gap:16px}.launch-clock-time{text-align:left}.launch-clock h2{font-size:24px}#launch-clock-digits{font-size:clamp(16px,5vw,23px)}}
+
+/* Launch identity and treasury: clear states, readable allocations, progressive detail. */
+.mast .stage{width:100%;margin:22px auto 0;line-height:1.7;letter-spacing:0}
+.identity-status,.identity-growth{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:10px 20px}
+.identity-status b{text-transform:capitalize;font-weight:500;margin-left:6px;color:#d8e9dd}
+.identity-growth{margin-top:11px;font-size:11px;color:#98aa9d}
+.identity-growth b{color:#c3d5c8;font-weight:500;margin-left:5px}
+.status-pill{display:inline-flex;align-items:center;gap:7px;max-width:100%;border:1px solid #405542;border-radius:20px;padding:4px 10px;color:#c1ceb9;background:#142017;font:11px/1.5 'IBM Plex Mono',monospace;letter-spacing:0;white-space:normal}
+.status-pill::before{content:'';width:5px;height:5px;background:currentColor;border-radius:50%;flex:none}
+.status-pill.is-on{color:#a6eebf;border-color:#41855a;background:#102719}
+body[data-view=treasury] #grid{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:20px;align-items:start}
+body[data-view=treasury] #grid>[data-panel=wallet]{grid-column:1/-1;grid-row:1}
+body[data-view=treasury] #grid>[data-panel=runway]{grid-column:1;grid-row:2}
+body[data-view=treasury] #grid>[data-panel=trades]{grid-column:2;grid-row:2}
+body[data-view=treasury] .panel{background:rgba(8,17,12,.97);border-color:#2a3e30;border-radius:7px}
+body[data-view=treasury] .panel>.body{padding:22px}
+body[data-view=treasury] .panel>h2{padding:12px 20px;font-size:23px;background:#0e1b13}
+.treasury-overview{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.5fr);gap:32px;align-items:center;padding-bottom:24px}
+.wallet-intro .eyebrow,.runway-heading .eyebrow{font-size:10px;letter-spacing:1.4px;margin:0;display:block;color:#8da997}
+.wallet-intro h3,#trades h3{font:400 30px/1.15 'Instrument Serif',Georgia,serif;letter-spacing:0;color:#e4f1e7;margin:10px 0}
+.wallet-intro p{font-size:13px;color:#a0b6a7;line-height:1.7;margin:10px 0 14px;max-width:51ch}
+.wallet-address{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:12px}
+.wallet-address>a{font:20px 'IBM Plex Mono',monospace;color:#dbeee2}
+.wallet-balances{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;border:1px solid #293e30;border-radius:5px;background:#0e1d14}
+.treasury-fact{min-width:0;padding:17px 14px}
+.wallet-balances .treasury-fact+.treasury-fact{border-left:1px solid #293e30}
+.treasury-fact>span{display:block;font-size:11px;color:#aac0b1}
+.treasury-fact>strong{display:block;font:400 clamp(19px,1.7vw,27px)/1.3 'IBM Plex Mono',monospace;color:#e3f7ea;margin:12px 0 7px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.treasury-fact>small{display:block;color:#8ba795;font-size:10px;line-height:1.6}
+.allocation-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;border-top:1px solid #273b2e;padding-top:20px;margin-bottom:14px}
+.allocation-heading h3{font:400 25px 'Instrument Serif',Georgia,serif;color:#daebdf;margin:0}
+.allocation-heading>span{font-size:11px;color:#8fa999}
+.allocation-strip{display:flex;gap:4px;height:5px;overflow:hidden;border-radius:3px}
+.allocation-strip .creator{background:#b6e6c5}.allocation-strip .gold{background:#bfb379}.allocation-strip .burn{background:#669c78}.allocation-strip .ops{background:#649e9c}
+.allocation-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:20px;padding:18px 0 23px}
+.allocation-item{min-width:0}.allocation-item>span{font-size:12px;color:#bed2c4;display:block}.allocation-item>strong{font:400 31px/1.35 'IBM Plex Mono',monospace;color:#ccebd5;display:block;margin:5px 0}.allocation-item.gold>strong{color:#d0c38e}.allocation-item.burn>strong{color:#8dbe9d}.allocation-item.ops>strong{color:#8bc4c1}.allocation-item>small{display:block;font-size:11px;color:#94ae9e;line-height:1.5}
+.treasury-detail{border-top:1px solid #273b2e;margin:0}
+.treasury-detail>summary{display:flex;justify-content:space-between;align-items:center;gap:15px;min-height:46px;padding:11px 0;list-style:none;cursor:pointer;font-size:12px;color:#b6d1bf}
+.treasury-detail>summary::-webkit-details-marker{display:none}.treasury-detail>summary>span{font:20px monospace;color:#8aba99}
+.treasury-detail[open]>summary>span{transform:rotate(45deg)}
+.treasury-detail>summary:hover{color:#e0f6e7}.treasury-detail>summary:focus-visible{outline:2px solid var(--g);outline-offset:3px}
+.treasury-detail-body{padding:2px 0 16px;min-width:0}.treasury-detail-body table{font-size:12px;min-width:0;width:100%}.treasury-detail-body td{overflow-wrap:anywhere}
+.treasury-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 28px;margin:0 0 12px}
+.treasury-facts>div,.trading-checks>div{display:flex;justify-content:space-between;align-items:baseline;gap:16px;padding:10px 0;border-bottom:1px solid #1c3023;font-size:12px;min-width:0}
+.treasury-facts dt,.trading-checks dt{color:#a4b9ac}.treasury-facts dd,.trading-checks dd{color:#d8e9de;text-align:right;margin:0;overflow-wrap:anywhere}
+.treasury-muted{font-size:12px;line-height:1.75;color:#99b2a2;margin:12px 0 17px}.treasury-link{font-size:12px;color:#a5dfb7;text-underline-offset:4px}
+.treasury-links{display:flex;flex-wrap:wrap;gap:16px}.ledger-note{display:block;font-size:11px;color:#97ad9e;line-height:1.6;margin-top:4px;font-weight:400}
+.treasury-notice{padding:12px 15px;border:1px solid #786237;background:#211d10;color:#dccb9a;font-size:12px;border-radius:4px;margin-bottom:20px}
+.runway-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.runway-heading>div{min-width:0}.runway-heading strong{display:block;font:400 37px/1.3 'IBM Plex Mono',monospace;color:#d6f3df;margin:10px 0 6px}.runway-heading>div>span:last-child{font-size:12px;color:#9fb8a8}
+.reserve-meter{height:6px;border-radius:4px;background:#203b29;margin:22px 0 7px;overflow:hidden}.reserve-meter>span{display:block;height:100%;background:#96d3a8;transition:width .4s}
+.runway-facts{display:grid;grid-template-columns:1fr 1fr;gap:16px}.runway-facts .treasury-fact{padding:14px 0 4px}.runway-facts .treasury-fact>strong{font-size:20px}
+.trading-heading{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:20px}#trades h3{font-size:29px;margin-top:0}.trading-checks{margin:12px 0 20px}.treasury-history{list-style:none;padding:0;margin:0;max-height:250px;overflow:auto}.treasury-history li{padding:10px 0;border-bottom:1px solid #263b2d;font-size:12px}.treasury-history small{display:block;color:#93ad9c}
+@media(max-width:1100px){.treasury-overview{grid-template-columns:1fr;gap:18px}.wallet-intro p{max-width:70ch}.treasury-facts{grid-template-columns:1fr}}
+@media(max-width:950px){body[data-view=treasury] #grid{grid-template-columns:minmax(0,1fr)}body[data-view=treasury] #grid>.panel{grid-row:auto;grid-column:1}.runway-heading strong{font-size:33px}}
+@media(max-width:600px){.identity-status{gap:9px}.identity-growth{gap:5px 15px}.mast .stage{margin-top:19px}.wallet-balances{grid-template-columns:repeat(2,minmax(0,1fr))}.wallet-balances .treasury-fact:nth-child(3){border-left:0}.wallet-balances .treasury-fact:nth-child(n+3){border-top:1px solid #293e30}.allocation-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 26px}.allocation-heading{align-items:flex-start;flex-direction:column;gap:5px}.allocation-heading h3{font-size:25px}body[data-view=treasury] .panel>.body{padding:17px}body[data-view=treasury] .panel>h2{padding:11px 17px}.runway-heading{flex-wrap:wrap;gap:12px}.treasury-fact>strong{font-size:24px}.runway-facts .treasury-fact>strong{font-size:19px}.wallet-intro h3{font-size:29px}.identity-status>span:last-child{font-size:11px}.treasury-detail-body th,.treasury-detail-body td{padding:10px 6px}}
