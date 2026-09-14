@@ -238,3 +238,39 @@ def test_go_signs_nothing_in_demo_and_settles_a_launch_left_in_flight(ready, acc
     assert L.go(ready, db, acct) is None and ready.raw == [] and db.meta_get("launch_pending") == h
     ready.receipts[h] = {"transactionHash": h, "status": "0x1", "blockNumber": "0x10", "logs": [launched_log(TOKEN, CURVE, acct.address)]}
     assert L.go(ready, db, acct) == TOKEN.lower() and C.TOKEN == TOKEN.lower() and not db.meta_get("launch_pending")
+
+
+@pytest.mark.parametrize('receipt', [{}, {'status':'0x2'}, {'status':None}])
+def test_unknown_receipt_never_clears_launch_pending(db, monkeypatch, receipt):
+    monkeypatch.setattr(C, 'TOKEN', '')
+    db.meta_set('launch_pending', 'pending-hash')
+    assert L._settle(db, 'pending-hash', receipt, 'WORM') is None
+    assert db.meta_get('launch_pending') == 'pending-hash'
+    assert not db.meta_get('own_token') and not C.TOKEN
+
+
+def test_live_launch_refuses_unreadable_history(ready, monkeypatch):
+    from wormhole import db as database
+    def unavailable(*args, **kwargs):
+        raise RuntimeError('private-history-failure')
+    monkeypatch.setattr(database, 'DB', unavailable)
+    with pytest.raises(SystemExit, match='launch history unavailable'):
+        L.refuse_if_done(True)
+    assert not ready.calls
+
+
+@pytest.mark.parametrize('failure', ['simulation', 'submission'])
+def test_launch_errors_do_not_expose_upstream_text(ready, live, acct, db, monkeypatch, failure):
+    from wormhole import treasury as T
+    heard=[]
+    monkeypatch.setattr(T, 'WATCH', heard.append)
+    marker='private-upstream-marker'
+    if failure=='simulation':
+        monkeypatch.setattr(L, 'dry_run', lambda *a:(None,marker))
+    else:
+        def unavailable(*args, **kwargs):
+            raise RuntimeError(marker)
+        monkeypatch.setattr(tx, 'send_tx', unavailable)
+    assert L.go(ready, db, acct) is None
+    assert marker not in str(db.events(40)) and marker not in str(heard)
+    assert not ready.raw

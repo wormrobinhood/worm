@@ -6,6 +6,7 @@ import time
 
 from eth_abi import decode, encode
 
+from . import finality
 from . import config as C, outbox, treasury as T, tx
 from .chain import call_data, call_fn, selector, topic
 from .claim_policy import setting
@@ -80,7 +81,7 @@ def settle(db, row, rc):
 def reconcile(rpc, db):
     ensure(db)
     for row in db.q("SELECT * FROM gas_refills WHERE state='pending'"):
-        if not settle(db, row, rpc.call('eth_getTransactionReceipt', [row['tx']])):
+        if not settle(db, row, finality.receipt(rpc, row['tx'])):
             return False
     return True
 
@@ -177,6 +178,9 @@ def cycle(rpc, db, acct):
         done = settle(db, db.one('SELECT * FROM gas_refills WHERE tx=?', (h,)), rc)
         status(db, 'refill confirmed' if done and rc['status']=='0x1' else 'refill requires review')
         return done
+    except tx.ReceiptPending:
+        status(db, 'refill submitted; waiting for chain finality')
+        return False
     except Exception:
         status(db, 'refill paused: budget, gas, quote or receipt needs review')
         return not (pending(db) or outbox.pending())

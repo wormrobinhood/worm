@@ -44,7 +44,12 @@ class FakeRpc:
     def call(self, method, params, retries=4):
         self.calls.append((method, params))
         if method == "eth_getTransactionReceipt":
-            return self.receipts.get(params[0])
+            from fakes import receipt_envelope
+            return receipt_envelope(params[0], self.receipts.get(params[0]))
+        if method == 'eth_getBlockByNumber':
+            from fakes import block_hash
+            n = 100 if params[0] in ('latest','finalized') else int(params[0],16)
+            return {'number':hex(n),'hash':block_hash(n)}
         return "0x"
 
     def get_logs(self, *a, **k):
@@ -286,12 +291,12 @@ def test_decide_never_broadcast_marks_failed_and_blocks(tdb, monkeypatch):
     rpc = FakeRpc()
     trader.decide(rpc, tdb, RUNWAY, True, FakeAcct())
     tr = tdb.one("SELECT * FROM trades")
-    assert tr["note"].startswith("FAILED: insufficient ETH") and tr["tx"] is None
+    assert tr["note"] == "FAILED: operator review required" and tr["tx"] is None
     assert tdb.one("SELECT COUNT(*) n FROM positions")["n"] == 0
     assert trader.spent_today(tdb) == 0 and trader.open_count(tdb) == 0
     blocked = tdb.one("SELECT blocked_until FROM trade_intents WHERE token=?", (t,))["blocked_until"]
     assert NOW + 6 * 3600 - 5 <= blocked <= NOW + 6 * 3600 + 60
-    assert len(events(tdb, "buy $T1 failed before broadcast%")) == 1
+    assert len(events(tdb, "buy $T1 outcome needs review%")) == 1
     for _ in range(3):
         trader.decide(rpc, tdb, RUNWAY, True, FakeAcct())
     assert len(sender.calls) == 1 and tdb.one("SELECT COUNT(*) n FROM trades")["n"] == 1

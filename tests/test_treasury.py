@@ -250,8 +250,34 @@ def pool(db):
 def burn_chain(rpc, usdg=50.0, out_tokens=12_345, approved=False):
     chain(rpc, claimable=0, usdg=usdg)
     rpc.eth_calls[QUOTE_SEL] = uint_result(out_tokens * 10 ** 18, 100_000)
-    rpc.eth_calls[ALLOWANCE] = word(2 ** 200 if approved else 0)
-    rpc.eth_calls[P2_ALLOWANCE] = uint_result(2 ** 160 - 1 if approved else 0, 2 ** 48 - 1 if approved else 0, 0)
+    approval_reads(rpc, 6_000_000 if approved else 0,
+                   6_000_000 if approved else 0, int(time.time()) + T.PERMIT_TTL_S if approved else 0)
+
+
+def approval_reads(rpc, erc20=0, permit=0, expiry=0):
+    """Model allowance reads from successful approval receipts, including ERC-20 false/no-op cases."""
+    def mined_approvals():
+        for raw in rpc.raw:
+            receipt = rpc.receipt(tx_hash(raw))
+            if receipt and receipt.get('status') == '0x1':
+                yield decode_tx(raw)
+    def erc_read(params):
+        _, spender = decode(['address', 'address'], bytes.fromhex(params[0]['data'][10:]))
+        amount = erc20
+        for t in mined_approvals():
+            if t['to'] == C.USDG and t['data'][:4] == APPROVE_SEL:
+                target, value = decode(['address', 'uint256'], t['data'][4:])
+                if target == spender:
+                    amount = value
+        return word(amount)
+    def permit_read(params):
+        amount, expiration = permit, expiry
+        for t in mined_approvals():
+            if t['to'] == C.PERMIT2 and t['data'][:4] == P2_APPROVE_SEL:
+                _, _, amount, expiration = decode(['address', 'address', 'uint160', 'uint48'], t['data'][4:])
+        return uint_result(amount, expiration, 0)
+    rpc.eth_calls[ALLOWANCE] = erc_read
+    rpc.eth_calls[P2_ALLOWANCE] = permit_read
 
 
 def burn_receipts(rpc, qty_tokens=12_345):
@@ -312,11 +338,13 @@ def test_burn_buys_on_the_pool_and_sends_the_tokens_to_the_burn_address(db, rpc,
     assert [t["to"] for t in txs] == [C.USDG, C.USDG, C.PERMIT2, C.UNIVERSAL_ROUTER]
     assert txs[0]["data"][:4] == TRANSFER and txs[1]["data"][:4] == APPROVE_SEL and txs[2]["data"][:4] == P2_APPROVE_SEL
     spender, allowance = decode(["address", "uint256"], txs[1]["data"][4:])
-    assert spender.lower() == C.PERMIT2 and allowance == 2 ** 256 - 1
+    assert spender.lower() == C.PERMIT2 and allowance == 6_000_000
     tok, spender2, amt, exp = decode(["address", "address", "uint160", "uint48"], txs[2]["data"][4:])
-    assert (tok.lower(), spender2.lower(), amt, exp) == (C.USDG, C.UNIVERSAL_ROUTER, 2 ** 160 - 1, 2 ** 48 - 1)
+    assert (tok.lower(), spender2.lower(), amt) == (C.USDG, C.UNIVERSAL_ROUTER, 6_000_000)
+    assert int(time.time()) < exp <= int(time.time()) + T.PERMIT_TTL_S
     assert txs[3]["data"][:4] == EXECUTE_SEL and txs[3]["value"] == 0
-    commands, inputs, _deadline = decode(["bytes", "bytes[]", "uint256"], txs[3]["data"][4:])
+    commands, inputs, deadline = decode(["bytes", "bytes[]", "uint256"], txs[3]["data"][4:])
+    assert int(time.time()) < deadline <= min(exp, int(time.time()) + T.SWAP_TTL_S)
     actions, params = decode(["bytes", "bytes[]"], inputs[0])
     assert commands == trader.V4_SWAP and actions == trader.SWAP_EXACT_IN_SINGLE + trader.SETTLE_ALL + T.TAKE
     key, zero_for_one, amount_in, min_out, price_limit, _hook = decode([trader.SWAP_T], params[0])[0]
@@ -366,6 +394,7 @@ def test_burn_is_capped_by_the_wallet_balance_and_a_pending_burn_blocks_another(
     monkeypatch.setattr(C, "OWNER_WALLET", "")             # no forward: the wallet's USDG is for the burn alone
     ledger(db, "claim", 100.0)                             # owed 20.00
     burn_chain(rpc, usdg=7.5, approved=True)
+    approval_reads(rpc, 7_500_000, 7_500_000, int(time.time()) + T.PERMIT_TTL_S)
     burn_receipts(rpc, qty_tokens=999)
     T.cycle(rpc, db, acct)
     b = rows(db, "burn")
@@ -389,7 +418,7 @@ SWAP_V3_SEL = bytes.fromhex(selector(f"exactInputSingle({T.SWAP_V3_T})")[2:])
 def gold_chain(rpc, usdg=50.0, out_units=GLD_UNITS, approved=False):
     chain(rpc, claimable=0, usdg=usdg)
     rpc.eth_calls[QUOTE_V3_SEL] = uint_result(out_units, 0, 0, 90_000)
-    rpc.eth_calls[ALLOWANCE] = word(2 ** 200 if approved else 0)
+    approval_reads(rpc, 6_000_000 if approved else 0)
 
 
 def gold_receipts(rpc, qty_units=GLD_UNITS):
@@ -457,8 +486,11 @@ def test_gold_buys_gld_on_the_v3_pool_and_keeps_it(db, rpc, acct, live):
     assert txs[1]["data"][:4] == APPROVE_SEL
     spender, allowance = decode(["address", "uint256"], txs[1]["data"][4:])
     assert spender.lower() == C.SWAP_ROUTER_V3 and allowance == 6_000_000       # this buy's amount, nothing unbounded
-    assert txs[2]["data"][:4] == SWAP_V3_SEL and txs[2]["value"] == 0
-    token_in, token_out, fee, recipient, amount_in, min_out, limit = decode([T.SWAP_V3_T], txs[2]["data"][4:])[0]
+    assert txs[2]["data"][:4] == bytes.fromhex(selector('multicall(uint256,bytes[])')[2:]) and txs[2]["value"] == 0
+    deadline, calls = decode(['uint256', 'bytes[]'], txs[2]['data'][4:])
+    assert int(time.time()) < deadline <= int(time.time()) + T.SWAP_TTL_S
+    assert len(calls) == 1 and calls[0][:4] == SWAP_V3_SEL
+    token_in, token_out, fee, recipient, amount_in, min_out, limit = decode([T.SWAP_V3_T], calls[0][4:])[0]
     assert (token_in.lower(), token_out.lower(), fee, recipient.lower(), amount_in, limit) == (C.USDG, C.GLD, 500, C.WALLET, 6_000_000, 0)
     assert min_out == int(GLD_UNITS * (1 - T.GOLD_SLIPPAGE))
     g = rows(db, "gold")

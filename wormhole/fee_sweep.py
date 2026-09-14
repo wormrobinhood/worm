@@ -9,6 +9,7 @@ import time
 
 from eth_abi import decode
 
+from . import finality
 from . import config as C, claim_policy as P
 from .chain import call_data, call_fn, topic
 
@@ -74,7 +75,7 @@ def settle(db, row, receipt):
 def reconcile(rpc, db):
     ensure(db)
     for row in db.q("SELECT * FROM fee_sweeps WHERE state='pending'"):
-        if not settle(db, row, rpc.call('eth_getTransactionReceipt', [row['tx']])):
+        if not settle(db, row, finality.receipt(rpc, row['tx'])):
             return False
     return True
 
@@ -137,6 +138,9 @@ def cycle(rpc, db, acct, escrow):
             T.watch('claim', 'curve fees moved into claimable escrow', h, done=True)
         status(db, 'curve sweep confirmed' if done and receipt['status']=='0x1' else 'sweep needs receipt review')
         return done
+    except tx.ReceiptPending:
+        status(db, 'sweep submitted; waiting for chain finality')
+        return False
     except Exception:
         status(db, 'sweep paused: configuration, chain data or receipt needs review')
         return not (outbox.pending() or db.one("SELECT 1 FROM fee_sweeps WHERE state='pending'"))

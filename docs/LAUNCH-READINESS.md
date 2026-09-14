@@ -6,12 +6,12 @@ This document describes verification gates, not a declaration that production is
 
 The regression suite is rerun for each release; see CLAUDE_HANDOFF.md for the final release count. Separate, limited on-chain rehearsals verified a token launch, local countdown transition, on-chain metadata and creator tax, a USDG-to-ETH conversion, an escrow claim, the new creator allocation payout, and a small GLD purchase. A later bounded rehearsal also exercised the new automatic curve sweep and claim cycle, operations-funded atomic ETH refill, and restart duplicate prevention. These used explicit small-test thresholds. Funded daily claiming remains covered offline; prolonged unattended deployment is not yet proven.
 
-Older burn and compute payment evidence belongs to earlier rehearsals. It does not certify every current contract state, provider payment or unattended recovery path. Shadow AI evaluation needs future completed cohorts; it is not a proven performance result.
+The latest 1 USDG AI Surplus payment was matched to confirmed provider history and a 1 USD credit increase. Burn verification combines a fresh current-code simulation with an earlier confirmed liquid-token burn; it is not a new official WORM burn. Shadow AI evaluation needs future completed cohorts; it is not a proven performance result.
 
 ## Before arming unattended fee operations
 
-- Review and release the exact local claim/sweep changes. Preserve both databases and verify the deployed revision, health and runtime settings afterward.
-- Exercise the new automatic sweep-to-claim path with a bounded rehearsal, including restart recovery; verify it does not need an operator-triggered sweep for supported curves.
+- The claim/sweep/refill release was deployed and verified with LIVE and trading off. Review any newer local audit changes before release, preserve both databases and verify the exact deployed revision, health and runtime settings afterward.
+- The automatic sweep-to-claim path passed a bounded rehearsal and a duplicate-prevention restart check for the supported rehearsal curve. Different curve settings or future graduated pools still need their own verification.
 - The bounded ETH refill is implemented and rehearsed. Review its production limits before enabling WH_GAS_REFILL; preserve bootstrap ETH, reservations, and one active signer.
 - Verify the graduated-token burn path under the current policy and provider compute-credit settlement separately. Keep burn allocations reserved until the token has the supported pool. Do not spend enough to force graduation merely to create a test case.
 - Verify restored database/outbox consistency on an isolated stopped signer, scheduled encrypted off-host backups, and actionable delivered alerts for low ETH, stale indexing, unresolved payments and unavailable browser service.
@@ -24,12 +24,21 @@ WH_TRADING must stay off until explicitly enabled by the operator. The live-sell
 
 ## Where users can read about the new policies
 
-The website Docs page explains sweep → escrow → adaptive/daily claims → reserved fee allocation, gas checks, planned-cost runway and the remaining ETH-refill limitation. CLAUDE_HANDOFF.md records implementation details. docs/PAYMENT-RECOVERY.md describes the recovery model; docs/ENGINE-EVIDENCE.md describes evidence and learning limits. Check the actual deployed revision rather than assuming that local documentation is already public.
+The website Docs page explains sweep → escrow → adaptive/daily claims → reserved fee allocation, gas checks, planned-cost runway and bounded automatic ETH refill with bootstrap funding. CLAUDE_HANDOFF.md records implementation details. docs/PAYMENT-RECOVERY.md describes the recovery model; docs/ENGINE-EVIDENCE.md describes evidence and learning limits. Check the actual deployed revision rather than assuming that local documentation is already public.
 
 ## Open operational gates
 
+- Local treasury hardening now uses exact per-purchase burn/gold approvals, a ten-minute Permit2 expiry, quotes refreshed after approvals, a 30-second pre-sign quote limit, and three-minute on-chain swap deadlines. Legacy excess approvals are reduced when the next eligible purchase runs; no existing on-chain allowance has been revoked merely by editing code. Release and a bounded rehearsal of these changed paths remain required.
 - Latest small AI Surplus transfer: confirmed in provider top-up history and a matching 1 USD balance increase. Continue to distinguish chain submission from provider credit.
 - Connect and test an email alert receiver for the private operational health endpoint. A Railway metrics dashboard alone does not provide low-wallet or stuck-payment email alerts.
-- Configure recurring off-host backup delivery and key custody. One restored historical backup is verified; recurring delivery is not configured by that drill.
+- Configure recurring off-host backup delivery and key custody. Two off-host encrypted restoration drills passed, including a fresh paired production snapshot; recurring delivery is not configured by those drills.
 - The official token is not launched or graduated. A fresh burn simulation and earlier liquid-token burn evidence do not prove a future official-token pool.
 - Return rehearsal funds only after testing is closed. Base USDC also needs Base gas or an explicitly approved supported relay to leave the rehearsal wallet.
+
+## Current launch preparation
+
+The finalized-receipt recovery changes are local and require release verification plus a bounded rehearsal. Finality checks deliberately delay financial settlement; a mined transaction is still pending until its required boundary. Review the approval exception and migration limits in PAYMENT-RECOVERY.md.
+
+Keep LIVE, trading, and automatic gas refill off during preparation. The production signer and separate operations credential have been verified privately. Production wallet funding, final metadata approval, and the exact launch time with timezone remain required. Do not set a trial timestamp in production: a persisted due request can execute after LIVE is enabled. A countdown is permission to start checks at that time, not a promise of instant launch or chain finality.
+
+The opt-in initial 2% supply purchase is implemented locally: launch and buy are one Pons router transaction; the creator’s 1% transfer is a separate, journaled transaction after finality. The current-contract local fork simulation verified the timer, purchase, metadata, creator tax, transfer, zero remaining router allowance and duplicate prevention. It is not a public-chain rehearsal or a production release. Review the explicit spending cap, protected reserves, and fresh quote before configuring it. See INITIAL-ALLOCATION.md. Recurring backups and application-specific email monitoring were deferred by the operator; native Railway service notifications and manual backup drills do not close those gaps.

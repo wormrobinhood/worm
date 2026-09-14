@@ -373,6 +373,7 @@ def plan(db, acct, wallet_usd, runway_ok, live, budget_per_day=None, rpc=None):
     a month of it must cover one top-up. rpc: the Robinhood Chain node, needed to send a USDG transfer."""
     ensure_tables(db)
     from . import gas_refill, fee_sweep, outbox
+    from .tx import ReceiptPending
     fee_sweep.ensure(db)
     if live and (outbox.pending() or gas_refill.pending(db)
                  or db.one("SELECT 1 FROM fee_sweeps WHERE state='pending'")
@@ -413,6 +414,8 @@ def plan(db, acct, wallet_usd, runway_ok, live, budget_per_day=None, rpc=None):
             r = aisurplus_top_up(rpc, db, acct, TOPUP_USD, live)
             if not r["sent"]:
                 _say_hourly(db, f"demo: would send ${r['amount_usd']:.2f} USDG to AI Surplus for compute (nothing signed)")
+        except ReceiptPending:
+            _say_hourly(db, 'compute payment submitted; waiting for chain finality and provider credit')
         except Exception:
             db.add_event("error", "compute top-up failed; operator review required")
         return st

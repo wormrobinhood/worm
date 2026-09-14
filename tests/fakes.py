@@ -44,6 +44,20 @@ def claimed_log(recipient, token, amount):
             "blockNumber": "0x10", "transactionHash": "0x" + "00" * 32, "logIndex": "0x0"}
 
 
+def block_hash(number):
+    return "0x" + f"{number:064x}"
+
+
+def receipt_envelope(h, rc):
+    if not rc:
+        return rc
+    rc = dict(rc)
+    rc.setdefault('transactionHash', h)
+    rc.setdefault('blockNumber', '0x10')
+    rc.setdefault('blockHash', block_hash(int(rc['blockNumber'], 16)))
+    return rc
+
+
 class FakeRpc:
     """Records every call and answers from canned values.
 
@@ -59,6 +73,9 @@ class FakeRpc:
 
     def __init__(self, nonce=7, gas_price=90_600_000, estimate=100_000, balance=10 ** 18):
         self.calls = []
+        self.latest = 100
+        self.finalized = 100
+        self.blocks = {}
         self.nonce, self.gas_price, self.estimate, self.balance = nonce, gas_price, estimate, balance
         self.script = []
         self.raw = []                # every raw tx the node took, in order
@@ -118,7 +135,11 @@ class FakeRpc:
         if method == "eth_getTransactionByHash":
             return {"hash": params[0]} if params[0] in self.known else None
         if method == "eth_getTransactionReceipt":
-            return self.receipt(params[0])
+            return receipt_envelope(params[0], self.receipt(params[0]))
+        if method == 'eth_getBlockByNumber':
+            tag = params[0]
+            n = self.finalized if tag == 'finalized' else self.latest if tag == 'latest' else int(tag,16)
+            return self.blocks.get(n, {'number':hex(n), 'hash':block_hash(n)})
         if method == "eth_call":
             data = params[0]["data"]
             v = self.eth_calls.get(data[:10])

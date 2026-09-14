@@ -6,7 +6,8 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 from wormhole import config as C, launch_schedule as S, launch as L, server, treasury as T
-from test_server import FakeRpc, FakeBrain, FakePaper, small_snapshot
+from test_server import FakeBrain, FakePaper, small_snapshot
+from fakes import FakeRpc
 
 @pytest.fixture(autouse=True)
 def no_token(monkeypatch):

@@ -37,7 +37,7 @@ def configure(db, at, now=None):
     with LOCK:
         now = int(time.time()) if now is None else now
         prior = saved(db)
-        if C.TOKEN or db.meta_get('own_token') or db.meta_get('launch_pending') or prior.get('state') in ('launching','pending'):
+        if C.TOKEN or db.meta_get('own_token') or db.meta_get('launch_pending') or db.meta_get('launch_allocation') or prior.get('state') in ('launching','pending'):
             raise ValueError('a launch already exists or needs reconciliation')
         if at is None:
             store(db, {'state':'cancelled', 'at':None})
@@ -56,15 +56,23 @@ def initialize(db):
 
 
 def status(db, now=None):
+    from . import launch_allocation as A
     now = int(time.time()) if now is None else now
     row = saved(db)
     token = C.TOKEN or db.meta_get('own_token')
     state = row.get('state','unscheduled')
     reason = None
+    allocation = A.saved(db)
     if token:
         state = 'launched'
     elif db.meta_get('launch_pending'):
         state = 'pending'
+    elif allocation.get('state') in ('prepared','approved','approval_pending'):
+        state = 'preparing'
+        reason = 'Preparing the initial token purchase'
+    elif allocation.get('state') in ('review','reverted'):
+        state = 'review'
+        reason = 'Initial token allocation requires operator review'
     elif state == 'launching' and not ACTIVE:
         state = 'review'
         reason = 'Launch interrupted; operator review required'
@@ -74,7 +82,7 @@ def status(db, now=None):
     if (C.DATA_DIR/'payments.paused').exists() and state in ('due','scheduled'):
         reason = 'Launch execution paused by operator'
     return {'at':row.get('at'), 'state':state, 'reason':reason, 'token':token or None,
-            'server_now':now, 'live_enabled':C.LIVE}
+            'server_now':now, 'live_enabled':C.LIVE, 'allocation':A.public_status(db)}
 
 
 def tick(rpc, db, acct, hub, now=None):
@@ -83,6 +91,10 @@ def tick(rpc, db, acct, hub, now=None):
     with LOCK:
         now = int(time.time()) if now is None else now
         row = saved(db)
+        from . import launch_allocation as A
+        if A.active(db):
+            hub.launch_wanted = False
+            return L.go(rpc,db,acct)
         if C.TOKEN or db.meta_get('own_token'):
             hub.launch_wanted = False
             return None
@@ -115,5 +127,5 @@ def tick(rpc, db, acct, hub, now=None):
             raise
         finally:
             ACTIVE = False
-        store(db, {**row, 'state':'launched' if token else 'pending' if db.meta_get('launch_pending') else 'failed'})
+        store(db, {**row, 'state':'launched' if token else 'pending' if db.meta_get('launch_pending') or A.active(db) else 'failed'})
         return token

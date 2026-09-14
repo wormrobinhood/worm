@@ -7,7 +7,7 @@ def test_low_eth_and_unresolved_payment_are_actionable(db,rpc,live,monkeypatch):
     monkeypatch.delenv('WH_SCREEN_CDP_URL',raising=False)
     T.ensure_tables(db);rpc.balance=1
     db.x("INSERT INTO ledger(ts,kind,amount) VALUES(0,'compute_pending',1)")
-    st=H.check(rpc,db,SimpleNamespace(),now=1000)
+    st=H.check(rpc,db,SimpleNamespace(),now=4000)
     assert {a['code'] for a in st['alerts']}=={'low_eth','payment_unresolved'}
     H.record(db,st)
     assert 'compute_pending' not in db.meta_get('ops_health_status')
@@ -23,10 +23,20 @@ def test_stale_indexer_and_browser_detected(db,rpc,monkeypatch):
     monkeypatch.setenv('WH_SCREEN_CDP_URL','http://browser:9223')
     h=SimpleNamespace(started_at=1,indexer=SimpleNamespace(last_ok=1),frame_latest={'ts':1})
     st=H.check(rpc,db,h,now=1000)
-    assert {a['code'] for a in st['alerts']}=={'indexer_stale','screen_stale'}
+    assert {a['code'] for a in st['alerts']}=={'indexer_stale','screen_stale','operations_stale'}
 
 
 def test_check_failure_does_not_expose_exception(db,rpc,live,monkeypatch):
     monkeypatch.setattr(rpc,'call',lambda *a:(_ for _ in ()).throw(RuntimeError('sensitive upstream response')))
     st=H.check(rpc,db,SimpleNamespace(),now=1000)
     assert not st['ok'] and 'sensitive' not in json.dumps(st)
+
+
+def test_never_started_operations_loop_alerts_after_startup_grace(db,rpc,monkeypatch):
+    monkeypatch.delenv('WH_SCREEN_CDP_URL',raising=False)
+    h=SimpleNamespace(started_at=100)
+    assert H.check(rpc,db,h,now=999)['ok']
+    st=H.check(rpc,db,h,now=1001)
+    assert [a['code'] for a in st['alerts']]==['operations_stale']
+    db.meta_set('ops_cycle_at','1000')
+    assert H.check(rpc,db,h,now=1001)['ok']

@@ -12,6 +12,8 @@ import time
 
 from eth_abi import decode, encode
 
+from . import finality
+from .tx import ReceiptPending
 from . import config as C
 from .chain import addr_from_topic, call_data, call_fn, selector, topic
 
@@ -28,10 +30,10 @@ QUOTE_V3_T = "(address,address,uint256,uint24,uint160)"        # QuoterV2.quoteE
 SWAP_V3_T = "(address,address,uint24,address,uint256,uint256,uint160)"   # SwapRouter02.exactInputSingle's struct (no deadline)
 GOLD_PRICE_TTL_S = 300
 _gold_price = (0.0, None)
-PERMIT2_MAX = 2 ** 160 - 1
-EXPIRY_MAX = 2 ** 48 - 1
+SWAP_TTL_S = 180           # on-chain deadline, measured from the refreshed quote request
+QUOTE_MAX_AGE_S = 30       # refuse to sign after slow quote/preflight RPC calls
+PERMIT_TTL_S = 600         # router authorization expires even if no swap is submitted
 TAKE = b"\x0e"             # Uniswap v4 router action: take a currency to a recipient (amount 0 = the whole open delta)
-PENDING_MAX_AGE_S = 3600   # legacy setting; elapsed time never releases a pending obligation
 CLAIMED_TOPIC = topic("ClaimedToken(address,address,uint256)")     # PonsV2FeeEscrow: recipient, token indexed
 TRANSFER_TOPIC = topic("Transfer(address,address,uint256)")
 
@@ -105,7 +107,8 @@ def owed_total(db):
     # Refills reserve their exact USDG input until event-backed settlement.
     if db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gas_refills'"):
         pending += db.one("SELECT COALESCE(SUM(amount),0) n FROM gas_refills WHERE state='pending'")['n'] / 1e6
-    return outstanding + pending
+    from .launch_allocation import reserved_usdg
+    return outstanding + pending + reserved_usdg(db)
 
 
 def free_usd(db, usd_real):
@@ -267,7 +270,7 @@ def reconcile(rpc, db, kinds, wallet, to_for=None):
     for row in db.q(f"SELECT * FROM ledger WHERE kind IN ({marks}) ORDER BY id", tuple(kinds)):
         if not row["tx"]:                          # not a chain transaction of ours (an x402 payment in flight): compute's own business
             continue
-        rc = rpc.call("eth_getTransactionReceipt", [row["tx"]])
+        rc = finality.receipt(rpc, row["tx"])
         if rc:
             kind, _ = settle(db, row, rc, wallet, to_for(row) if to_for else None)
             if kind.endswith('_pending'):
@@ -326,9 +329,10 @@ def summary(rpc, db):
         out["burn_state"] = burn_state(out["owed_to_burn"])
         out["gold_state"] = gold_state(out["owed_to_gold"])
     except RuntimeError as e:
+        log.warning("accounting summary unavailable: %s", e)
         out.update(owed_to_owner=None, owed_to_burn=None, owed_to_gold=None,
                    burn_state='paused: accounting needs review', gold_state='paused: accounting needs review',
-                   accounting_error=str(e))
+                   accounting_error="accounting unavailable; operator review required")
     out["ledger"] = db.q("SELECT id,ts,kind,asset,amount,tx,note,qty FROM ledger ORDER BY id DESC LIMIT 20")
     return out
 
@@ -346,8 +350,12 @@ def claim(rpc, db, acct, claimable):
     try:
         h, rc = send_tx(rpc, acct, C.FEE_ESCROW, call_data("claimToken(address)", ("address",), (C.USDG,)),
                         on_broadcast=pending)
+    except ReceiptPending:
+        db.add_event('treasury', 'fee claim submitted; waiting for chain finality')
+        return False
     except Exception as e:
-        db.add_event("error", f"fee claim failed: {str(e)[:120]}")
+        log.warning("fee claim failed: %s", e)
+        db.add_event("error", "fee claim failed; see private logs")
         return False
     return finish(db, h, rc, C.WALLET, fallback={"kind": "claim_pending", "amount": claimable, "note": note})[0] == "claim"
 
@@ -379,8 +387,12 @@ def forward(rpc, db, acct):
 
     try:
         h, rc = send_tx(rpc, acct, C.USDG, data, on_broadcast=pending)
+    except ReceiptPending:
+        db.add_event('treasury', 'forward submitted; waiting for chain finality')
+        return False
     except Exception as e:
-        db.add_event("error", f"forward failed: {str(e)[:120]}")
+        log.warning("forward failed: %s", e)
+        db.add_event("error", "forward failed; see private logs")
         return False
     return finish(db, h, rc, C.WALLET, to=to,
                   fallback={"kind": "forward_pending", "amount": n / 1e6, "note": note, "to_addr": to})[0] == "forward"
@@ -414,26 +426,34 @@ def router_allowance(rpc, wallet):
 
 
 def approve_for_router(rpc, db, acct, need):
-    """The two one-time approvals a router swap of USDG needs (USDG to Permit2, Permit2 to the router), sent
-    only when short. Each is an ordinary transaction from the wallet, written to the events."""
+    """Exact input allowance at both layers, including reducing legacy unlimited grants.
+    Read back both approvals: a successful receipt alone does not prove ERC-20 approval."""
     from .tx import send_tx
+    if not 0 < need < 2 ** 160 - 1:
+        raise ValueError('invalid bounded approval amount')
     a, amt, exp = router_allowance(rpc, C.WALLET)
-    if a < need:
-        data = selector("approve(address,uint256)") + encode(["address", "uint256"], [C.PERMIT2, 2 ** 256 - 1]).hex()
+    if a != need:
+        data = selector("approve(address,uint256)") + encode(["address", "uint256"], [C.PERMIT2, need]).hex()
         h, rc = send_tx(rpc, acct, C.USDG, data)
         if not rc or rc.get("status") != "0x1":
             raise RuntimeError(f"USDG approval for Permit2 reverted: {h}")
-        db.add_event("treasury", f"approved USDG for Permit2, once: {h}")
-    if amt < need or exp <= int(time.time()):
+        db.add_event("treasury", f"approved USDG for Permit2 for this burn: {h}")
+    now = int(time.time())
+    if amt != need or not now + SWAP_TTL_S <= exp <= now + PERMIT_TTL_S:
         data = selector("approve(address,address,uint160,uint48)") + encode(
-            ["address", "address", "uint160", "uint48"], [C.USDG, C.UNIVERSAL_ROUTER, PERMIT2_MAX, EXPIRY_MAX]).hex()
+            ["address", "address", "uint160", "uint48"], [C.USDG, C.UNIVERSAL_ROUTER, need, now + PERMIT_TTL_S]).hex()
         h, rc = send_tx(rpc, acct, C.PERMIT2, data)
         if not rc or rc.get("status") != "0x1":
             raise RuntimeError(f"Permit2 approval for the router reverted: {h}")
-        db.add_event("treasury", f"approved the Universal Router to spend USDG through Permit2, once: {h}")
+        db.add_event("treasury", f"approved the Universal Router for this burn with a short expiry: {h}")
+    a, amt, exp = router_allowance(rpc, C.WALLET)
+    now = int(time.time())
+    if a != need or amt != need or not now + SWAP_TTL_S <= exp <= now + PERMIT_TTL_S:
+        raise RuntimeError('bounded burn approvals could not be verified')
+    return exp
 
 
-def burn_calldata(pk, zero_for_one, amount_in, min_out):
+def burn_calldata(pk, zero_for_one, amount_in, min_out, deadline):
     """One Universal Router call: swap USDG for $WORM on its pool and take the tokens straight to the burn
     address. The swap reverts below min_out, so a burn either happens whole or not at all."""
     from .trader import SETTLE_ALL, SWAP_EXACT_IN_SINGLE, SWAP_T, V4_SWAP, _key_tuple
@@ -443,7 +463,7 @@ def burn_calldata(pk, zero_for_one, amount_in, min_out):
               encode(["address", "address", "uint256"], [C.TOKEN, C.DEAD, 0])]
     inputs = [encode(["bytes", "bytes[]"], [actions, params])]
     return selector("execute(bytes,bytes[],uint256)") + encode(["bytes", "bytes[]", "uint256"],
-                                                             [V4_SWAP, inputs, int(time.time()) + 600]).hex()
+                                                             [V4_SWAP, inputs, deadline]).hex()
 
 
 def burn(rpc, db, acct):
@@ -467,7 +487,8 @@ def burn(rpc, db, acct):
     try:
         pk = trader.pool_key(rpc, db, C.TOKEN)
     except Exception as e:
-        db.add_event("error", f"burn: pool lookup failed: {str(e)[:100]}")
+        log.warning("burn: pool lookup failed: %s", e)
+        db.add_event("error", "burn: pool lookup failed; see private logs")
         return False
     if not pk:
         _say_hourly(db, "treasury", f"${owed:.2f} waits to be burned: $WORM has not graduated to a pool yet")
@@ -478,19 +499,32 @@ def burn(rpc, db, acct):
     try:
         out, _gas, zfo = trader.quote_buy(rpc, pk, C.TOKEN, n)
     except Exception as e:
-        db.add_event("error", f"burn: quote failed: {str(e)[:100]}")
+        log.warning("burn: quote failed: %s", e)
+        db.add_event("error", "burn: quote failed; see private logs")
         return False
     if not out:
         db.add_event("error", "burn: no liquidity quoted; the burn share stays owed")
         return False
-    min_out = int(out * (1 - BURN_SLIPPAGE))
     try:
-        approve_for_router(rpc, db, acct, n)
+        expiry = approve_for_router(rpc, db, acct, n)
     except Exception as e:
-        db.add_event("error", f"burn: approval failed: {str(e)[:120]}")
+        log.warning("burn: approval failed: %s", e)
+        db.add_event("error", "burn: approval failed; see private logs")
+        return False
+    # Approvals may take minutes. Never reuse the quote obtained before them.
+    quoted_at = time.time()
+    try:
+        out, _gas, zfo = trader.quote_buy(rpc, pk, C.TOKEN, n)
+        if out <= 0:
+            raise ValueError('no liquidity in refreshed quote')
+        deadline = min(int(quoted_at) + SWAP_TTL_S, expiry)
+        min_out = max(1, int(out * (1 - BURN_SLIPPAGE)))
+        data = burn_calldata(pk, zfo, n, min_out, deadline)
+    except Exception:
+        log.exception('burn quote refresh failed')
+        db.add_event('error', 'burn: fresh quote unavailable; the burn share stays owed')
         return False
     from .tx import send_tx
-    data = burn_calldata(pk, zfo, n, min_out)
 
     note = f"{int(round(C.BURN_SHARE * 100))}% of income: buy $WORM on its pool and send it to the burn address"
 
@@ -500,9 +534,14 @@ def burn(rpc, db, acct):
         watch("burn", f"buying $WORM with {n / 1e6:.2f} USDG on its pool and sending it to the burn address", h)
 
     try:
-        h, rc = send_tx(rpc, acct, C.UNIVERSAL_ROUTER, data, on_broadcast=pending)
+        h, rc = send_tx(rpc, acct, C.UNIVERSAL_ROUTER, data, on_broadcast=pending,
+                        valid_until=min(quoted_at + QUOTE_MAX_AGE_S, deadline))
+    except ReceiptPending:
+        db.add_event('treasury', 'burn submitted; waiting for chain finality')
+        return False
     except Exception as e:
-        db.add_event("error", f"burn failed: {str(e)[:120]}")
+        log.warning("burn failed: %s", e)
+        db.add_event("error", "burn failed; see private logs")
         return False
     return finish(db, h, rc, C.WALLET, fallback={"kind": "burn_pending", "amount": n / 1e6, "note": note})[0] == "burn"
 
@@ -538,24 +577,30 @@ def gold_price_usd(rpc):
     return price
 
 
-def gold_calldata(amount_in, min_out, recipient):
+def gold_calldata(amount_in, min_out, recipient, deadline):
     """One SwapRouter02 call: an exact-input Uniswap v3 swap of USDG for GLD on the 0.05% pool, the GLD
-    delivered to the wallet. The swap reverts below min_out, so a gold buy either happens whole or not at all."""
-    return selector(f"exactInputSingle({SWAP_V3_T})") + encode(
+    delivered to the wallet, wrapped in its deadline-checked multicall. The swap reverts below min_out."""
+    swap = selector(f"exactInputSingle({SWAP_V3_T})") + encode(
         [SWAP_V3_T], [(C.USDG, C.GLD, C.GOLD_POOL_FEE, recipient, amount_in, min_out, 0)]).hex()
+    return call_data('multicall(uint256,bytes[])', ('uint256', 'bytes[]'),
+                     (deadline, [bytes.fromhex(swap[2:])]))
 
 
 def approve_for_gold(rpc, db, acct, need):
-    """SwapRouter02 may spend exactly this buy's USDG: an allowance for the amount, sent only when the standing
-    one is short. Nothing unbounded stands behind the gold step."""
+    """SwapRouter02 may spend exactly this buy's USDG; reduce excess allowances too."""
     from .tx import send_tx
     have = call_fn(rpc, C.USDG, "allowance(address,address)", ("uint256",), ("address", "address"), (C.WALLET, C.SWAP_ROUTER_V3)) or 0
-    if int(have) >= need:
+    if not 0 < need < 2 ** 256 - 1:
+        raise ValueError('invalid bounded approval amount')
+    if int(have) == need:
         return
     data = selector("approve(address,uint256)") + encode(["address", "uint256"], [C.SWAP_ROUTER_V3, need]).hex()
     h, rc = send_tx(rpc, acct, C.USDG, data)
     if not rc or rc.get("status") != "0x1":
         raise RuntimeError(f"USDG approval for the gold swap reverted: {h}")
+    have = call_fn(rpc, C.USDG, "allowance(address,address)", ("uint256",), ("address", "address"), (C.WALLET, C.SWAP_ROUTER_V3))
+    if have != need:
+        raise RuntimeError('bounded gold approval could not be verified')
 
 
 def gold_state(owed):
@@ -581,19 +626,30 @@ def gold(rpc, db, acct):
     try:
         out = quote_gold(rpc, n)
     except Exception as e:
-        _say_hourly(db, "error", f"gold: quote failed: {str(e)[:100]}")
+        log.warning("gold quote failed: %s", e)
+        _say_hourly(db, "error", "gold: quote failed; see private logs")
         return False
     if not out:
         _say_hourly(db, "error", "gold: no liquidity quoted; the gold share stays owed")
         return False
-    min_out = int(out * (1 - GOLD_SLIPPAGE))
     try:
         approve_for_gold(rpc, db, acct, n)
     except Exception as e:
-        db.add_event("error", f"gold: approval failed: {str(e)[:120]}")
+        log.warning("gold: approval failed: %s", e)
+        db.add_event("error", "gold: approval failed; see private logs")
+        return False
+    quoted_at = time.time()
+    try:
+        out = quote_gold(rpc, n)
+        if out <= 0:
+            raise ValueError('no liquidity in refreshed quote')
+        min_out = max(1, int(out * (1 - GOLD_SLIPPAGE)))
+        data = gold_calldata(n, min_out, C.WALLET, int(quoted_at) + SWAP_TTL_S)
+    except Exception:
+        log.exception('gold quote refresh failed')
+        db.add_event('error', 'gold: fresh quote unavailable; the gold share stays owed')
         return False
     from .tx import send_tx
-    data = gold_calldata(n, min_out, C.WALLET)
 
     note = f"{int(round(C.GOLD_SHARE * 100))}% of income: buy gold (GLD) for the reserve"
 
@@ -603,9 +659,14 @@ def gold(rpc, db, acct):
         watch("gold", f"buying gold (GLD) for its reserve with {n / 1e6:.2f} USDG", h)
 
     try:
-        h, rc = send_tx(rpc, acct, C.SWAP_ROUTER_V3, data, on_broadcast=pending)
+        h, rc = send_tx(rpc, acct, C.SWAP_ROUTER_V3, data, on_broadcast=pending,
+                        valid_until=quoted_at + QUOTE_MAX_AGE_S)
+    except ReceiptPending:
+        db.add_event('treasury', 'gold purchase submitted; waiting for chain finality')
+        return False
     except Exception as e:
-        db.add_event("error", f"gold buy failed: {str(e)[:120]}")
+        log.warning("gold buy failed: %s", e)
+        db.add_event("error", "gold buy failed; see private logs")
         return False
     return finish(db, h, rc, C.WALLET, fallback={"kind": "gold_pending", "amount": n / 1e6, "note": note})[0] == "gold"
 
@@ -622,7 +683,8 @@ def cycle(rpc, db, acct):
                      lambda r: C.AISURPLUS_DEPOSIT if r["kind"].startswith("compute") else C.OWNER_WALLET):
             return                      # something is still in flight: settle it before sending more
     except Exception as e:
-        db.add_event("error", f"ledger reconcile failed: {str(e)[:120]}")
+        log.warning("ledger reconcile failed: %s", e)
+        db.add_event("error", "ledger reconcile failed; see private logs")
         return
     from . import gas_refill
     if not gas_refill.cycle(rpc, db, acct):

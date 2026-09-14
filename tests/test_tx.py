@@ -140,7 +140,7 @@ def test_on_broadcast_runs_before_the_receipt_wait(rpc, acct, live):
 def test_no_receipt_raises_after_the_wait(rpc, acct, live, monkeypatch):
     monkeypatch.setattr(tx, "RECEIPT_WAIT_S", 3)
     rpc.receipt_for = lambda h: None
-    with pytest.raises(RpcError, match="no receipt"):
+    with pytest.raises(RpcError, match="no settled receipt"):
         tx.send_tx(rpc, acct, C.FACTORY)
 
 
@@ -169,3 +169,20 @@ def test_concurrent_senders_get_distinct_nonces(rpc, acct, live):
     nonces = [decode_tx(r)['nonce'] for r in rpc.raw]
     assert len(nonces) >= 1 and len(nonces) == len(set(nonces))
     assert (C.DATA_DIR / ".txlock").exists()
+
+
+def test_pause_during_rpc_preflight_prevents_signing(rpc, acct, live):
+    from types import SimpleNamespace
+    from wormhole import outbox
+    original=rpc.call
+    signed=[]
+    def call(method, params, **kwargs):
+        result=original(method, params, **kwargs)
+        if method=='eth_getBalance':
+            (C.DATA_DIR/'payments.paused').touch()
+        return result
+    rpc.call=call
+    guarded=SimpleNamespace(address=acct.address, sign_transaction=lambda value:signed.append(value))
+    with pytest.raises(RuntimeError, match='paused before signing'):
+        tx.send_tx(rpc, guarded, C.FACTORY)
+    assert not signed and not rpc.raw and not outbox.pending()
