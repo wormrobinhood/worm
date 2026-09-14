@@ -104,6 +104,7 @@ class _Pending:
 
 class Hub:
     def __init__(self):
+        self.started_at = time.time()
         self.pending = _Pending()
         self.dig = []            # events of the dig in progress (or the last one)
         self.rescan = None       # set by run.py: callable(token) that queues a rescore
@@ -626,6 +627,16 @@ def make_app(rpc, db, brain, paper, hub):
     @app.get("/design.js")
     def design_js(request: Request):
         return asset("design.js", request)
+
+    @app.get("/api/ops/health")
+    def operations_health(request: Request):
+        expected = os.environ.get('WH_HEALTH_TOKEN', '')
+        supplied = request.headers.get('x-health-token', '')
+        if not expected or not supplied or not secrets.compare_digest(expected.encode(), supplied.encode()):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from . import ops_health
+        status = ops_health.check(rpc, db, hub)
+        return JSONResponse(status, status_code=200 if status['ok'] else 503)
 
     @app.get("/healthz")
     def health():

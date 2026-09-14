@@ -211,7 +211,7 @@ if(lastState)updateLaunchTape(lastState);
   tokenLink.hidden=true;
   if(schedule.state==='launched'){
    digits.textContent='LAUNCHED';note.textContent='WORM’s token is on-chain.';
-   if(/^0x[0-9a-f]{40}$/i.test(schedule.token||'')){tokenLink.href='https://robinhoodchain.blockscout.com/token/'+schedule.token;tokenLink.hidden=false}
+   if(/^0x[0-9a-f]{40}$/i.test(schedule.token||'')){tokenLink.href='https://www.ponsfamily.com/launchpad/'+schedule.token;tokenLink.hidden=false}
   }else if(schedule.state==='launching'||schedule.state==='pending'){
    digits.textContent=schedule.state==='pending'?'AWAITING CONFIRMATION':'LAUNCH STARTED';
    note.textContent='Follow the launch in the live screen and activity log.';

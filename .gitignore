@@ -33,3 +33,6 @@ node_modules/
 # stray images dropped in the project root (the logo lives in web/)
 /*.png
 rehearsal/
+
+# Local marketing originals; publish only deliberately selected web assets.
+/brand/

@@ -529,3 +529,16 @@ def test_launch_trigger_is_guarded_and_queues_once(site, db, monkeypatch):
     monkeypatch.setattr(server.C, "TOKEN", "0x" + "cd" * 20)
     r = client.post("/api/launch", headers={"X-Ops-Token": "ops-token-for-tests"}).json()
     assert r["queued"] is False and r["token"] == "0x" + "cd" * 20
+
+
+def test_ops_health_uses_separate_read_only_credential(site,monkeypatch):
+    from wormhole import ops_health
+    client,hub,_=site
+    monkeypatch.setenv('WH_OPS_TOKEN','launch-test-token')
+    monkeypatch.setenv('WH_HEALTH_TOKEN','health-test-token')
+    monkeypatch.setattr(ops_health,'check',lambda *a:{'ok':False,'alerts':[{'code':'low_eth'}]})
+    assert client.get('/api/ops/health').status_code==401
+    assert client.get('/api/ops/health',headers={'X-Ops-Token':'launch-test-token'}).status_code==401
+    response=client.get('/api/ops/health',headers={'X-Health-Token':'health-test-token'})
+    assert response.status_code==503 and response.json()['alerts'][0]['code']=='low_eth'
+    assert client.post('/api/launch',headers={'X-Health-Token':'health-test-token'}).status_code in (401,403)

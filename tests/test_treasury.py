@@ -1,5 +1,6 @@
 """The treasury cycle: claims settled from the escrow log, the owed balance, forwards, pending rows."""
 import time
+import pytest
 
 from eth_abi import decode
 
@@ -8,6 +9,14 @@ from eth_utils import keccak
 from fakes import auto_receipts, claimed_log, decode_tx, transfer_log, tx_hash, uint_result, word
 from wormhole import config as C, trader, treasury as T
 from wormhole.chain import selector
+
+@pytest.fixture(autouse=True)
+def fresh_claim_price(monkeypatch):
+    from wormhole import prices, claim_policy
+    monkeypatch.setattr(prices, 'eth_usd', lambda **kw: 2500.0)
+    monkeypatch.setattr(claim_policy, 'eth_usd', lambda **kw: 2500.0)
+    monkeypatch.setattr(claim_policy, 'funded_runway', lambda *args: None)
+
 
 BAL_OF_TOKEN = selector("balanceOfToken(address,address)")
 BAL_OF = selector("balanceOf(address)")
@@ -107,7 +116,7 @@ def test_claim_amount_comes_from_the_escrow_log_then_the_share_is_forwarded(db, 
 
 
 def test_claim_without_event_keeps_funds_reserved(db, rpc, acct, live):
-    chain(rpc, claimable=2.0, usdg=50)
+    chain(rpc, claimable=5.0, usdg=50)
     auto_receipts(rpc, C.WALLET)                             # status 0x1, no ClaimedToken log
     T.cycle(rpc, db, acct)
     assert rows(db, 'claim') == []

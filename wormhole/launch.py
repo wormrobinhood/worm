@@ -41,7 +41,7 @@ DEFAULT_DESCRIPTION = (
     "Worm is a small worm that lives on Robinhood Chain. It digs through every pons "
     f"graduation, flags bad actors, and tells the community first. Of its fees, {_pct(C.OWNER_SHARE)}% go to its creator, "
     f"{_pct(C.GOLD_SHARE)}% buy gold it keeps as a reserve, {_pct(C.BURN_SHARE)}% buy back and burn $WORM, and "
-    f"{_pct(C.OPS_SHARE)}% pay for its own compute. It knows the dirt on every launch. It is a screening aid, not advice.")
+    f"{_pct(C.OPS_SHARE)}% are kept for compute, gas, runway, and treasury. It knows the dirt on every launch. It is a screening aid, not advice.")
 
 
 def params(wallet):

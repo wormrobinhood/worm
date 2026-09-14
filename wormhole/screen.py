@@ -25,7 +25,7 @@ OWN_EVERY = 40                                    # every so many idle turns, a 
 SCROLL_STEP_PX = 260
 SCROLL_STEPS_MAX = 14                             # then back to the top of the graduated launches
 WAITING = "waiting for the next graduation"     # every idle caption starts with it, so a viewer knows the state at a glance
-ACTION_SPOTS = {"claim": "Payable", "forward": "Payable", "burn": "Recent trades", "compute": "Market cap", "gold": "Market cap",
+ACTION_SPOTS = {"claim": "Payable", "forward": "Payable", "burn": "Recent trades", "compute": "Market cap", "gold": "Market cap", "gas": "Market cap",
                 "launch": "About"}               # where on the page the worm's eye goes for each kind of transaction
 VIEW = {"width": 1100, "height": 690}
 SESSION_MAX_S = 6 * 3600                          # a fresh Chromium every six hours
