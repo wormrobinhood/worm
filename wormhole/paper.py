@@ -8,7 +8,7 @@ import time
 
 from . import config as C
 from . import lab
-from .prices import token_prices
+from .prices import token_prices, usable_price
 
 log = logging.getLogger("wormhole.paper")
 COST = lab.FEE          # per side, for positions opened before costs were stored per token
@@ -55,7 +55,7 @@ class Paper:
         if n_open >= C.PAPER_MAX_OPEN:
             self.db.add_event("paper", f"would paper-buy ${sym} (score {result['score']}) but the book is full", token)
             return
-        price = (token_prices([token]).get(token) or {}).get("price_usd") or (result.get("metrics") or {}).get("price_usd")
+        price = usable_price(token_prices([token]).get(token))
         if not price:
             self.db.add_event("paper", f"would paper-buy ${sym} (score {result['score']}) but it has no price yet", token)
             return
@@ -87,7 +87,7 @@ class Paper:
         prices = token_prices([p["token"] for p in opens])
         now = int(time.time())
         for p in opens:
-            px = (prices.get(p["token"]) or {}).get("price_usd")
+            px = usable_price(prices.get(p["token"]))
             if not px or not p["entry_usd"] or not p["qty"]:
                 continue
             cost = p["cost"] if p.get("cost") is not None else COST

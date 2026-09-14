@@ -1,4 +1,5 @@
 """SQLite storage. One connection, one lock, plain SQL."""
+from contextlib import contextmanager
 import sqlite3
 import threading
 import time
@@ -20,6 +21,14 @@ CREATE INDEX IF NOT EXISTS launches_grad ON launches(graduated, grad_block);
 CREATE TABLE IF NOT EXISTS scores(
   token TEXT PRIMARY KEY, score INTEGER, verdict TEXT, reasons TEXT, metrics TEXT,
   scored_at INTEGER, partial INTEGER DEFAULT 0, fired TEXT);
+CREATE TABLE IF NOT EXISTS assessments(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT NOT NULL, score INTEGER, verdict TEXT,
+  reasons TEXT, metrics TEXT, scored_at INTEGER, partial INTEGER, fired TEXT, engine_version TEXT);
+CREATE INDEX IF NOT EXISTS assessments_token_time ON assessments(token, scored_at);
+CREATE TABLE IF NOT EXISTS scan_jobs(
+  token TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER DEFAULT 0,
+  available_at INTEGER NOT NULL, lease_until INTEGER, generation INTEGER DEFAULT 1);
+CREATE INDEX IF NOT EXISTS scan_jobs_state_time ON scan_jobs(state, available_at);
 CREATE TABLE IF NOT EXISTS paper(
   id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT, symbol TEXT, opened_ts INTEGER, entry_usd REAL,
   size_usd REAL, qty REAL, status TEXT, closed_ts INTEGER, exit_usd REAL, pnl_usd REAL, last_usd REAL, reason TEXT);
@@ -39,7 +48,8 @@ CREATE INDEX IF NOT EXISTS events_text ON events(text);
 """
 
 # Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an existing table alone.
-ADDED_COLUMNS = {"launches": [("buyback", "INTEGER")]}
+ADDED_COLUMNS = {"launches": [("buyback", "INTEGER")],
+                 "outcomes": [("assessment_id", "INTEGER"), ("baseline_ts", "INTEGER")]}
 
 
 class DB:
@@ -48,6 +58,7 @@ class DB:
         self.c = sqlite3.connect(str(path), check_same_thread=False, timeout=30)
         self.c.row_factory = sqlite3.Row
         self.lock = threading.RLock()
+        self._depth = 0
         with self.lock:
             self.c.execute("PRAGMA journal_mode=WAL")       # readers never wait for the writer
             self.c.execute("PRAGMA synchronous=FULL")
@@ -70,31 +81,50 @@ class DB:
         rows = self.q(sql, args)
         return rows[0] if rows else None
 
+    @contextmanager
+    def transaction(self):
+        """A nested, rollback-safe unit of work on this connection."""
+        with self.lock:
+            name = f"unit_{self._depth}"
+            self.c.execute(f"SAVEPOINT {name}")
+            self._depth += 1
+            try:
+                yield
+            except BaseException:
+                self.c.execute(f"ROLLBACK TO SAVEPOINT {name}")
+                raise
+            finally:
+                self._depth -= 1
+                self.c.execute(f"RELEASE SAVEPOINT {name}")
+
     def x(self, sql, args=()):
         with self.lock:
             self.c.execute(sql, args)
-            self.c.commit()
+            if not self._depth:
+                self.c.commit()
 
     def insert(self, sql, args=()):
         """Return the ID of this insert while holding the connection lock."""
-        with self.lock, self.c:
+        with self.transaction():
             return self.c.execute(sql, args).lastrowid
 
     def xc(self, sql, args=()):
         """Like x(), returning the number of rows the statement changed."""
         with self.lock:
             n = self.c.execute(sql, args).rowcount
-            self.c.commit()
+            if not self._depth:
+                self.c.commit()
             return n
 
     def many(self, sql, rows):
         with self.lock:
             self.c.executemany(sql, rows)
-            self.c.commit()
+            if not self._depth:
+                self.c.commit()
 
     def atomic(self, statements):
         """Commit a related group of writes together, rolling back on any failure."""
-        with self.lock, self.c:
+        with self.transaction():
             for sql, args in statements:
                 self.c.execute(sql, args)
 

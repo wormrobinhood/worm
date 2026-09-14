@@ -60,3 +60,15 @@ Read `docs/PAYMENT-RECOVERY.md` fully. In particular:
 - No real payment or launch was used for validation.
 
 Do not discard changed assertions as regressions: several old tests explicitly expected callback-after-broadcast, write-off on node absence, or provider-minimum overspending. Their expectations were updated to the safer semantics and new fault-injection tests added.
+
+## Local engine evidence update — 2026-09-14
+
+Phase A implementation is prepared for the authorized release. See [ENGINE-EVIDENCE.md](docs/ENGINE-EVIDENCE.md) for changes, migration behavior, regression coverage and remaining limitations. Prices must be fresh; assessments are immutable; outcome/lab resolution is atomic; scans use durable jobs; readiness requires a verified cohort and measured skill. Historical data stays intact and is not automatically repaired or certified. No wallet, live flag, token schedule or deployment setting was changed.
+
+Validation: 445 offline tests passed (30 new audit and shadow regression cases), with one pre-existing Starlette/AnyIO deprecation warning. `git diff --check` passed. No production-data repair or live execution was performed.
+
+## Publication follow-up: operator-controlled trading and prospective rules
+
+The user authorized publishing the evidence update and explicitly requires trading to stay off until they enable it. Production must have `WH_TRADING=0`; do not change `WH_LIVE`, keys, launch schedule, or `LIVE_SELL_READY`. Readiness and AI cannot turn trading on.
+
+New AI scoring rules now enter a fixed future-cohort evaluation after the historical screen. They do not affect scores until that evaluation passes. See `wormhole/shadow.py`: 80 later launches, one per creator, discovery creators excluded, outcome-blind cohort selection, minimum samples on both sides, lifetime alpha spending and one evaluation only. Unknown results do not become successes. Existing active rules remain stored/in use; this does not retroactively certify them. Exit arms remain separate strategy-lab experiments, not prospectively certified by this rule workflow.

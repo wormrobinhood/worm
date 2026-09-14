@@ -186,6 +186,7 @@ def test_enroll_stores_cost_and_starts_at_the_price_time(db):
         db.x("INSERT INTO outcomes(token,score,verdict,scored_at,price0) VALUES(?,?,?,?,?)", (t, 80, "looks healthy", now - 900, 1e-5))
     db.x("INSERT INTO scores(token,score,verdict,scored_at,metrics) VALUES(?,?,?,?,?)",
          (TOKEN_A, 80, "looks healthy", now - 900, json.dumps({"price0_ts": now - 300})))
+    db.x("UPDATE outcomes SET baseline_ts=? WHERE token=?", (now - 300, TOKEN_A))
     assert lab.enroll(db) == 2
     a = db.one("SELECT * FROM lab_cases WHERE token=?", (TOKEN_A,))
     b = db.one("SELECT * FROM lab_cases WHERE token=?", (TOKEN_B,))
@@ -227,29 +228,19 @@ def test_silent_path_is_stale_not_a_fill(db, monkeypatch):
     assert db.one("SELECT 1 FROM ticks WHERE token=? AND price=0", (TOKEN_A,)) is None
 
 
-def test_missing_price_after_drop_is_a_loss(db, monkeypatch):
+def test_missing_price_never_becomes_a_synthetic_zero(db, monkeypatch):
     clock = Clock(NOW)
-    monkeypatch.setattr(lab, "time", clock)
-    feed = {TOKEN_B: {"price_usd": 2.0}}                                   # the batch works, A is not in it
-    monkeypatch.setattr(lab, "token_prices", lambda addrs: {a: feed.get(a, {}) for a in addrs})
+    monkeypatch.setattr(lab, 'time', clock)
+    monkeypatch.setattr(lab, 'token_prices', lambda addrs: {TOKEN_B: {'price_usd': 2.0}})
     t0 = NOW - lab.HORIZON_S + 600
-    case(db, TOKEN_A, t0, [(t0 + i * 3600, 1.0) for i in range(47)])       # priced every hour until an hour ago
-    case(db, TOKEN_B, NOW - 3600, [(NOW - 3600, 2.0)], sym="BBB")
-    lab.tick(db)                                                           # first miss: forgiven
-    assert db.one("SELECT misses FROM lab_cases WHERE token=?", (TOKEN_A,))["misses"] == 1
-    assert db.one("SELECT COUNT(*) n FROM ticks WHERE token=? AND price=0", (TOKEN_A,))["n"] == 0
-    clock.t += 300
-    lab.tick(db)                                                           # second miss: booked at 0
-    assert db.one("SELECT COUNT(*) n FROM ticks WHERE token=? AND price=0", (TOKEN_A,))["n"] == 1
-    assert db.one("SELECT 1 FROM events WHERE text LIKE '%booked at 0%'")
-    clock.t += 300                                                         # the horizon: resolve
-    lab.tick(db)
-    c = db.one("SELECT * FROM lab_cases WHERE token=?", (TOKEN_A,))
-    assert c["status"] == "resolved"
-    res = json.loads(c["results"])
-    assert res["costout_1.5x@0m"] == -1.0 and res["trail_35@0m"] == -1.0    # the stop fired at 0
-    assert db.one("SELECT n, sum_ret FROM lab_arms WHERE name='costout_1.5x@0m'") == {"n": 1, "sum_ret": -1.0}
-    assert db.one("SELECT COUNT(*) n FROM ticks WHERE token=? AND price=2.0", (TOKEN_B,))["n"] == 4   # B was priced every cycle
+    case(db, TOKEN_A, t0, [(t0, 1.0), (t0+300, 1.1), (t0+600, 1.2)])
+    case(db, TOKEN_B, NOW-3600, [(NOW-3600, 2.0)], sym='BBB')
+    for _ in range(3):
+        lab.tick(db)
+        clock.t += 300
+    assert not db.one('SELECT 1 FROM ticks WHERE token=? AND price=0', (TOKEN_A,))
+    assert not db.one("SELECT 1 FROM events WHERE text LIKE '%booked at 0%'")
+    assert db.one('SELECT status FROM lab_cases WHERE token=?', (TOKEN_A,))['status'] == 'stale'
 
 
 def test_one_missed_price_is_forgiven(db, monkeypatch):

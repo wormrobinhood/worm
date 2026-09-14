@@ -204,8 +204,8 @@ def snapshot(rpc, db, brain, paper, hub=None):
         "grads_24h": db.one("SELECT COUNT(*) n FROM launches WHERE graduated=1 AND grad_ts>=?", (day,))["n"],
         "launches_total": db.one("SELECT COUNT(*) n FROM launches")["n"],
         "scored": db.one("SELECT COUNT(*) n FROM scores")["n"],
-        "queued": db.one("SELECT COUNT(*) n FROM launches WHERE graduated=1 AND grad_ts>=? AND token NOT IN"
-                         " (SELECT token FROM scores)", (now - int(C.SCORE_HOURS * 3600),))["n"],
+        "queued": db.one("SELECT COUNT(*) n FROM scan_jobs WHERE state IN ('pending','leased')")["n"],
+        "failed_scans": db.one("SELECT COUNT(*) n FROM scan_jobs WHERE state='failed'")["n"],
         "verdicts": {r["verdict"]: r["n"] for r in db.q("SELECT verdict, COUNT(*) n FROM scores GROUP BY verdict")},
         "avg_score": db.one("SELECT ROUND(AVG(score)) a FROM scores")["a"],
         "last_block": db.meta_get("last_block"),

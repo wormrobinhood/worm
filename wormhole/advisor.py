@@ -5,7 +5,7 @@ resolved since the last run, the worm hands its writer a packet of measurements 
 done, the scorecard, the at-scan metrics of the last resolved cases, the lab's ranking) and asks for
 hypotheses in a strict form: a scoring rule is at most three conditions over whitelisted at-scan
 metrics plus points; an exit arm is a lab policy within bounds. Nothing the writer says runs as code.
-Every rule is backtested on every verdict with a resolved outcome and adopted only if the tokens it
+Every rule is screened historically and then must pass a frozen future cohort before adoption. Historical screening checks if the tokens it
 fires on went on to move differently from the rest: a median difference in the outcome change of at
 least MIN_SEP points that fewer than P_MAX of random splits of the same sizes would show (a permutation
 test), on at least MIN_N cases each side, and it is not a copy of a rule the worm already has. An adopted rule scores future tokens as `ai_<n>` and is re-weighted by the brain like
@@ -24,6 +24,7 @@ import time
 from . import config as C
 from . import lab
 from . import voice
+from . import shadow
 
 log = logging.getLogger("wormhole.advisor")
 EVERY_MIN = int(os.environ.get("WH_ADVISOR_EVERY_MIN", "120"))
@@ -169,11 +170,11 @@ def sanitize_why(text):
 # ---- history and the backtest ---------------------------------------------------------------
 
 def history(db):
-    """Every verdict with a resolved outcome and a change, with the metrics of the scan that gave the
-    verdict (a re-scan much later is left out: its metrics would carry the outcome) and the rules that
-    fired with points. Returns a list of {token, m, change, fired}."""
-    rows = db.q("SELECT s.token, s.metrics, s.fired, s.scored_at s_at, o.scored_at o_at, o.change_pct FROM scores s"
-                " JOIN outcomes o ON o.token=s.token WHERE o.resolved=1 AND o.outcome!='unknown' AND o.change_pct IS NOT NULL")
+    """Resolved outcomes joined to complete immutable assessments. Legacy rows without a
+    verified assessment link remain stored but do not supply training features."""
+    rows = db.q("SELECT s.token, s.metrics, s.fired, s.scored_at s_at, o.scored_at o_at, o.change_pct,l.deployer creator FROM assessments s"
+                " JOIN outcomes o ON o.assessment_id=s.id LEFT JOIN launches l ON l.token=s.token WHERE o.resolved=1 AND o.outcome!='unknown'"
+                " AND o.change_pct IS NOT NULL AND s.partial=0")
     out = []
     for r in rows:
         if abs(int(r["s_at"] or 0) - int(r["o_at"] or 0)) > SCAN_WINDOW_S:
@@ -185,7 +186,7 @@ def history(db):
             continue
         if not isinstance(m, dict):
             continue
-        out.append({"token": r["token"], "m": m, "change": float(r["change_pct"]),
+        out.append({"token": r["token"], "creator": r["creator"], "m": m, "change": float(r["change_pct"]),
                     "fired": {f["rule"]: f.get("points", 0) for f in fired if isinstance(f, dict) and f.get("rule")}})
     return out
 
@@ -513,6 +514,7 @@ def due(db, now=None):
 def run(db, brain_summary=None, lab_summary=None, force=False):
     """One advisor pass: propose, backtest, adopt what passes, write it all down. Returns the run row or None."""
     ensure_tables(db)
+    shadow.evaluate(db)
     ok, why = due(db)
     if not ok and not force:
         return None
@@ -534,7 +536,7 @@ def run(db, brain_summary=None, lab_summary=None, force=False):
                     for c in json.loads(r["spec"])["conditions"]}
             proposals = stub_propose(hist, tried, used)
     except Exception as e:
-        proposals, note = {"rules": [], "arms": [], "notes": ""}, f"writer failed: {str(e)[:120]}"
+        proposals, note = {"rules": [], "arms": [], "notes": ""}, "writer unavailable; see private logs"
         log.warning("advisor writer failed: %s", e)
     if proposals.get("unparseable"):
         note = "the writer's answer was not the JSON form"
@@ -562,11 +564,12 @@ def run(db, brain_summary=None, lab_summary=None, force=False):
             bt = backtest_rule(hist, spec, spec["points"], taken)
             spec_out = spec
             if bt["accepted"]:
-                rid = adopt_rule(db, spec, bt, run_id)
-                taken[rid] = (spec["points"] > 0, {h["token"] for h in hist if matches(spec, h["m"])})
-                active_rules += 1
-                adopted += 1
-                status, reason = "adopted", f"{rid}: {bt['why']}"
+                sid = shadow.stage(db, spec, run_id, hist)
+                if sid is None:
+                    status, reason = 'rejected', 'prospective evaluation capacity reached'
+                else:
+                    taken[f'shadow_{sid}'] = (spec['points'] > 0, {h['token'] for h in hist if matches(spec,h['m'])})
+                    status, reason = 'shadow', f'{sid}: historical screen passed; waiting for a fixed future cohort'
             else:
                 status, reason = "rejected", bt["why"]
         tried.add(json.dumps(spec_out.get("conditions"), sort_keys=True))
@@ -633,5 +636,5 @@ def summary(db):
             except ValueError:
                 a[k] = {}
     return {"model": MODEL, "every_min": EVERY_MIN, "min_new": MIN_NEW, "due": ok, "state": why, "last_run": last,
-            "runs": db.one("SELECT COUNT(*) n FROM advisor_runs")["n"], "suggestions": sug, "rules": rules, "arms": arms,
+            "runs": db.one("SELECT COUNT(*) n FROM advisor_runs")["n"], "suggestions": sug, "rules": rules, "arms": arms, "shadow": shadow.summary(db),
             "bar": {"min_n": MIN_N, "min_sep": MIN_SEP, "max_rules": MAX_RULES, "max_arms": MAX_ARMS}}

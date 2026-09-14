@@ -3,6 +3,7 @@
 Every entry token_prices() returns carries age_s, the seconds since it was fetched, so a caller can refuse
 a stale reading. One gate spaces calls across every thread and a 429 is retried with growing pauses."""
 import logging
+import math
 import threading
 import time
 
@@ -23,6 +24,29 @@ _gate = threading.Lock()
 MIN_GAP = 2.5          # GeckoTerminal's free tier allows about 30 calls a minute
 TRIES_429 = 3
 BACKOFF_429_S = 5.0
+
+
+MAX_PRICE_AGE_S = 900
+
+
+def usable_price(entry, max_age=MAX_PRICE_AGE_S):
+    """Validate a quote before learning or simulation. Missing age is legacy caller compatibility;
+    the production provider always supplies age_s (None means no observation)."""
+    if not entry:
+        return None
+    try:
+        age = entry.get('age_s', 0)
+        value = float(entry.get('price_usd') or 0)
+        if age is None or not math.isfinite(float(age)) or not 0 <= float(age) <= max_age:
+            return None
+        return value if math.isfinite(value) and value > 0 else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def observed_at(entry, now=None):
+    now = time.time() if now is None else now
+    return int(now - float(entry.get('age_s', 0) or 0))
 
 
 def _get(url, timeout=25):
@@ -59,9 +83,13 @@ def token_prices(addrs):
                 log.info("gecko %s: %s", r.status_code, r.text[:80])
                 continue
             fetched = time.time()
+            received = set()
             for t in r.json().get("data", []):
                 a = t.get("attributes", {})
                 addr = (a.get("address") or "").lower()
+                if addr not in part:
+                    continue
+                received.add(addr)
                 vol = a.get("volume_usd") or {}
                 _cache[addr] = (fetched, {
                     "price_usd": float(a["price_usd"]) if a.get("price_usd") else None,
@@ -69,7 +97,8 @@ def token_prices(addrs):
                     "volume_24h_usd": float(vol["h24"]) if vol.get("h24") else None,
                     "reserve_usd": float(a["total_reserve_in_usd"]) if a.get("total_reserve_in_usd") else None})
             for a in part:
-                _cache.setdefault(a, (fetched, {}))
+                if a not in received:
+                    _cache[a] = (fetched, {})  # absence is unknown, never a synthetic zero price
         except Exception as e:
             log.info("gecko error: %s", e)
     now = time.time()
@@ -116,7 +145,7 @@ def refresh_scored(db, hours=24):
     n = 0
     for r in rows:
         p = px.get(r["token"]) or {}
-        if not p.get("price_usd"):
+        if usable_price(p) is None:
             continue
         try:
             m = json.loads(r["metrics"] or "{}")
@@ -126,11 +155,12 @@ def refresh_scored(db, hours=24):
         fetched_at = now - int(p.get("age_s") or 0)
         m.update(price_usd=p.get("price_usd"), fdv_usd=p.get("fdv_usd"), volume_24h_usd=p.get("volume_24h_usd"),
                  reserve_usd=p.get("reserve_usd"), price_ts=fetched_at)
-        if not m.get("price0_ts"):
+        if not m.get("price0_ts") and fetched_at >= r["scored_at"]:
             m["price0_ts"] = fetched_at          # when the first price for this verdict was read
             m["price0_usd"], m["fdv0_usd"] = p.get("price_usd"), p.get("fdv_usd")   # the values at scan, never overwritten
         db.x("UPDATE scores SET metrics=? WHERE token=? AND scored_at=?", (json.dumps(m), r["token"], r["scored_at"]))
-        db.x("UPDATE outcomes SET price0=? WHERE token=? AND price0 IS NULL AND scored_at>=?",
-             (p["price_usd"], r["token"], now - PRICE0_WINDOW_S))
+        db.x("UPDATE outcomes SET price0=?, baseline_ts=? WHERE token=? AND price0 IS NULL"
+             " AND scored_at>=? AND scored_at<=? AND resolved=0",
+             (p["price_usd"], fetched_at, r["token"], now - PRICE0_WINDOW_S, fetched_at))
         n += 1
     return n

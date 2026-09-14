@@ -155,7 +155,7 @@ class Scorer:
         t0 = time.time()
         latest = self.rpc.block_number()
         fired = []          # {rule, points, text}
-        m = {"partial": False}
+        m = {"partial": False, "observation_block": latest}
         self._emit(token, "start", f"digging into {L.get('name') or token[:10]} (${L.get('symbol') or '?'})",
                    name=L.get("name"), symbol=L.get("symbol"), pair=L.get("pair_symbol"), grad_ts=L.get("grad_ts"),
                    deployer=L.get("deployer"), logo=L.get("logo"))
@@ -445,12 +445,18 @@ class Scorer:
         m["scored_in_s"] = round(time.time() - t0, 1)
         self._emit(token, "verdict", f"verdict: {verdict} [{score}]", score=score, verdict=verdict, reasons=reasons,
                    seconds=m["scored_in_s"], partial=m["partial"])
-        self.db.x("INSERT OR REPLACE INTO scores(token,score,verdict,reasons,metrics,scored_at,partial,fired)"
-                  " VALUES(?,?,?,?,?,?,?,?)",
-                  (token, score, verdict, json.dumps(reasons), json.dumps(m), int(time.time()),
-                   1 if m["partial"] else 0, json.dumps(fired)))
+        scored_at = int(time.time())
+        values = (token, score, verdict, json.dumps(reasons), json.dumps(m), scored_at,
+                  1 if m['partial'] else 0, json.dumps(fired))
+        with self.db.transaction():
+            assessment_id = self.db.insert(
+                "INSERT INTO assessments(token,score,verdict,reasons,metrics,scored_at,partial,fired,engine_version)"
+                " VALUES(?,?,?,?,?,?,?,?,?)", values + ('evidence-v2',))
+            self.db.x("INSERT OR REPLACE INTO scores(token,score,verdict,reasons,metrics,scored_at,partial,fired)"
+                      " VALUES(?,?,?,?,?,?,?,?)", values)
         return {"token": token, "score": score, "verdict": verdict, "reasons": reasons, "metrics": m, "fired": fired,
-                "retry": bool(m["partial"])}
+                "assessment_id": assessment_id, "scored_at": scored_at, "retry": bool(m["partial"])}
+
 
 
 def backfill_curve_buyers(rpc, db, hours=24, limit=150):
