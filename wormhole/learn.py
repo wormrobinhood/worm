@@ -12,7 +12,7 @@ import statistics
 import time
 
 from . import advisor as ADV
-from .prices import token_prices, PRICE0_WINDOW_S
+from .prices import token_prices, PRICE0_WINDOW_S, usable_price, observed_at
 from .scorer import RULES
 
 log = logging.getLogger("wormhole.brain")
@@ -31,13 +31,7 @@ LIFT_MIN_N = 5                 # warnings a rule must have given before its lift
 
 def _price_of(entry):
     """A usable current price from a token_prices entry; None when missing or stale."""
-    if not entry:
-        return None
-    age = entry.get("age_s")
-    if age is not None and age > MAX_PRICE_AGE_S:
-        return None
-    p = entry.get("price_usd")
-    return float(p) if p else None
+    return usable_price(entry)
 
 
 def _checks(o):
@@ -75,31 +69,42 @@ class Brain:
         return {r["id"]: float(r["weight"]) for r in self.db.q("SELECT id, weight FROM rules")}
 
     def record(self, token, result):
-        """Track a verdict. A rescore updates score/verdict/fired of a pending row and nothing else; a
-        resolved row is never touched, so a rescan cannot erase a lesson or reset the price baseline."""
-        fired = json.dumps(result.get("fired") or [])
-        if self.db.one("SELECT 1 FROM outcomes WHERE token=?", (token,)):
-            self.db.x("UPDATE outcomes SET score=?, verdict=?, fired=? WHERE token=? AND resolved=0",
-                      (result["score"], result["verdict"], fired, token))
-            return
-        price0 = (result.get("metrics") or {}).get("price_usd")
-        self.db.x("INSERT OR IGNORE INTO outcomes(token,score,verdict,scored_at,price0,checks,outcome,change_pct,"
-                  "resolved,fired) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                  (token, result["score"], result["verdict"], int(time.time()), price0, json.dumps({}), "pending",
-                   None, 0, fired))
+        """Keep the first prediction immutable. Rescans are separate assessments, not revised history."""
+        with self.db.transaction():
+            if self.db.one("SELECT 1 FROM outcomes WHERE token=?", (token,)):
+                return
+            # If the process died after persisting a score but before recording its outcome,
+            # recover the earliest saved assessment instead of evaluating a later retry.
+            saved = self.db.one("SELECT * FROM assessments WHERE token=? ORDER BY id LIMIT 1", (token,))
+            if saved:
+                result = dict(saved, assessment_id=saved['id'], metrics=json.loads(saved['metrics'] or '{}'),
+                              fired=json.loads(saved['fired'] or '[]'), reasons=json.loads(saved['reasons'] or '[]'))
+            now = int(result.get('scored_at') or time.time())
+            fired = json.dumps(result.get('fired') or [])
+            metrics = result.get('metrics') or {}
+            assessment_id = result.get('assessment_id')
+            if not assessment_id:
+                assessment_id = self.db.insert(
+                    "INSERT INTO assessments(token,score,verdict,reasons,metrics,scored_at,partial,fired,engine_version)"
+                    " VALUES(?,?,?,?,?,?,?,?,?)",
+                    (token, result['score'], result['verdict'], json.dumps(result.get('reasons') or []),
+                     json.dumps(metrics), now, int(bool(metrics.get('partial'))), fired, 'evidence-v2'))
+            price0 = usable_price(metrics)
+            baseline_ts = now if price0 is not None else None
+            if metrics.get('price_ts') is not None:
+                baseline_ts = int(metrics['price_ts']) if price0 is not None else None
+                if baseline_ts is not None and (baseline_ts < now or baseline_ts > time.time()):
+                    price0, baseline_ts = None, None
+            self.db.x("INSERT OR IGNORE INTO outcomes(token,score,verdict,scored_at,price0,checks,outcome,change_pct,"
+                      "resolved,fired,assessment_id,baseline_ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                      (token, result['score'], result['verdict'], now, price0, '{}', 'pending', None, 0, fired,
+                       assessment_id, baseline_ts))
 
     # ---- checking outcomes ---------------------------------------------------------------------
 
     def _due(self, o, now):
-        age = now - int(o["scored_at"])
-        checks = _checks(o)
-        if o["price0"] is None and age < PRICE0_WINDOW_S:
-            return True                                     # still looking for a baseline
-        if "rug_seen" in checks:
-            return True                                     # a rug reading waiting for its confirmation
-        if any(age >= cp and str(cp) not in checks for cp in CHECKPOINTS):
-            return True
-        return age >= CHECKPOINTS[-1]                       # past the last checkpoint: resolve when a price allows
+        # Monitoring is continuous at the marker cadence; checkpoints remain separately timestamped.
+        return not o.get('resolved')
 
     def check(self):
         """Advance every pending outcome that has something to read."""
@@ -109,19 +114,31 @@ class Brain:
         if not due:
             return
         prices = token_prices([o["token"] for o in due])
+        now = int(time.time())
         for o in due:
             try:
-                self._advance(o, _price_of(prices.get(o["token"])), now)
+                entry = prices.get(o["token"]) or {}
+                self._advance(o, _price_of(entry), now, observed_at(entry, now))
             except Exception as e:
                 log.warning("check %s failed: %s", o["token"][:10], e)
 
-    def _advance(self, o, p, now):
+    def _advance(self, o, p, now, price_ts=None):
+        with self.db.transaction():
+            current = self.db.one("SELECT * FROM outcomes WHERE token=? AND resolved=0", (o['token'],))
+            if current:
+                self._advance_once(current, p, now, price_ts)
+
+    def _advance_once(self, o, p, now, price_ts=None):
+        price_ts = now if price_ts is None else price_ts
+        if price_ts < int(o['scored_at']) or price_ts > now:
+            p = None
+
         age = now - int(o["scored_at"])
         checks = _checks(o)
         if o["price0"] is None and p is not None and age < PRICE0_WINDOW_S:
-            self.db.x("UPDATE outcomes SET price0=? WHERE token=? AND price0 IS NULL", (p, o["token"]))
+            self.db.x("UPDATE outcomes SET price0=?, baseline_ts=? WHERE token=? AND price0 IS NULL", (p, price_ts, o["token"]))
             o["price0"] = p
-            checks["baseline"] = {"price": p, "ts": now, "age_s": age}
+            checks["baseline"] = {"price": p, "ts": price_ts, "age_s": price_ts - int(o["scored_at"])}
         price0 = o["price0"]
         change = ((p / price0) - 1) * 100 if (p is not None and price0) else None
         for cp in CHECKPOINTS:
@@ -129,41 +146,31 @@ class Brain:
             if age >= cp and key not in checks:
                 if age - cp >= STAMP_WINDOW_S:
                     checks[key] = {"skipped": True, "ts": now}       # too late to call this reading the checkpoint
-                elif p is not None:
-                    checks[key] = {"price": p, "ts": now, "change_pct": round(change, 2) if change is not None else None}
+                elif p is not None and price_ts >= int(o["scored_at"]) + cp:
+                    checks[key] = {"price": p, "ts": price_ts, "change_pct": round(change, 2) if change is not None else None}
         outcome = None
         if change is not None:
             if change <= RUG_PCT:
                 seen = checks.get("rug_seen")
-                if age >= CHECKPOINTS[-1] or (seen and now - int(seen.get("ts", now)) >= RUG_CONFIRM_S):
+                if (int(o["scored_at"]) + CHECKPOINTS[-1] <= price_ts < int(o["scored_at"]) + CHECKPOINTS[-1] + STAMP_WINDOW_S) or (seen and price_ts - int(seen.get("ts", price_ts)) >= RUG_CONFIRM_S):
                     outcome = "rugged"
                 elif not seen:
-                    checks["rug_seen"] = {"ts": now, "price": p, "change_pct": round(change, 2)}
+                    checks["rug_seen"] = {"ts": price_ts, "price": p, "change_pct": round(change, 2)}
             else:
                 checks.pop("rug_seen", None)
         if outcome is None and age >= CHECKPOINTS[-1]:
-            if change is not None:
+            # A final return must actually be observed inside the final checkpoint window.
+            final = checks.get(str(CHECKPOINTS[-1])) or {}
+            final_change = final.get('change_pct')
+            if final_change is not None:
+                change = final_change
                 outcome = _label(change, True)
             elif age >= CHECKPOINTS[-1] + GRACE_S:
-                last = self._last_price(checks)
-                if last is not None and price0:
-                    change = ((last / price0) - 1) * 100
-                    outcome = _label(change, True)
-                else:
-                    outcome = "unknown"
+                change, outcome = None, 'unknown'
         self.db.x("UPDATE outcomes SET checks=?, change_pct=? WHERE token=? AND resolved=0",
                   (json.dumps(checks), change, o["token"]))
         if outcome:
             self._resolve(o, outcome, change)
-
-    @staticmethod
-    def _last_price(checks):
-        """The latest checkpoint reading with a price, for a resolution at the deadline."""
-        best = None
-        for v in checks.values():
-            if isinstance(v, dict) and v.get("price") and (best is None or v.get("ts", 0) > best.get("ts", 0)):
-                best = v
-        return float(best["price"]) if best else None
 
     # ---- lessons -------------------------------------------------------------------------------
 
@@ -175,6 +182,12 @@ class Brain:
         return (nb / (nb + ng)) if (nb + ng) else 0.5
 
     def _resolve(self, o, outcome, change):
+        with self.db.transaction():
+            current = self.db.one("SELECT * FROM outcomes WHERE token=? AND resolved=0", (o['token'],))
+            if current:
+                self._resolve_once(current, outcome, change)
+
+    def _resolve_once(self, o, outcome, change):
         bad, good = outcome in BAD, outcome in GOOD
         try:
             fired = json.loads(o["fired"] or "[]")
@@ -239,7 +252,12 @@ class Brain:
                 by_verdict.setdefault(r["verdict"], []).append(float(v))
         for v, xs in by_verdict.items():
             returns[v] = {"n": len(xs), "mean_pct": round(statistics.fmean(xs), 1), "median_pct": round(statistics.median(xs), 1)}
-        return {"rules": rules, "outcomes": res, "counts": counts, "scorecard": card, "returns": returns,
+        validated_card = {}
+        for r in self.db.q("SELECT o.verdict, o.outcome, COUNT(*) n FROM outcomes o JOIN assessments a ON a.id=o.assessment_id"
+                          " WHERE o.resolved=1 AND a.partial=0 AND a.engine_version='evidence-v2'"
+                          " AND o.baseline_ts IS NOT NULL GROUP BY o.verdict,o.outcome"):
+            validated_card.setdefault(r['verdict'], {})[r['outcome']] = r['n']
+        return {"rules": rules, "outcomes": res, "counts": counts, "scorecard": card, "validated_scorecard": validated_card, "returns": returns,
                 "base_rate_pct": round(100 * base), "tracked": tracked, "resolved": resolved}
 
 

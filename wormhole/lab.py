@@ -4,7 +4,7 @@ A case starts when a verdict scores at least LAB_MIN_SCORE and has a price. Pric
 mark cycle for 48 hours, then every arm (exit policy x entry delay) is simulated on the same path with
 that token's own costs (creator tax + curve fee + slippage per side). Arms keep a running net return
 per dollar risked. An arm becomes the policy the paper book and the trader use only when it has
-LAB_MIN_N cases, its lower confidence bound (mean minus one standard error) is above zero and its mean
+LAB_MIN_N cases, its lower confidence bound (mean minus LCB_Z standard errors) is above zero and its mean
 beats the default's on the same cases. Exploration (a random arm on a share of new positions) is off by
 default: the lab already scores every arm on every case, so an explorer position teaches it nothing."""
 import json
@@ -14,7 +14,7 @@ import os
 import random
 import time
 
-from .prices import token_prices
+from .prices import token_prices, usable_price, observed_at
 
 log = logging.getLogger("wormhole.lab")
 LAB_MIN_SCORE = int(os.environ.get("WH_LAB_MIN_SCORE", "60"))
@@ -27,7 +27,6 @@ LCB_Z = float(os.environ.get("WH_LAB_LCB_Z", "1.5"))          # standard errors 
 # 1.0 lets the best of 24 arms pass on zero-edge paths in ~23% of trials at n=30 (tests/test_lab.py measures it), 1.5 in ~12%
 ENTRY_SLACK_S = 900                                            # an arm needs a tick within 15 min of its entry time
 STALE_TAIL_S = 2 * 3600                                        # a path whose last tick is older than this before the horizon is no case
-ZERO_AFTER_MISSES = 2                                          # cycles a priced token may vanish from the feed before it is booked at 0
 DEFAULT = "costout_1.5x@0m"
 
 # tp: list of (multiple, fraction of the initial tokens to sell); trail: drawdown from peak that sells the
@@ -144,12 +143,11 @@ def simulate(arm, path, t0, fee=FEE):
 # ---- the loop ---------------------------------------------------------------------------------
 
 def enroll(db):
-    """New cases from verdicts that have a price and a score worth trading. The first tick is the
-    scorer's baseline price at the time it was observed (price0_ts in the score's metrics when the
-    price feed stores it, else the verdict time)."""
+    """Enroll from the original outcome baseline, never the mutable latest token card.
+    Legacy rows fall back to their recorded verdict time; their provenance is not reconstructed."""
     ensure_tables(db)
-    rows = db.q("SELECT o.token, o.score, o.verdict, o.scored_at, o.price0, l.symbol, l.creator_tax_bps, l.curve_fee_bps, s.metrics"
-                " FROM outcomes o JOIN launches l ON l.token=o.token LEFT JOIN scores s ON s.token=o.token"
+    rows = db.q("SELECT o.token, o.score, o.verdict, o.scored_at, o.price0, o.baseline_ts, l.symbol, l.creator_tax_bps, l.curve_fee_bps, s.metrics"
+                " FROM outcomes o JOIN launches l ON l.token=o.token LEFT JOIN assessments s ON s.id=o.assessment_id"
                 " WHERE o.score>=? AND o.price0 IS NOT NULL AND o.scored_at>=? AND o.token NOT IN (SELECT token FROM lab_cases)",
                 (LAB_MIN_SCORE, int(time.time()) - 6 * 3600))
     for r in rows:
@@ -157,7 +155,9 @@ def enroll(db):
             m = json.loads(r["metrics"] or "{}")
         except ValueError:
             m = {}
-        t0 = int(m["price0_ts"]) if m.get("price0_ts") else r["scored_at"]
+        if m.get('partial'):
+            continue
+        t0 = int(r['baseline_ts'] or r['scored_at'])
         cost = side_cost(r["creator_tax_bps"], r["curve_fee_bps"])
         db.x("INSERT OR IGNORE INTO lab_cases(token,symbol,score,verdict,t0,p0,status,cost,misses) VALUES(?,?,?,?,?,?,?,?,0)",
              (r["token"], r["symbol"], r["score"], r["verdict"], t0, r["price0"], "active", cost if cost is not None else FEE))
@@ -166,12 +166,7 @@ def enroll(db):
 
 
 def tick(db):
-    """Sample prices for active cases; resolve the ones past the horizon.
-
-    A token that the feed priced before and now leaves out while the batch priced others is counted as a
-    miss; at ZERO_AFTER_MISSES misses in a row a 0-price tick is written so the simulation books the loss
-    of a drained pool instead of treating the last good price as a fill. One miss is forgiven because a
-    partly failed batch must not turn a healthy case into a total loss."""
+    """Sample fresh observations only; incomplete paths expire without fabricated fills."""
     ensure_tables(db)
     enroll(db)
     now = int(time.time())
@@ -180,25 +175,27 @@ def tick(db):
     if not active:
         return
     px = token_prices([c["token"] for c in active])
-    got_any = any((px.get(c["token"]) or {}).get("price_usd") for c in active)
+    now = int(time.time())
     for c in active:
-        p = (px.get(c["token"]) or {}).get("price_usd")
-        if p:
-            db.x("INSERT OR IGNORE INTO ticks(token,ts,price) VALUES(?,?,?)", (c["token"], now, p))
-            if c["misses"]:
-                db.x("UPDATE lab_cases SET misses=0 WHERE token=?", (c["token"],))
-        elif got_any and db.one("SELECT 1 FROM ticks WHERE token=? AND price>0", (c["token"],)):
-            misses = int(c["misses"] or 0) + 1
-            db.x("UPDATE lab_cases SET misses=? WHERE token=?", (misses, c["token"]))
-            if misses >= ZERO_AFTER_MISSES:
-                db.x("INSERT OR IGNORE INTO ticks(token,ts,price) VALUES(?,?,0)", (c["token"], now))
-                if misses == ZERO_AFTER_MISSES:
-                    db.add_event("lab", f"lab case ${c['symbol']}: no price from the feed for {misses} cycles, booked at 0", c["token"])
+        entry = px.get(c["token"]) or {}
+        p = usable_price(entry)
+        if p is not None:
+            ts = observed_at(entry, now)
+            if ts >= c['t0']:
+                db.x("INSERT OR IGNORE INTO ticks(token,ts,price) VALUES(?,?,?)", (c["token"], ts, p))
+        # An API omission/outage is missing evidence, not a confirmed loss or an executable fill.
         if now - c["t0"] >= HORIZON_S:
             _resolve(db, c)
 
 
 def _resolve(db, c):
+    with db.transaction():
+        current = db.one("SELECT * FROM lab_cases WHERE token=? AND status='active'", (c['token'],))
+        if current:
+            _resolve_once(db, current)
+
+
+def _resolve_once(db, c):
     now = int(time.time())
     path = [(r["ts"], r["price"]) for r in db.q("SELECT ts, price FROM ticks WHERE token=? ORDER BY ts", (c["token"],))]
     if len(path) < 3 or path[-1][0] < c["t0"] + HORIZON_S - STALE_TAIL_S:

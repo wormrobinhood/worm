@@ -218,7 +218,8 @@ def cycle(db, extra=None, force=False):
     try:
         text, mood, label, usage = write(pkt)
     except Exception as e:
-        db.add_event("voice", f"narrator failed: {str(e)[:120]}")
+        log.exception("narrator failed")
+        db.add_event("voice", "narrator unavailable; see private logs")
         return None
     reason = check(text, pkt)
     db.x("INSERT INTO posts(ts,text,mood,model,ok,reason,packet) VALUES(?,?,?,?,?,?,?)",

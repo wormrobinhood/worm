@@ -5,7 +5,6 @@
 """
 import argparse
 import logging
-import queue
 import threading
 import time
 
@@ -99,7 +98,7 @@ def score_one(token, db, scorer, brain, paper, hub, label, requeue=None, tries=1
         return r
     except Exception as e:
         log.exception("scoring %s failed: %s", token[:10], e)
-        db.add_event("error", f"scoring {token[:10]} failed: {str(e)[:120]}", token)
+        db.add_event("error", f"scoring {token[:10]} failed; retry pending, see private logs", token)
         if requeue and tries < MAX_TRIES:
             requeue(token, tries + 1)
         return None
@@ -116,13 +115,11 @@ def main():
                         format="%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     rpc, db, brain, scorer, paper, hub, screen, acct = build()
-    work = queue.Queue()
+    from wormhole.jobs import ScanQueue
+    work = ScanQueue(db)
     idx = Indexer(rpc, db, on_graduation=work.put, on_launch=lambda t: hub.notify("launch", t))
     hub.rescan = work.put
     hub.indexer = idx
-
-    def requeue(token, tries):
-        threading.Timer(RETRY_S, work.put, [(token, tries)]).start()
 
     if a.once:
         idx.backfill()
@@ -145,7 +142,7 @@ def main():
                 break
             except Exception as e:
                 log.exception("backfill failed, retry in 30s: %s", e)
-                db.add_event("error", f"backfill failed: {str(e)[:120]}")
+                db.add_event("error", "backfill unavailable; retrying")
                 time.sleep(30)
         if C.SCORE_HOURS > 0:                     # by default the worm does not dig old graduations: it starts from now
             cutoff = int(time.time()) - int(C.SCORE_HOURS * 3600)
@@ -156,11 +153,21 @@ def main():
 
     def worker():
         while True:
-            item = work.get()
-            token, tries = item if isinstance(item, tuple) else (item, 1)
-            while T.working():                    # a transaction is out: no digging until it settles
-                time.sleep(1)
-            score_one(token, db, scorer, brain, paper, hub, idx.label, requeue, tries)
+            job = None
+            try:
+                job = work.claim()
+                if not job:
+                    time.sleep(1)
+                    continue
+                while T.working():
+                    work.renew(job)
+                    time.sleep(1)
+                r = score_one(job['token'], db, scorer, brain, paper, hub, idx.label)
+                work.finish(job, bool(r), retry=not r or bool(r.get('retry')))
+            except Exception:
+                log.exception('scan worker unavailable; durable lease preserves unfinished work')
+                # A failed acknowledgement leaves the lease intact for recovery.
+                time.sleep(3)
 
     def watchdog():
         """If the indexer has not advanced for 15 minutes, exit so the host restarts the process."""
@@ -228,6 +235,7 @@ def main():
             stages = [("own", lambda: L.announce(db)),
                       ("prices", lambda: refresh_scored(db)), ("lab", lambda: lab.tick(db)),
                       ("paper", paper.retry_pending), ("paper mark", paper.mark), ("brain", brain.check),
+                      ("shadow", lambda: advisor.shadow.evaluate(db)),
                       ("advisor", lambda: advisor.due(db)[0] and advisor.run(db, brain.summary(), lab.summary(db))),
                       ("exits", lambda: trader.mark(rpc, db, C.LIVE, acct)), ("treasury", lambda: T.cycle(rpc, db, acct)),
                       ("books", books), ("compute", compute_stage), ("entries", entries),

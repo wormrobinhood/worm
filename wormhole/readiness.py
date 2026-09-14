@@ -93,7 +93,7 @@ def compute(brain_summary, lab_summary, runway, min_trade_usd=10.0):
                   "detail": detail, "positive": bool(positive), "lcb": (round(lcb, 4) if lcb is not None else None)})
 
     # 2. warnings right: skill over the base rate, across avoid, mixed and healthy verdicts
-    card = brain_summary.get("scorecard") or {}
+    card = brain_summary.get("validated_scorecard", brain_summary.get("scorecard")) or {}
     sk, info = skill(card)
     n, n_healthy = info["checked"], info["healthy"]
     avoid, healthy = _checked(card, "avoid"), _checked(card, "looks healthy")
@@ -113,6 +113,8 @@ def compute(brain_summary, lab_summary, runway, min_trade_usd=10.0):
             detail += "; capped at 50 until %d healthy verdicts are checked (%d so far)" % (HEALTHY_MIN, n_healthy)
     else:
         score, detail = 0.0, "no verdict has reached a check yet"
+    if 'validated_scorecard' in brain_summary:
+        detail += "; complete versioned assessments only; legacy history excluded"
     parts.append({"id": "accuracy", "label": "warnings right", "score": _pct(score), "detail": detail,
                   "accuracy_pct": round(100 * accuracy) if accuracy is not None else None, "checked": n,
                   "skill_pct": round(100 * sk), "base_rate_pct": round(100 * info["base"]) if info["base"] is not None else None,
@@ -137,8 +139,9 @@ def compute(brain_summary, lab_summary, runway, min_trade_usd=10.0):
                       "detail": "$%.2f above the reserve; the first trade needs $%.0f" % (surplus, min_trade_usd)})
 
     total = int(round(sum(WEIGHTS[p["id"]] * p["score"] for p in parts)))
-    ready = bool(total >= READY_AT and parts[0]["positive"] and runway.get("can_invest"))
+    evidence_ok = (n_healthy >= HEALTHY_MIN and n_avoid >= HEALTHY_MIN and sk > 0)
+    ready = bool(total >= READY_AT and evidence_ok and parts[0]["positive"] and runway.get("can_invest"))
     nxt = next((p for p in parts if p["score"] < 100), None)
     return {"score": total, "ready_at": READY_AT, "ready": ready, "parts": parts, "weights": WEIGHTS,
             "next": (nxt["label"] + ": " + nxt["detail"]) if nxt else "every part is at full marks",
-            "gate": "real trades unlock at %d%% readiness and start at the minimum size; the number only moves on evidence" % READY_AT}
+            "gate": "real trades require %d%% readiness, positive measured skill, at least 10 checked healthy and 10 avoid verdicts, a positive strategy bound and surplus; execution safety gates also apply" % READY_AT}

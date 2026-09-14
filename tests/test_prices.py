@@ -137,7 +137,7 @@ def test_refresh_never_overwrites_a_rescore(db, monkeypatch):
     monkeypatch.setattr(P, "token_prices", lambda addrs: {tok: {"price_usd": 2.5, "age_s": 3}})
     assert P.refresh_scored(db) == 1
     m = json.loads(db.one("SELECT metrics FROM scores WHERE token=?", (tok,))["metrics"])
-    assert m["holders"] == 9 and m["price_usd"] == 2.5 and abs(m["price0_ts"] - (now - 3)) <= 3
+    assert m["holders"] == 9 and m["price_usd"] == 2.5 and "price0_ts" not in m  # cached quote predates the new scan
     assert db.one("SELECT price0 FROM outcomes WHERE token=?", (tok,))["price0"] == 2.0   # a baseline is set once
 
 

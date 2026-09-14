@@ -23,9 +23,13 @@ def scored(db, token, m, change, fired=None, scored_at=None, verdict_at=None):
     ts = scored_at or NOW - 90000
     db.x("INSERT OR REPLACE INTO scores(token,score,verdict,reasons,metrics,scored_at,partial,fired) VALUES(?,?,?,?,?,?,0,?)",
          (token, 50, "mixed", "[]", json.dumps(m), ts, json.dumps(fired or [])))
+    aid = db.insert("INSERT INTO assessments(token,score,verdict,metrics,scored_at,partial,fired,engine_version) VALUES(?,?,?,?,?,0,?,?)",
+                    (token, 50, 'mixed', json.dumps(m), ts, json.dumps(fired or []), 'evidence-v2'))
     outcome = "rugged" if change <= -80 else "dumped" if change <= -50 else "flat"
     db.x("INSERT OR REPLACE INTO outcomes(token,score,verdict,scored_at,price0,checks,outcome,change_pct,resolved,fired)"
          " VALUES(?,?,?,?,?,?,?,?,1,?)", (token, 50, "mixed", verdict_at or ts, 1.0, "{}", outcome, change, json.dumps(fired or [])))
+
+    db.x("UPDATE outcomes SET assessment_id=? WHERE token=?", (aid, token))
 
 
 def seed(db, n=60, seed=1, start=0):
@@ -115,29 +119,17 @@ def test_stub_search_finds_the_separating_metric(db):
     assert len({r["conditions"][0]["metric"] for r in props["rules"]}) == len(props["rules"])
 
 
-def test_run_with_the_stub_adopts_a_rule_that_the_scorer_then_applies(db):
+def test_run_with_the_stub_stages_rules_without_changing_scores(db):
     seed(db)
-    assert A.due(db) == (True, "due")
-    run = A.run(db, {"rules": [], "scorecard": {}}, force=True)
-    assert run["proposed"] >= 1 and run["adopted"] >= 1 and run["model"] == "stub"
-    rules = db.q("SELECT * FROM learned_rules WHERE active=1")
-    assert rules and rules[0]["id"] == "ai_1"
-    assert db.one("SELECT weight FROM rules WHERE id='ai_1'")["weight"] == 1.0
-    spec = json.loads(rules[0]["spec"])
-    assert spec["conditions"][0]["metric"] == "top10_pct"
-    fired = A.apply(db, {"top10_pct": 90, "holders": 10})
-    assert fired == [{"rule": "ai_1", "points": int(rules[0]["points"]), "text": rules[0]["text"]}]
-    assert A.apply(db, {"top10_pct": 5, "holders": 10}) == [] or spec["conditions"][0]["op"] == "<="
-    assert "(learned)" in A.describe(db, "ai_1")
-    sug = db.q("SELECT * FROM advisor_suggestions ORDER BY id")
-    assert any(s["status"] == "adopted" for s in sug) and all(s["model"] == "stub" for s in sug)
-    assert "advisor (stub)" in db.one("SELECT text FROM events WHERE kind='advisor'")["text"]
-    ok, why = A.due(db)
-    assert not ok and "next run in" in why                                 # the interval gate
+    assert A.due(db) == (True, 'due')
+    run = A.run(db, {'rules': [], 'scorecard': {}}, force=True)
+    assert run['proposed'] >= 1 and run['adopted'] == 0 and run['model'] == 'stub'
+    assert not db.q('SELECT * FROM learned_rules WHERE active=1')
+    assert A.apply(db, {'top10_pct':90,'holders':10}) == []
+    assert db.one("SELECT status FROM advisor_suggestions WHERE kind='rule'")['status'] == 'shadow'
+    assert A.summary(db)['shadow']['pending'] >= 1
     again = A.run(db, {}, force=True)
-    assert again["adopted"] == 0                                           # everything was tried or is a copy now
-    s = A.summary(db)
-    assert s["runs"] == 2 and s["rules"][0]["id"] == "ai_1" and s["last_run"]["adopted"] == 0 and s["model"] == "stub"
+    assert again['adopted'] == 0
 
 
 def test_due_waits_for_evidence_then_for_new_verdicts(db):
@@ -171,14 +163,14 @@ def test_a_model_answer_is_validated_and_the_notes_are_checked(db, monkeypatch):
     assert seen["kind"] == "openai" and seen["model"] == "test-model" and seen["max_tokens"] == 1200
     pkt = seen["packet"]
     assert "top10_pct" in pkt["metrics"] and len(pkt["recent_cases"]) == 30 and "symbol" not in json.dumps(pkt) and "name" not in pkt["recent_cases"][0]
-    assert run["tokens_in"] == 4321 and run["tokens_out"] == 210 and run["proposed"] == 5 and run["adopted"] == 2
+    assert run["tokens_in"] == 4321 and run["tokens_out"] == 210 and run["proposed"] == 5 and run["adopted"] == 1
     sug = {s["reason"]: s for s in db.q("SELECT * FROM advisor_suggestions")}
     statuses = [(s["kind"], s["status"]) for s in db.q("SELECT kind, status FROM advisor_suggestions ORDER BY id")]
-    assert statuses == [("rule", "adopted"), ("rule", "rejected"), ("rule", "rejected"), ("arm", "adopted"), ("arm", "rejected")]
+    assert statuses == [("rule", "shadow"), ("rule", "rejected"), ("rule", "rejected"), ("arm", "adopted"), ("arm", "rejected")]
     assert any("not measured at scan" in r for r in sug) and any("take-profit step out of bounds" in r for r in sug)
-    adopted = db.one("SELECT * FROM learned_rules WHERE active=1")
-    assert adopted["id"] == "ai_1" and adopted["points"] == -9 and json.loads(adopted["spec"])["conditions"][1]["metric"] == "holders"
-    assert db.one("SELECT why FROM advisor_suggestions WHERE status='adopted' AND kind='rule'")["why"].startswith("concentrated launches fell further")
+    adopted = db.one("SELECT * FROM shadow_rules")
+    assert adopted["status"] == "shadow" and json.loads(adopted["spec"])["points"] == -9 and json.loads(adopted["spec"])["conditions"][1]["metric"] == "holders"
+    assert db.one("SELECT why FROM advisor_suggestions WHERE status='shadow' AND kind='rule'")["why"].startswith("concentrated launches fell further")
     assert "ai_quickexit" in lab.LEARNED and lab.LEARNED["ai_quickexit"]["tp"] == [(1.6, 0.5)] and lab.LEARNED["ai_quickexit"]["max_age"] == 12 * 3600
     assert db.q("SELECT name FROM lab_arms WHERE name LIKE 'ai_quickexit@%'") and "ai_quickexit@30m" in lab.all_arms()
     assert lab.parse_arm("ai_quickexit@30m") == (lab.LEARNED["ai_quickexit"], 1800)
@@ -202,7 +194,7 @@ def test_a_writer_failure_is_a_recorded_run_not_a_crash(db, monkeypatch):
         raise RuntimeError("402 payment required")
     monkeypatch.setattr(A.voice, "_llm", boom)
     run = A.run(db, {}, force=True)
-    assert run["proposed"] == 0 and "writer failed: 402" in run["note"]
+    assert run["proposed"] == 0 and run["note"] == "writer unavailable; see private logs"
 
 
 def test_arm_validation_bounds():

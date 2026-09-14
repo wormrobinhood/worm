@@ -196,7 +196,7 @@ def test_stale_cached_price_is_not_a_reading(db, monkeypatch):
     assert "3600" not in checks(db, "0xs") and outcome(db, "0xs")["resolved"] == 0
 
 
-def test_deadline_resolves_from_the_last_reading_before_unknown(db, monkeypatch):
+def test_deadline_does_not_relabel_a_six_hour_reading_as_final(db, monkeypatch):
     b = Brain(db)
     b.record("0xe", result(50, "mixed", 1.0, pace=0))
     age(db, "0xe", 6 * 3600 + 5)
@@ -206,7 +206,7 @@ def test_deadline_resolves_from_the_last_reading_before_unknown(db, monkeypatch)
     age(db, "0xe", 30 * 3600 + 5)
     b.check()
     o = outcome(db, "0xe")
-    assert o["outcome"] == "dumped" and abs(o["change_pct"] + 60) < 1e-6
+    assert o["outcome"] == "unknown" and o["change_pct"] is None
 
 
 def test_record_never_touches_a_resolved_row_or_resets_a_pending_one(db, monkeypatch):
@@ -225,14 +225,14 @@ def test_record_never_touches_a_resolved_row_or_resets_a_pending_one(db, monkeyp
     o = outcome(db, "0xr")
     assert o["outcome"] == "rugged" and o["resolved"] == 1 and o["score"] == 20 and o["price0"] == 1.0
     assert creator_trust(db, dep)[0] == trust
-    # a pending row keeps its baseline, clock and checks but takes the new verdict
+    # a pending row keeps its original prediction as well as its baseline and clock
     b.record("0xp", result(50, "mixed", 1.0, pace=+3))
     age(db, "0xp", 3700)
     db.x("UPDATE outcomes SET checks=? WHERE token='0xp'", (json.dumps({"3600": {"price": 1.1, "ts": 1}}),))
     b.record("0xp", result(30, "avoid", 9.0, snipe=-15))
     o = outcome(db, "0xp")
-    assert o["score"] == 30 and o["verdict"] == "avoid" and o["price0"] == 1.0 and "3600" in o["checks"]
-    assert o["scored_at"] <= int(time.time()) - 3600 and json.loads(o["fired"])[0]["rule"] == "snipe"
+    assert o["score"] == 50 and o["verdict"] == "mixed" and o["price0"] == 1.0 and "3600" in o["checks"]
+    assert o["scored_at"] <= int(time.time()) - 3600 and json.loads(o["fired"])[0]["rule"] == "pace"
 
 
 def test_weights_stay_within_bounds(db, monkeypatch):

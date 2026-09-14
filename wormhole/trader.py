@@ -22,7 +22,7 @@ from .chain import addr_from_topic, selector
 from . import lab
 from . import readiness as RD
 from .pons import POOL_REGISTERED, TRANSFER
-from .prices import eth_usd, token_prices
+from .prices import eth_usd, token_prices, usable_price
 from .tx import send_tx
 
 log = logging.getLogger("wormhole.trader")
@@ -355,7 +355,7 @@ def mark(rpc, db, live, acct=None):
     prices = token_prices([p["token"] for p in opens])
     now = int(time.time())
     for p in opens:
-        px = (prices.get(p["token"]) or {}).get("price_usd")
+        px = usable_price(prices.get(p["token"]))
         if not px or not p["entry_usd"] or not p["qty"]:
             continue
         policy, _ = lab.parse_arm(p["policy"] or lab.DEFAULT)

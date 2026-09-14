@@ -91,6 +91,8 @@ class Indexer:
     def backfill(self):
         latest = self._refresh_anchor() - CONFIRM
         last = self.db.meta_get("last_block")
+        if self.db.meta_get("scan_jobs_start_block") is None:
+            self.db.meta_set("scan_jobs_start_block", last if last is not None else latest)
         start = int(last) + 1 if last is not None else latest - int(C.BACKFILL_HOURS * 3600 / self.block_time)
         if start <= latest:
             log.info("backfill blocks %s..%s (%d blocks, ~%.1f h)", start, latest, latest - start + 1,
@@ -124,7 +126,7 @@ class Indexer:
         self.fail_range = key
         log.warning("follow error (%d) on %s: %s", self.fails, rng, e)
         if rng and self.fails >= POISON_FAILS:
-            self.db.add_event("error", f"skipping blocks {rng[0]}..{rng[1]}: {str(e)[:100]}")
+            self.db.add_event("error", f"skipping blocks {rng[0]}..{rng[1]} after repeated RPC failures; repair required")
             self.db.meta_set("last_block", rng[1])
             self.fails, self.fail_range = 0, None
 
@@ -152,10 +154,15 @@ class Indexer:
             if not self._ensure_launch(g["token"], g["_block"]):
                 log.warning("graduation of %s at block %s: no launch record on the factory", g["token"][:10], g["_block"])
                 continue
-            if self.db.xc("UPDATE launches SET graduated=1, grad_block=?, grad_ts=?, grad_tx=?"
-                          " WHERE token=? AND graduated=0",
-                          (g["_block"], when(g["_block"]), g["_tx"], g["token"])) == 1:
-                new_grads.append(g)
+            with self.db.transaction():
+                if self.db.xc("UPDATE launches SET graduated=1, grad_block=?, grad_ts=?, grad_tx=?"
+                              " WHERE token=? AND graduated=0",
+                              (g["_block"], when(g["_block"]), g["_tx"], g["token"])) == 1:
+                    new_grads.append(g)
+                    boundary = self.db.meta_get("scan_jobs_start_block")
+                    if live or (boundary is not None and g["_block"] > int(boundary)):
+                        self.db.x("INSERT OR IGNORE INTO scan_jobs(token,available_at) VALUES(?,?)",
+                                  (g['token'], int(time.time())))
         if new_grads:
             self._metadata([g["token"] for g in new_grads])
         if live and new_launches:
