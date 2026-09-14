@@ -17,6 +17,7 @@ import time
 from eth_abi import decode, encode
 from eth_utils import keccak
 
+from . import finality
 from . import config as C
 from .chain import addr_from_topic, selector
 from . import lab
@@ -145,7 +146,8 @@ def simulate_buy(rpc, wallet, pk, token, amount_in, min_out, zero_for_one):
                               {wallet: {"balance": hex(amount_in + 10 ** 17)}}])
         return "simulated swap OK"
     except Exception as e:
-        return f"simulation reverted: {str(e)[:120]}"
+        log.warning("buy simulation failed: %s", e)
+        return "simulation unavailable or reverted; see private logs"
 
 
 def received_qty(receipt, token, wallet):
@@ -249,7 +251,8 @@ def decide(rpc, db, runway, live, acct=None, ready=None):
         try:
             pk = pool_key(rpc, db, token)
         except Exception as e:
-            _skip(db, token, sym, "no_pool", f"skip ${sym}: pool lookup failed ({str(e)[:80]})")
+            log.warning("trade pool lookup failed: %s", e)
+            _skip(db, token, sym, "no_pool", f"skip ${sym}: pool lookup failed; see private logs")
             continue
         if not pk:
             _skip(db, token, sym, "no_pool", f"skip ${sym}: pool not found")
@@ -264,7 +267,8 @@ def decide(rpc, db, runway, live, acct=None, ready=None):
         try:
             out, gas, zfo = quote_buy(rpc, pk, token, amount_in)
         except Exception as e:
-            _say_once(db, "trade", f"skip ${sym}: quote failed ({str(e)[:80]})", token)
+            log.warning("trade quote failed: %s", e)
+            _say_once(db, "trade", f"skip ${sym}: quote failed; see private logs", token)
             continue
         if not out:
             _skip(db, token, sym, "no_price", f"skip ${sym}: no liquidity quoted")
@@ -288,9 +292,10 @@ def decide(rpc, db, runway, live, acct=None, ready=None):
                 n_open += 1
                 spent += size
             except Exception as e:
-                db.x("UPDATE trades SET note=? WHERE id=?", (f"FAILED: {str(e)[:80]}", tid))
+                log.warning("trade submission failed: %s", e)
+                db.x("UPDATE trades SET note=? WHERE id=?", ("FAILED: operator review required", tid))
                 db.x("UPDATE trade_intents SET blocked_until=? WHERE token=?", (now + BLOCK_AFTER_FAIL_S, token))
-                db.add_event("error", f"buy ${sym} failed before broadcast: {str(e)[:120]}; not retried for {BLOCK_AFTER_FAIL_S // 3600} h", token)
+                db.add_event("error", f"buy ${sym} outcome needs review; not retried for {BLOCK_AFTER_FAIL_S // 3600} h", token)
         else:
             sim = simulate_buy(rpc, wallet, pk, token, amount_in, min_out, zfo)
             db.x("INSERT INTO trades(ts,token,symbol,side,usd,qty,price_usd,tx,mode,note) VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -310,7 +315,7 @@ def reconcile(rpc, db):
     wallet = C.WALLET
     for t in db.q("SELECT * FROM trades WHERE side='buy' AND note='PENDING' AND tx IS NOT NULL"):
         try:
-            rc = rpc.call("eth_getTransactionReceipt", [t["tx"]])
+            rc = finality.receipt(rpc, t["tx"])
         except Exception as e:
             log.info("receipt for %s not read: %s", t["tx"], e)
             continue

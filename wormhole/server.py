@@ -537,6 +537,8 @@ def make_app(rpc, db, brain, paper, hub):
                 return JSONResponse({"queued": False, "why": "WH_LIVE=0: the worm would not sign"}, status_code=409)
             if db.meta_get("launch_pending"):
                 return {"queued": False, "why": "a launch is already in flight"}
+            if db.meta_get('launch_allocation'):
+                return {"queued": False, "why": "an initial allocation already exists; resume or review its saved state"}
             hub.launch_wanted = True
             return {"queued": True, "why": "the worm launches on its next cycle; watch the screen"}
 

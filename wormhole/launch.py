@@ -8,17 +8,21 @@ Everything about the token lives on-chain in the launch call: name, ticker, logo
 socials, creator fee recipient (the worm's wallet), creator tax. Limits enforced by pons's deployer:
 name 64, symbol 16, logo 512, description 2048, each social 256 bytes.
 
-One launch only. The moment the node has the transaction its hash is written to .env as
-WH_TOKEN_PENDING_TX; a second run refuses while that line exists, so a lost receipt can never turn
-into a second $WORM. On success WH_TOKEN replaces it."""
+The CLI persists WH_TOKEN_PENDING_TX before broadcast; the running service uses its database.
+Both paths also use the durable private transaction outbox. Unknown receipts retain pending state
+for operator review. Run one launch operator/signing service per wallet."""
 import argparse
 import logging
 import os
 import time
+import fcntl
+import threading
+from contextlib import contextmanager
 
 from eth_abi import decode, encode
 from eth_utils import keccak
 
+from . import finality
 from . import config as C
 from .chain import Rpc, RpcError, call_fn, selector
 from .pons import TOKEN_LAUNCHED
@@ -30,8 +34,21 @@ CREATE_PAGE = "https://www.ponsfamily.com/launchpad/create"
 TOKEN_PARAMS_T = "(string,string,string,string,(string,string,string,string,string),address,uint16,bool,bytes32,bytes32)"
 LAUNCH_SIG = f"launchToken({TOKEN_PARAMS_T},uint256,address)"
 LIMITS = {"name": 64, "symbol": 16, "logo": 512, "description": 2048, "social": 256}
-GAS_FLOOR = 4_500_000
-PENDING_MAX_AGE_S = 3600     # a launch the node no longer knows after this long is written off        # a real launch+buy used 3.85M; the estimate (+30%) is used when it is higher
+GAS_FLOOR = 4_500_000       # the padded estimate is used when it is higher
+_operation_lock = threading.RLock()
+
+
+@contextmanager
+def operation_lock():
+    """Serialize the entire launch flow, including CLI/service allocation recovery."""
+    with _operation_lock:
+        C.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with (C.DATA_DIR / '.launchlock').open('a') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
 def _pct(x):
     return int(round(x * 100))
@@ -124,8 +141,8 @@ def refuse_if_done(live):
     pending = os.environ.get("WH_TOKEN_PENDING_TX", "").strip()
     if pending:
         msg = (f"a launch is already in flight: WH_TOKEN_PENDING_TX={pending}. Check it on the explorer "
-               f"(https://robinhoodchain.blockscout.com/tx/{pending}); then either set WH_TOKEN=<token> and "
-               "remove the pending line from .env, or remove the line to try again.")
+               f"(https://robinhoodchain.blockscout.com/tx/{pending}); set WH_TOKEN=<token> and "
+               "remove the pending line only after verifying its receipt. Never clear unknown launch state to retry.")
         if live:
             raise SystemExit(msg)
         print("NOTE      ", msg)
@@ -138,8 +155,11 @@ def refuse_if_done(live):
         from .db import DB
         db = DB()
         own, inflight = db.meta_get("own_token") or "", db.meta_get("launch_pending") or ""
+        allocation = db.meta_get('launch_allocation')
     except Exception:
-        own, inflight = "", ""
+        raise SystemExit('launch history unavailable; refusing to proceed until private state is checked') from None
+    if allocation and live:
+        raise SystemExit('saved initial allocation exists: use the launch service to reconcile; never launch independently')
     if own or inflight:
         msg = (f"the worm already launched its token ({own})" if own
                else f"the worm's own launch is in flight ({inflight})") + ": refusing to launch another"
@@ -149,10 +169,25 @@ def refuse_if_done(live):
 
 
 def main(argv=None):
+    with operation_lock():
+        return _main(argv)
+
+
+def _main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true", help="send the launch transaction")
     ap.add_argument("--unpinned", action="store_true", help="launch even if previewLaunchEconomics cannot be read")
     a = ap.parse_args(argv)
+    from . import launch_allocation as A
+    if A.enabled():
+        # The service owns durable multi-step execution. Do not create an independent
+        # CLI launch or waive its economic pin when the allocation feature is enabled.
+        if a.live or a.unpinned:
+            raise SystemExit('initial allocation uses the authenticated launch/schedule service; CLI is quote-only')
+        import json
+        print(json.dumps(A.quote(Rpc(C.RPC), params(C.WALLET)['creatorTaxBps']), indent=2))
+        print('Quote only: nothing signed or sent. Funding and allowance simulation are still required.')
+        return
     refuse_if_done(a.live)
     rpc = Rpc(C.RPC)
     acct = account()
@@ -188,14 +223,14 @@ def main(argv=None):
         h, rc = send_tx(rpc, acct, C.FACTORY, data, value=fee, gas=None, gas_floor=GAS_FLOOR, say=print, on_broadcast=note_pending)
     except RpcError as e:
         raise SystemExit(f"{e}\nThe pending line stays in .env. Check the explorer; then set WH_TOKEN=<token> and remove "
-                         "WH_TOKEN_PENDING_TX, or remove the line to try again.")
+                         "WH_TOKEN_PENDING_TX only after confirmed success. Unknown outcomes require review before any retry.")
     token = launched_token(rc)
     if rc.get("status") != "0x1":
         update_env(remove=["WH_TOKEN_PENDING_TX"])
         raise SystemExit(f"launch reverted: https://robinhoodchain.blockscout.com/tx/{h} (fee refunded, gas spent; nothing pending)")
     if not token:
         raise SystemExit(f"mined but no TokenLaunched event: check https://robinhoodchain.blockscout.com/tx/{h}; "
-                         "the pending line stays in .env until you set WH_TOKEN or remove it")
+                         "retain the pending line until the token identity is verified; do not clear it to retry")
     update_env({"WH_TOKEN": token}, remove=["WH_TOKEN_PENDING_TX"])
     print("\nLAUNCHED", p["name"], f"(${p['symbol']})", "token", token)
     print("page      ", f"https://www.ponsfamily.com/launchpad/{token}")
@@ -244,17 +279,25 @@ def _ago(ts):
 # ---- the launch from inside the running worm --------------------------------------------------------
 
 def go(rpc, db, acct, say=None):
+    with operation_lock():
+        from . import launch_allocation as A
+        if A.saved(db) or (A.enabled() and not db.meta_get('launch_pending')):
+            return A.cycle(rpc, db, acct, say)
+        return _go(rpc, db, acct, say)
+
+
+def _go(rpc, db, acct, say=None):
     """The command's steps, done by the worm itself so the screen and the page follow them as they happen.
     The token is kept in the database (a host's environment cannot be rewritten) and picked up from there
     at the next start. Never sends twice: a token already set, or a launch in flight, ends it."""
     from .treasury import watch
-    from .tx import send_tx
+    from .tx import send_tx, ReceiptPending
     say = say or log.info
     if C.TOKEN:
         return None
     pending = db.meta_get("launch_pending") or ""
     if pending:                                       # sent before a restart: settle it from the receipt, send nothing
-        rc = rpc.call("eth_getTransactionReceipt", [pending])
+        rc = finality.receipt(rpc, pending)
         if rc:
             return _settle(db, pending, rc, db.meta_get("launch_label") or "its token")
         return None
@@ -267,7 +310,8 @@ def go(rpc, db, acct, say=None):
     data, econ, salt = encode_call(rpc, p, wallet, False)
     pred, err = dry_run(rpc, wallet, data, fee)
     if err:
-        db.add_event("error", f"launch dry run failed: {err[:120]}")
+        log.warning('launch dry run failed: %s', err)
+        db.add_event("error", "launch dry run failed; see private logs")
         return None
     label = f"{p['name']} (${p['symbol']})"
     db.meta_set("launch_label", label)
@@ -280,15 +324,23 @@ def go(rpc, db, acct, say=None):
 
     try:
         h, rc = send_tx(rpc, acct, C.FACTORY, data, value=fee, gas=None, gas_floor=GAS_FLOOR, say=say, on_broadcast=pending_)
+    except ReceiptPending:
+        db.add_event('launch', 'launch submitted; waiting for chain finality')
+        watch('launch', 'launch submitted; waiting for chain finality', None, done=True)
+        return None
     except Exception as e:
-        db.add_event("error", f"launch failed: {str(e)[:120]}")
-        watch("launch", f"launch outcome needs reconciliation: {str(e)[:80]}", None, done=True)
+        log.warning('launch submission failed: %s', e)
+        db.add_event("error", "launch failed; operator review required")
+        watch("launch", "launch outcome needs reconciliation; operator review required", None, done=True)
         return None
     return _settle(db, h, rc, label)
 
 
 def _settle(db, h, rc, label):
     from .treasury import watch
+    if not rc or rc.get('status') not in ('0x0', '0x1'):
+        db.add_event('error', 'launch receipt status unavailable; retained pending for review')
+        return None
     token = launched_token(rc) if rc.get("status") == "0x1" else None
     if rc.get('status') == '0x1' and not token:
         db.add_event('error', f'launch receipt missing token identity; retained pending: {h}')

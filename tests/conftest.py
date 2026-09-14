@@ -10,9 +10,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
+for name in list(os.environ):
+    if name.startswith('WH_'):
+        os.environ.pop(name)
+TEST_ROOT = pathlib.Path(tempfile.mkdtemp(prefix='worm-tests-'))
+os.environ['WH_ENV_FILE'] = str(TEST_ROOT / '.env')    # never load the operator's real .env
 KEY = "0x" + "11" * 32                                # throwaway key, tests only
 os.environ["WH_SECRET"] = KEY
-os.environ["WH_DATA_DIR"] = tempfile.mkdtemp(prefix="irl-worm-tests-")
+os.environ["WH_DATA_DIR"] = str(TEST_ROOT / 'data')
 os.environ["WH_LIVE"] = "0"
 os.environ["WH_OWNER_WALLET"] = "0x" + "22" * 20
 # keys the real .env may carry that would otherwise reach the tests: pinned to harmless values

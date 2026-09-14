@@ -251,7 +251,11 @@ if(lastState)updateLaunchTape(lastState);
   tokenLink.hidden=true;
   if(schedule.state==='launched'){
    digits.textContent='LAUNCHED';note.textContent='WORM’s token is on-chain.';
+   const allocation=schedule.allocation;
+   if(allocation)note.textContent=allocation.state==='complete'?'Initial allocation complete: 1% to the creator, 1% retained by WORM (plus purchase rounding).':allocation.state==='review'?'Token launched. The initial allocation needs an operator check.':'Token launched with its initial purchase. The creator’s 1% transfer is awaiting completion.';
    if(/^0x[0-9a-f]{40}$/i.test(schedule.token||'')){tokenLink.href='https://www.ponsfamily.com/launchpad/'+schedule.token;tokenLink.hidden=false}
+  }else if(schedule.state==='preparing'){
+   digits.textContent='PREPARING LAUNCH';note.textContent=schedule.reason||'Checking the initial purchase and its spending limits.';
   }else if(schedule.state==='launching'||schedule.state==='pending'){
    digits.textContent=schedule.state==='pending'?'AWAITING CONFIRMATION':'LAUNCH STARTED';
    note.textContent='Follow the launch in the live screen and activity log.';

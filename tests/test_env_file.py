@@ -16,5 +16,8 @@ def test_update_env_writes_the_configured_file(tmp_path, monkeypatch):
 
 
 def test_env_file_setting_is_read_by_config():
-    assert C.ENV_FILE.name in (".env", "rehearsal.env") or C.ENV_FILE.exists() or True   # the path is whatever the environment said
+    from conftest import TEST_ROOT
     assert isinstance(C.ENV_FILE, Path)
+    assert C.ENV_FILE == TEST_ROOT / '.env'
+    assert not C.ENV_FILE.exists()
+    assert not C.AISURPLUS_KEY and not C.TRADING and not C.LIVE

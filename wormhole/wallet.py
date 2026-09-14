@@ -72,15 +72,15 @@ def balances(addr):
         out["eth_rh"] = int(rh.call("eth_getBalance", [addr, "latest"]), 16) / 1e18
         raw = rh.eth_call(C.USDG, call_data("balanceOf(address)", ("address",), (addr,)))
         out["usdg_rh"] = (decode_result(raw, ("uint256",)) or 0) / 1e6
-    except Exception as e:
-        out["rh_error"] = str(e)[:80]
+    except Exception:
+        out["rh_error"] = "Robinhood Chain balance unavailable"
     try:
         base = Rpc(C.BASE_RPC, timeout=30)
         out["eth_base"] = int(base.call("eth_getBalance", [addr, "latest"]), 16) / 1e18
         raw = base.eth_call(C.BASE_USDC, call_data("balanceOf(address)", ("address",), (addr,)))
         out["usdc_base"] = (decode_result(raw, ("uint256",)) or 0) / 1e6
-    except Exception as e:
-        out["base_error"] = str(e)[:80]
+    except Exception:
+        out["base_error"] = "Base balance unavailable"
     return out
 
 

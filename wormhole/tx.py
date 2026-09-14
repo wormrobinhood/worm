@@ -18,7 +18,7 @@ from eth_utils import to_checksum_address
 
 from . import config as C
 from .chain import RpcError
-from . import outbox
+from . import outbox, finality
 
 log = logging.getLogger("wormhole.tx")
 _lock = threading.Lock()
@@ -26,7 +26,7 @@ KNOWN = ("already known", "nonce too low", "already exists")   # the node has th
 BROADCAST_TRIES = 3
 BROADCAST_RETRY_S = 1.5
 RECEIPT_WAIT_S = 120
-RECEIPT_POLL_S = 1.0
+RECEIPT_POLL_S = 5.0
 
 
 def _hex(b):
@@ -85,42 +85,54 @@ def broadcast(rpc, raw, h_local, say):
     raise RpcError(f"broadcast of {h_local} unconfirmed after {BROADCAST_TRIES} attempts: {last}")
 
 
-def wait_receipt(rpc, h, say):
+class ReceiptPending(RpcError):
+    """Submitted, but not yet settled under the receipt policy. Never authorize a new retry."""
+
+
+def wait_receipt(rpc, h, say, *, approval=False):
     for _ in range(int(RECEIPT_WAIT_S / RECEIPT_POLL_S) if RECEIPT_POLL_S else RECEIPT_WAIT_S):
         time.sleep(RECEIPT_POLL_S)
-        rc = rpc.call("eth_getTransactionReceipt", [h])
+        rc = finality.receipt(rpc, h, approval=approval)
         if rc:
             ok = rc.get("status") == "0x1"
-            say(f"mined in block {int(rc['blockNumber'], 16)}: {'SUCCESS' if ok else 'REVERTED'}")
+            say(f"{'confirmed approval' if approval else 'finalized'} in block {int(rc['blockNumber'], 16)}: {'SUCCESS' if ok else 'REVERTED'}")
             return rc
-    raise RpcError(f"no receipt for {h} after {RECEIPT_WAIT_S}s")
+    raise ReceiptPending(f"no settled receipt for {h} after {RECEIPT_WAIT_S}s; retained pending")
 
 
 def recover(rpc):
     """Resume only durably prepared submissions. Unknown preparation blocks for operator review."""
     with sender_lock():
+        finality.audit(rpc)
         unresolved = False
         for item in outbox.pending():
             if item['state'] == 'preparing':
                 raise RuntimeError('transaction preparation interrupted; inspect private outbox before continuing')
-            rc = rpc.call('eth_getTransactionReceipt', [item['hash']])
-            if rc and rc.get('status') in ('0x0', '0x1'):
+            rc = finality.receipt(rpc, item['hash'], approval=item['receipt_mode']=='approval')
+            if rc:
                 outbox.state(item['hash'], 'settled')
             else:
                 unresolved = True
-                if C.LIVE and not (C.DATA_DIR / 'payments.paused').exists():
+                mined = rpc.call('eth_getTransactionReceipt', [item['hash']])
+                if C.LIVE and not mined and not (C.DATA_DIR / 'payments.paused').exists():
                     if item['sender'] != C.WALLET.lower():
                         raise RuntimeError('outbox signer differs from configured wallet; operator review required')
                     broadcast(rpc, item['raw'], item['hash'], log.info)
         return not unresolved
 
 
-def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=True, say=None, on_broadcast=None, min_remaining_eth=0.0, fee_limit_eth=None):
+def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=True, say=None, on_broadcast=None, min_remaining_eth=0.0, fee_limit_eth=None, valid_until=None):
     """Sign, broadcast, wait for the receipt. Returns (hash, receipt), or (hash, None) with wait=False.
     gas: a fixed limit, or None to estimate and add 30%; gas_floor is a minimum either way.
+    valid_until: optional local quote-validity bound, checked before RPC work and immediately before signing.
+    Callers must also encode an on-chain deadline; recovery preserves the original signed bytes.
     on_broadcast is a legacy name: it now MUST persist the pending record BEFORE submission.
     A failed callback stops submission and leaves the private journal for operator review."""
     say = say or log.info
+    def check_freshness():
+        if valid_until is not None and (not math.isfinite(valid_until) or time.time() >= valid_until):
+            raise RuntimeError('transaction quote expired before signing')
+    check_freshness()
     if (C.DATA_DIR / 'payments.paused').exists():
         raise RuntimeError('payments paused by operator')
     if not C.LIVE:
@@ -132,6 +144,7 @@ def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=Tr
     with sender_lock():
         if outbox.pending():
             raise RuntimeError('unresolved transaction: reconcile before sending anything new')
+        finality.audit(rpc)
         nonce = int(rpc.call("eth_getTransactionCount", [frm, "pending"]), 16)
         gas_price = int(int(rpc.call("eth_gasPrice", []), 16) * 1.25)
         if gas is None:
@@ -179,11 +192,18 @@ def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=Tr
             raise RuntimeError(f"insufficient ETH: have {bal / 1e18:.6f}, need about {need / 1e18:.6f}")
         tx = {"to": to, "value": value, "data": data, "nonce": nonce, "gasPrice": gas_price, "gas": gas,
               "chainId": C.CHAIN_ID}
+        # The operator may pause while this sender waits for the lock or slow RPC preflight.
+        if not C.LIVE or (C.DATA_DIR / 'payments.paused').exists():
+            raise RuntimeError('payments paused before signing')
+        check_freshness()
         signed = acct.sign_transaction(tx)
         raw = _hex(signed.raw_transaction)
         h_local = _hex(signed.hash)
         say(f"sending tx to {to[:12]}… nonce {nonce}, gas {gas:,} @ {gas_price / 1e9:.3f} gwei, value {value / 1e18:.6f} ETH")
-        outbox.record(h_local, frm, raw, fee)
+        from .chain import selector
+        approval = ((to.lower() == C.USDG and data[:10] == selector('approve(address,uint256)'))
+                    or (to.lower() == C.PERMIT2 and data[:10] == selector('approve(address,address,uint160,uint48)')))
+        outbox.record(h_local, frm, raw, fee, 'approval' if approval else 'finalized')
         if on_broadcast:
             on_broadcast(h_local)  # exceptions MUST prevent submission
         outbox.state(h_local, 'ready')
@@ -191,7 +211,7 @@ def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=Tr
         say(f"broadcast {h}")
     if not wait:
         return h, None
-    rc = wait_receipt(rpc, h, say)
+    rc = wait_receipt(rpc, h, say, approval=approval)
     if rc.get('status') not in ('0x0', '0x1'):
         raise RuntimeError('invalid receipt status; transaction retained for reconciliation')
     outbox.state(h, 'settled')
