@@ -115,7 +115,7 @@ def recover(rpc):
         return not unresolved
 
 
-def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=True, say=None, on_broadcast=None):
+def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=True, say=None, on_broadcast=None, min_remaining_eth=0.0, fee_limit_eth=None):
     """Sign, broadcast, wait for the receipt. Returns (hash, receipt), or (hash, None) with wait=False.
     gas: a fixed limit, or None to estimate and add 30%; gas_floor is a minimum either way.
     on_broadcast is a legacy name: it now MUST persist the pending record BEFORE submission.
@@ -148,6 +148,33 @@ def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=Tr
                 and 0 <= value / 1e18 <= max_value):
             raise RuntimeError('transaction exceeds configured ETH fee/value limits')
         need = value + gas * gas_price
+        if os.environ.get('WH_GAS_REFILL', '0') == '1':
+            from .claim_policy import setting
+            bootstrap = setting('WH_GAS_BOOTSTRAP_ETH', '0.00005', 0.00001, 0.01)
+            if bal < need + math.ceil(bootstrap * 1e18):
+                raise RuntimeError('transaction would consume protected gas bootstrap reserve')
+        if (not math.isfinite(min_remaining_eth) or min_remaining_eth < 0
+                or (min_remaining_eth > 0 and bal < need + math.ceil(min_remaining_eth * 1e18))
+                or (fee_limit_eth is not None and (not math.isfinite(fee_limit_eth)
+                    or fee_limit_eth <= 0 or fee > fee_limit_eth))):
+            raise RuntimeError('operation gas budget or reserve check failed')
+        # Claim-specific guard also covers direct/manual claim calls and gas movement after
+        # the batch decision. Other transaction types retain their existing spending caps.
+        from .chain import call_data
+        claim_data = call_data("claimToken(address)", ("address",), (C.USDG,))
+        if to.lower() == C.FEE_ESCROW.lower() and data.lower() == claim_data.lower():
+            from .claim_policy import setting
+            from .prices import eth_usd
+            from .treasury import claimable_usdg
+            reserve = setting('WH_CLAIM_ETH_RESERVE', '0.0001', 0, 1)
+            price = eth_usd(strict=True)
+            amount = claimable_usdg(rpc, frm)
+            fraction = setting('WH_CLAIM_MAX_GAS_FRACTION', '0.02', 0.0001, 0.1)
+            if (price is None or not math.isfinite(float(price)) or price <= 0
+                    or not math.isfinite(amount) or amount <= 0
+                    or fee * float(price) > amount * fraction
+                    or bal < need + math.ceil(reserve * 1e18)):
+                raise RuntimeError('claim gas cost or ETH reserve check failed')
         if bal < need:
             raise RuntimeError(f"insufficient ETH: have {bal / 1e18:.6f}, need about {need / 1e18:.6f}")
         tx = {"to": to, "value": value, "data": data, "nonce": nonce, "gasPrice": gas_price, "gas": gas,

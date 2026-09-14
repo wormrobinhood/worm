@@ -6,6 +6,7 @@ Successful receipts require event evidence, confirmed reverts release obligation
 outcomes remain pending until reconciliation. New chain submissions use the private durable outbox.
 """
 import logging
+import json
 import os
 import time
 
@@ -15,7 +16,6 @@ from . import config as C
 from .chain import addr_from_topic, call_data, call_fn, selector, topic
 
 log = logging.getLogger("wormhole.treasury")
-MIN_CLAIM_USD = float(os.environ.get("WH_MIN_CLAIM_USD", "1.0"))    # do not spend gas on dust (lower it only for a rehearsal)
 MIN_FORWARD_USD = 0.50
 WATCH = None               # set by run.py: callable(ev) that tells the screen and the page what the worm is doing right now
 BUSY_SINCE = 0.0           # when the transaction now in flight was broadcast; 0 when none is
@@ -102,6 +102,9 @@ def owed_total(db):
     outstanding = max(0.0, owed_to_owner(db)) + max(0.0, owed_to_burn(db)) + max(0.0, owed_to_gold(db))
     # Pending sends are not owed a second time, but their funds must remain reserved until settlement.
     pending = db.one("SELECT COALESCE(SUM(amount),0) n FROM ledger WHERE kind IN ('forward_pending','burn_pending','gold_pending','compute_pending') AND asset='USDG'")['n']
+    # Refills reserve their exact USDG input until event-backed settlement.
+    if db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gas_refills'"):
+        pending += db.one("SELECT COALESCE(SUM(amount),0) n FROM gas_refills WHERE state='pending'")['n'] / 1e6
     return outstanding + pending
 
 
@@ -285,6 +288,12 @@ def summary(rpc, db):
            "claimed_total": 0.0, "forwarded_total": 0.0, "compute_total": 0.0, "burned_total": 0.0, "burned_qty": 0.0,
            "gold_total": 0.0, "gold_qty": 0.0, "gold_held": None, "gold_usd": None,
            "owed_to_owner": 0.0, "owed_to_burn": 0.0, "owed_to_gold": 0.0, "burn_state": "", "gold_state": "", "ledger": []}
+    try:
+        out['claim_policy'] = json.loads(db.meta_get('claim_policy_status') or '{}')
+        out['fee_sweep'] = json.loads(db.meta_get('fee_sweep_status') or '{}')
+        out['gas_refill'] = json.loads(db.meta_get('gas_refill_status') or '{}')
+    except (ValueError, TypeError):
+        out['claim_policy'] = {'allowed': False, 'reason': 'claim policy status unavailable'}
     if C.WALLET:
         try:
             out["claimable_usdg"] = round(claimable_usdg(rpc, C.WALLET), 4)
@@ -615,14 +624,27 @@ def cycle(rpc, db, acct):
     except Exception as e:
         db.add_event("error", f"ledger reconcile failed: {str(e)[:120]}")
         return
+    from . import gas_refill
+    if not gas_refill.cycle(rpc, db, acct):
+        return
     try:
         claimable = claimable_usdg(rpc, C.WALLET)
     except Exception as e:
         log.info("claimable read failed: %s", e)
         return
-    if claimable >= MIN_CLAIM_USD:
+    from . import claim_policy, fee_sweep
+    if not fee_sweep.cycle(rpc, db, acct, claimable):
+        return
+    try:
+        claimable = claimable_usdg(rpc, C.WALLET)
+    except Exception:
+        return
+    decision = claim_policy.evaluate(rpc, db, claimable)
+    claim_policy.remember(db, decision)
+    if decision["allowed"]:
         if not claim(rpc, db, acct, claimable):
             return
+        db.meta_set("claim_balance_since", "")
     for action in (forward, burn, gold):
         if db.one("SELECT 1 FROM ledger WHERE kind LIKE '%_pending' AND tx IS NOT NULL"):
             return

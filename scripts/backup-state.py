@@ -10,6 +10,8 @@ parser.add_argument('destination', type=Path)
 parser.add_argument('--service-stopped', action='store_true', required=True,
                     help='attest all writers/signers using this state have been stopped')
 args = parser.parse_args()
+args.source = args.source.resolve()
+args.destination = args.destination.resolve()
 os.umask(0o077)
 args.destination.mkdir(mode=0o700, parents=True, exist_ok=False)
 for name in ('wormhole.db', 'transactions.sqlite3'):

@@ -250,6 +250,12 @@ def main():
                     log.warning("%s skipped: books did not run (%s)", name, e)
                 except Exception as e:
                     log.warning("%s failed: %s", name, e)
+            try:
+                from wormhole import ops_health
+                db.meta_set('ops_cycle_at', str(time.time()))
+                ops_health.record(db, ops_health.check(rpc, db, hub))
+            except Exception:
+                log.error('operational health reporting failed; inspect private state')
             hub.notify("mark")
             time.sleep(C.MARK_EVERY_S)
 

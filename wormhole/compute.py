@@ -372,7 +372,11 @@ def plan(db, acct, wallet_usd, runway_ok, live, budget_per_day=None, rpc=None):
     Base for Venice). budget_per_day: the runway's compute budget (the operations share of measured income);
     a month of it must cover one top-up. rpc: the Robinhood Chain node, needed to send a USDG transfer."""
     ensure_tables(db)
-    if live and db.one("SELECT 1 FROM ledger WHERE kind='compute_pending'"):
+    from . import gas_refill, fee_sweep, outbox
+    fee_sweep.ensure(db)
+    if live and (outbox.pending() or gas_refill.pending(db)
+                 or db.one("SELECT 1 FROM fee_sweeps WHERE state='pending'")
+                 or db.one("SELECT 1 FROM ledger WHERE kind LIKE '%_pending'")):
         _say_hourly(db, 'compute payment unresolved: new top-ups paused until reconciliation')
         return {'provider': PROVIDER, 'error': 'payment pending reconciliation'}
     st = status(acct, wallet_usd)
