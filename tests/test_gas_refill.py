@@ -149,3 +149,13 @@ def test_chain_weth_burn_event_reconciles_without_new_transaction(db,rpc,acct,li
     row=db.one('SELECT * FROM gas_refills')
     assert row['state']=='settled' and int(row['received'])==int(row['minimum'])
     assert G.reconcile(rpc,db) and len(rpc.raw)==1
+
+
+def test_reverted_approval_cools_down_before_another_attempt(db,rpc,acct,live,monkeypatch):
+    configure(db,rpc,monkeypatch)
+    monkeypatch.setattr(G,'call_fn',lambda r,c,s,*args:C.WETH if s=='WETH9()' else 0)
+    rpc.receipt_for=lambda h:{'status':'0x0','blockNumber':'0x10','logs':[]}
+    assert G.cycle(rpc,db,acct)
+    assert len(rpc.raw)==1 and db.meta_get('gas_refill_attempt_at')
+    assert G.cycle(rpc,db,acct) and len(rpc.raw)==1
+    assert not db.one('SELECT 1 FROM gas_refills')

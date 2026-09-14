@@ -85,7 +85,7 @@ def reconcile(rpc, db):
     return True
 
 
-def plan(rpc, db):
+def plan(rpc, db, *, check_attempt=True):
     """Fail closed, use exact USDG units, and never count reserved allocations as operations cash."""
     ensure(db)
     if db.one("SELECT 1 FROM ledger WHERE kind LIKE '%_pending'") or pending(db) or outbox.pending():
@@ -102,6 +102,9 @@ def plan(rpc, db):
     cap = setting('WH_GAS_REFILL_MAX_USD', '5', 0.25, 10)
     daily = setting('WH_GAS_REFILL_DAILY_USD', '10', cap, 20)
     cooldown = setting('WH_GAS_REFILL_COOLDOWN_HOURS', '6', 1, 24) * 3600
+    attempt = float(db.meta_get('gas_refill_attempt_at') or 0)
+    if check_attempt and attempt and time.time() - attempt < cooldown:
+        raise ValueError('refill attempt cooldown')
     latest = db.one('SELECT ts FROM gas_refills ORDER BY id DESC LIMIT 1')
     if latest and time.time() - latest['ts'] < cooldown:
         raise ValueError('refill cooldown')
@@ -149,6 +152,9 @@ def cycle(rpc, db, acct):
             return True
         have = call_fn(rpc, C.USDG, 'allowance(address,address)', ('uint256',),
                        ('address', 'address'), (C.WALLET, C.SWAP_ROUTER_V3))
+        # Count attempts before even an allowance is submitted: a confirmed approval revert
+        # must not spend gas again at every runner tick. Preflight-only failures spend nothing.
+        db.meta_set('gas_refill_attempt_at', str(time.time()))
         if have < p['amount']:
             _, rc = tx.send_tx(rpc, acct, C.USDG,
                 call_data('approve(address,uint256)', ('address', 'uint256'), (C.SWAP_ROUTER_V3, p['amount'])),
@@ -157,7 +163,7 @@ def cycle(rpc, db, acct):
             if not rc or rc.get('status') != '0x1':
                 raise ValueError('allowance failed')
         # Approval may take time. Re-quote and recalculate the spendable budget before signing the swap.
-        fresh = plan(rpc, db)
+        fresh = plan(rpc, db, check_attempt=False)
         if fresh is None or fresh['amount'] < p['amount']:
             raise ValueError('refill budget changed after approval')
         p['minimum'] = max(p['minimum'], quote(rpc, p['amount']) * 99 // 100)
