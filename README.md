@@ -11,9 +11,10 @@ The live website is linked in this repository’s About section.
 
 ## Launch status
 
-The website and source code are public. The official $WORM token has **not launched**;
-its launch date has not been set. The website will show the countdown when the creator
-chooses the time. Production payments and live trading remain off during preparation.
+The website and source code are public. The official $WORM token launch is scheduled
+for **September 17, 2026 at 17:39:40 UTC**. Follow the website countdown and live
+status for execution progress: at zero, WORM begins its launch checks. Transaction
+confirmation and the creator allocation follow. Discretionary trading remains off.
 
 The launch plan includes an initial purchase of 2% of supply: 1% retained by WORM and
 1% transferred to its creator. Of claimed fees, 50% go to the creator, 10% buy GLD
@@ -226,4 +227,4 @@ proving they are public.
 
 Before deploying the recovery changes, follow [PAYMENT-RECOVERY.md](docs/PAYMENT-RECOVERY.md): back up both databases, explicitly migrate any historical claim policy, configure authenticated operations and the isolated browser, and verify the final environment. Unknown payments stay reserved until verified; paper learning can continue.
 
-For the local security changes and the server-triggered launch countdown, see [Claude handoff](CLAUDE_HANDOFF.md). No launch time is configured until the operator explicitly sets one.
+For the security changes and server-triggered launch countdown, see [Claude handoff](CLAUDE_HANDOFF.md). The authenticated server schedule controls execution; the website reports its current status.
