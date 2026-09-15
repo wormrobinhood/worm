@@ -73,9 +73,32 @@ def test_params_limits_count_bytes_not_characters(monkeypatch, acct):
     monkeypatch.setenv("WH_TOKEN_X", "x" * 257)
     with pytest.raises(ValueError, match="social"):
         L.params(acct.address)
-    monkeypatch.setenv("WH_TOKEN_X", "x" * 256)
+    monkeypatch.setenv("WH_TOKEN_X", "example_scout")
+    monkeypatch.setenv("WH_TOKEN_DISCORD", "x" * 256)
     p = L.params(acct.address)
     assert p["creatorFeeRecipient"] == acct.address and p["creatorTaxBps"] == 200 and p["socials"][3] == C.SITE_URL
+
+
+@pytest.mark.parametrize('value', ['example_scout', '@example_scout', 'x.com/example_scout',
+                                  'https://x.com/example_scout', 'https://twitter.com/example_scout/'])
+def test_launch_x_is_an_absolute_profile_url(monkeypatch, acct, value):
+    monkeypatch.setenv('WH_TOKEN_X', value)
+    assert L.params(acct.address)['socials'][0] == 'https://x.com/example_scout'
+
+
+@pytest.mark.parametrize('value', ['javascript:alert(1)', 'https://evil.example/example_scout',
+                                  'https://x.com/one/status/123', 'https://x.com@evil.example/worm',
+                                  'https://x.com/worm?next=elsewhere'])
+def test_invalid_launch_social_stops_before_signing(monkeypatch, acct, value):
+    monkeypatch.setenv('WH_TOKEN_X', value)
+    with pytest.raises(ValueError, match='social'):
+        L.params(acct.address)
+
+
+def test_telegram_handle_and_invite_are_absolute_urls():
+    assert L.social_profile('@worm_test', 'Telegram') == 'https://t.me/worm_test'
+    assert L.social_profile('https://t.me/+abc_123', 'Telegram') == 'https://t.me/+abc_123'
+    assert L.social_profile('', 'X') == ''
 
 
 # ---- main -----------------------------------------------------------------------------

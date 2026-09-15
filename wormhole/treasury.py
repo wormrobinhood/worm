@@ -351,7 +351,7 @@ def claim(rpc, db, acct, claimable):
         h, rc = send_tx(rpc, acct, C.FEE_ESCROW, call_data("claimToken(address)", ("address",), (C.USDG,)),
                         on_broadcast=pending)
     except ReceiptPending:
-        db.add_event('treasury', 'fee claim submitted; waiting for chain finality')
+        db.add_event('treasury', 'fee claim submitted; waiting for chain confirmation')
         return False
     except Exception as e:
         log.warning("fee claim failed: %s", e)
@@ -388,7 +388,7 @@ def forward(rpc, db, acct):
     try:
         h, rc = send_tx(rpc, acct, C.USDG, data, on_broadcast=pending)
     except ReceiptPending:
-        db.add_event('treasury', 'forward submitted; waiting for chain finality')
+        db.add_event('treasury', 'forward submitted; waiting for chain confirmation')
         return False
     except Exception as e:
         log.warning("forward failed: %s", e)
@@ -537,7 +537,7 @@ def burn(rpc, db, acct):
         h, rc = send_tx(rpc, acct, C.UNIVERSAL_ROUTER, data, on_broadcast=pending,
                         valid_until=min(quoted_at + QUOTE_MAX_AGE_S, deadline))
     except ReceiptPending:
-        db.add_event('treasury', 'burn submitted; waiting for chain finality')
+        db.add_event('treasury', 'burn submitted; waiting for chain confirmation')
         return False
     except Exception as e:
         log.warning("burn failed: %s", e)
@@ -662,7 +662,7 @@ def gold(rpc, db, acct):
         h, rc = send_tx(rpc, acct, C.SWAP_ROUTER_V3, data, on_broadcast=pending,
                         valid_until=quoted_at + QUOTE_MAX_AGE_S)
     except ReceiptPending:
-        db.add_event('treasury', 'gold purchase submitted; waiting for chain finality')
+        db.add_event('treasury', 'gold purchase submitted; waiting for chain confirmation')
         return False
     except Exception as e:
         log.warning("gold buy failed: %s", e)

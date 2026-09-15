@@ -14,6 +14,8 @@ for operator review. Run one launch operator/signing service per wallet."""
 import argparse
 import logging
 import os
+import re
+from urllib.parse import urlsplit
 import time
 import fcntl
 import threading
@@ -55,10 +57,35 @@ def _pct(x):
 
 
 DEFAULT_DESCRIPTION = (
-    "Worm is a small worm that lives on Robinhood Chain. It digs through every pons "
-    f"graduation, flags bad actors, and tells the community first. Of its fees, {_pct(C.OWNER_SHARE)}% go to its creator, "
-    f"{_pct(C.GOLD_SHARE)}% buy gold it keeps as a reserve, {_pct(C.BURN_SHARE)}% buy back and burn $WORM, and "
-    f"{_pct(C.OPS_SHARE)}% are kept for compute, gas, runway, and treasury. It knows the dirt on every launch. It is a screening aid, not advice.")
+    "WORM is an on-chain scout for Robinhood Chain. It investigates Pons graduations, "
+    "examines holders and creator history, and flags risk signals. Its memory tracks what happens next, "
+    "while AI proposes improvements and paper trading tests strategies. "
+    f"Of its fees, {_pct(C.OWNER_SHARE)}% go to its creator, {_pct(C.GOLD_SHARE)}% buy GLD reserves, "
+    f"{_pct(C.BURN_SHARE)}% buy back and burn $WORM, and {_pct(C.OPS_SHARE)}% fund compute, gas, runway, and treasury. "
+    "Knows the dirt on every launch. A screening aid, not advice.")
+
+
+def social_profile(value, platform):
+    """Store an absolute profile URL: Pons renders on-chain social strings as hrefs."""
+    value = value.strip()
+    if not value:
+        return ''
+    host, hosts, pattern = (
+        ('x.com', {'x.com', 'www.x.com', 'twitter.com', 'www.twitter.com'}, r'[A-Za-z0-9_]{1,15}')
+        if platform == 'X' else
+        ('t.me', {'t.me', 'telegram.me'}, r'[A-Za-z0-9_]{1,64}|\+[A-Za-z0-9_-]{1,128}')
+    )
+    if '://' not in value and '/' not in value:
+        profile = value.removeprefix('@')
+    else:
+        parsed = urlsplit(value if '://' in value else 'https://' + value)
+        if (parsed.scheme != 'https' or parsed.netloc.lower() not in hosts
+                or parsed.query or parsed.fragment):
+            raise ValueError(f'{platform} social must be a profile URL or handle')
+        profile = parsed.path.strip('/')
+    if not re.fullmatch(pattern, profile):
+        raise ValueError(f'{platform} social must be a valid profile URL or handle')
+    return f'https://{host}/{profile}'
 
 
 def params(wallet):
@@ -68,7 +95,7 @@ def params(wallet):
         "symbol": env("WH_TOKEN_SYMBOL", "WORM"),
         "logo": env("WH_TOKEN_LOGO", f"{C.SITE_URL}/logo.png"),
         "description": env("WH_TOKEN_DESCRIPTION", DEFAULT_DESCRIPTION),
-        "socials": (env("WH_TOKEN_X", ""), env("WH_TOKEN_TELEGRAM", ""), env("WH_TOKEN_DISCORD", ""),
+        "socials": (social_profile(env("WH_TOKEN_X", ""), 'X'), social_profile(env("WH_TOKEN_TELEGRAM", ""), 'Telegram'), env("WH_TOKEN_DISCORD", ""),
                     env("WH_TOKEN_WEBSITE", C.SITE_URL), env("WH_TOKEN_FARCASTER", "")),
         "creatorFeeRecipient": wallet,
         "creatorTaxBps": int(env("WH_CREATOR_TAX_BPS", "200")),
@@ -325,8 +352,8 @@ def _go(rpc, db, acct, say=None):
     try:
         h, rc = send_tx(rpc, acct, C.FACTORY, data, value=fee, gas=None, gas_floor=GAS_FLOOR, say=say, on_broadcast=pending_)
     except ReceiptPending:
-        db.add_event('launch', 'launch submitted; waiting for chain finality')
-        watch('launch', 'launch submitted; waiting for chain finality', None, done=True)
+        db.add_event('launch', 'launch submitted; waiting for chain confirmation')
+        watch('launch', 'launch submitted; waiting for chain confirmation', None, done=True)
         return None
     except Exception as e:
         log.warning('launch submission failed: %s', e)

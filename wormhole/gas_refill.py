@@ -179,7 +179,7 @@ def cycle(rpc, db, acct):
         status(db, 'refill confirmed' if done and rc['status']=='0x1' else 'refill requires review')
         return done
     except tx.ReceiptPending:
-        status(db, 'refill submitted; waiting for chain finality')
+        status(db, 'refill submitted; waiting for chain confirmation')
         return False
     except Exception:
         status(db, 'refill paused: budget, gas, quote or receipt needs review')
