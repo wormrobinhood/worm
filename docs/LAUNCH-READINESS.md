@@ -2,6 +2,15 @@
 
 This document describes verification gates, not a declaration that production is ready or risk-free.
 
+## What is ready, and what remains
+
+- **Public website and source:** the confirmation/UI release and public overview are deployed (PRs #9 and #10). Verify the exact revision again after each release.
+- **Token launch:** metadata is approved and the initial allocation has rehearsal evidence. Production funding, a fresh quote and reserve check, operating settings, and the operator's final date/time are still required. Keep the schedule unset during preparation.
+- **Unattended operations:** recurring off-host backups and application-specific delivered alerts remain deferred. Manual restore drills and Railway service notifications do not replace them. Future official-token pool/burn verification remains separate.
+- **Trading:** disabled until the operator explicitly requests it, with live exit and execution validation still required.
+
+Historical handoff entries describe the state at the time they were written. Later release entries supersede earlier local-only statements; a passing test suite does not close every operational gate.
+
 ## Evidence already obtained
 
 The regression suite is rerun for each release; see CLAUDE_HANDOFF.md for the final release count. Separate, limited on-chain rehearsals verified a token launch, local countdown transition, on-chain metadata and creator tax, a USDG-to-ETH conversion, an escrow claim, the new creator allocation payout, and a small GLD purchase. A later bounded rehearsal also exercised the new automatic curve sweep and claim cycle, operations-funded atomic ETH refill, and restart duplicate prevention. These used explicit small-test thresholds. Funded daily claiming remains covered offline; prolonged unattended deployment is not yet proven.
@@ -28,7 +37,7 @@ The website Docs page explains sweep → escrow → adaptive/daily claims → re
 
 ## Open operational gates
 
-- Local treasury hardening now uses exact per-purchase burn/gold approvals, a ten-minute Permit2 expiry, quotes refreshed after approvals, a 30-second pre-sign quote limit, and three-minute on-chain swap deadlines. Legacy excess approvals are reduced when the next eligible purchase runs; no existing on-chain allowance has been revoked merely by editing code. Release and a bounded rehearsal of these changed paths remain required.
+- Treasury hardening released in PR #8 uses exact per-purchase burn/gold approvals, a ten-minute Permit2 expiry, quotes refreshed after approvals, a 30-second pre-sign quote limit, and three-minute on-chain swap deadlines. Legacy excess approvals are reduced when the next eligible purchase runs; no existing on-chain allowance has been revoked merely by editing code. Earlier swaps do not establish bounded-rehearsal evidence for every changed purchase path; retain that verification gate separately from publication.
 - Latest small AI Surplus transfer: confirmed in provider top-up history and a matching 1 USD balance increase. Continue to distinguish chain submission from provider credit.
 - Connect and test an email alert receiver for the private operational health endpoint. A Railway metrics dashboard alone does not provide low-wallet or stuck-payment email alerts.
 - Configure recurring off-host backup delivery and key custody. Two off-host encrypted restoration drills passed, including a fresh paired production snapshot; recurring delivery is not configured by those drills.
