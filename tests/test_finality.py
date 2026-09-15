@@ -14,6 +14,12 @@ from wormhole.chain import RpcError, call_data
 H = '0x' + 'ab' * 32
 
 
+@pytest.fixture(autouse=True)
+def strict_policy(monkeypatch):
+    """Retain regression coverage for the optional stronger settlement mode."""
+    monkeypatch.setenv('WH_TX_CONFIRMATION', 'finalized')
+
+
 def mined(rpc, status='0x1'):
     rpc.latest = 40
     rpc.finalized = 10

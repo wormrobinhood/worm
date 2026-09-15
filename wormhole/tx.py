@@ -95,7 +95,8 @@ def wait_receipt(rpc, h, say, *, approval=False):
         rc = finality.receipt(rpc, h, approval=approval)
         if rc:
             ok = rc.get("status") == "0x1"
-            say(f"{'confirmed approval' if approval else 'finalized'} in block {int(rc['blockNumber'], 16)}: {'SUCCESS' if ok else 'REVERTED'}")
+            label = 'confirmed' if finality.policy() == 'included' else ('confirmed approval' if approval else 'finalized')
+            say(f"{label} in block {int(rc['blockNumber'], 16)}: {'SUCCESS' if ok else 'REVERTED'}")
             return rc
     raise ReceiptPending(f"no settled receipt for {h} after {RECEIPT_WAIT_S}s; retained pending")
 
@@ -203,7 +204,8 @@ def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=Tr
         from .chain import selector
         approval = ((to.lower() == C.USDG and data[:10] == selector('approve(address,uint256)'))
                     or (to.lower() == C.PERMIT2 and data[:10] == selector('approve(address,address,uint160,uint48)')))
-        outbox.record(h_local, frm, raw, fee, 'approval' if approval else 'finalized')
+        mode = 'included' if finality.policy() == 'included' else ('approval' if approval else 'finalized')
+        outbox.record(h_local, frm, raw, fee, mode)
         if on_broadcast:
             on_broadcast(h_local)  # exceptions MUST prevent submission
         outbox.state(h_local, 'ready')

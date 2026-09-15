@@ -1,6 +1,6 @@
 """Opt-in, bounded 2% developer buy: atomic launch/buy, then a durable 1% transfer.
 
-The router has no multi-recipient method. The creator transfer is a separate finalized
+The router has no multi-recipient method. The creator transfer is a separate confirmed
 transaction; a restart never repeats a completed leg. No trading switch is changed.
 Verified interface: PonsV2LaunchAndBuy at config.PONS_ROUTER, Robinhood Chain.
 """

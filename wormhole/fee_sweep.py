@@ -139,7 +139,7 @@ def cycle(rpc, db, acct, escrow):
         status(db, 'curve sweep confirmed' if done and receipt['status']=='0x1' else 'sweep needs receipt review')
         return done
     except tx.ReceiptPending:
-        status(db, 'sweep submitted; waiting for chain finality')
+        status(db, 'sweep submitted; waiting for chain confirmation')
         return False
     except Exception:
         status(db, 'sweep paused: configuration, chain data or receipt needs review')

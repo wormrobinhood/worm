@@ -241,11 +241,23 @@ if(lastState)updateLaunchTape(lastState);
  const digits=document.getElementById('launch-clock-digits'),note=document.getElementById('launch-clock-note');
  const date=document.getElementById('launch-clock-date'),tokenLink=document.getElementById('launch-clock-token');
  let schedule=null,received=0,inflight=false,lastError=false;
+ function progress(stale){
+  const launched=schedule.state==='launched',allocation=schedule.allocation;
+  const statuses={time:schedule.at?'complete':'waiting',chain:launched?'complete':['preparing','launching','pending','due'].includes(schedule.state)?'active':['failed','review'].includes(schedule.state)?'review':'waiting',allocation:allocation?.state==='complete'?'complete':allocation?.state==='review'?'review':launched&&allocation?'active':'waiting'};
+  const details={time:schedule.at?'Date set by the creator':'Waiting for the date',chain:launched?'Token created on-chain':schedule.state==='pending'?'Waiting for confirmation':statuses.chain==='review'?'Operator review required':'Checks before execution',allocation:statuses.allocation==='complete'?'Creator transfer confirmed':statuses.allocation==='review'?'Operator review required':statuses.allocation==='active'?'Creator transfer pending':'1% for WORM · 1% for its creator'};
+  panel.querySelectorAll('[data-launch-step]').forEach(step=>{
+   const key=step.dataset.launchStep;
+   step.dataset.status=stale?'waiting':statuses[key];
+   step.querySelector('.launch-step-detail').textContent=stale?'Refreshing live status…':details[key];
+   if(!stale&&statuses[key]==='active')step.setAttribute('aria-current','step');else step.removeAttribute('aria-current');
+  });
+ }
  function draw(){
   if(!schedule){digits.textContent='—';note.textContent=lastError?'Launch schedule temporarily unavailable.':'Connecting to launch schedule…';return}
   const elapsed=(performance.now()-received)/1000,now=schedule.server_now+elapsed;
   const stale=elapsed>20||lastError;
   panel.dataset.state=schedule.state;
+  progress(stale);
   date.textContent=schedule.at?new Date(schedule.at*1000).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'long'}):'';
   if(schedule.at)date.dateTime=new Date(schedule.at*1000).toISOString();else date.removeAttribute('datetime');
   tokenLink.hidden=true;

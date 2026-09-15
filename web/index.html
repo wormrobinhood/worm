@@ -249,6 +249,11 @@ tr.failed td{color:var(--bad)}
       <h2 id="launch-clock-title">WORM token launch</h2><p id="launch-clock-note">Connecting to launch schedule…</p></div>
     <div class="launch-clock-time"><div id="launch-clock-digits" aria-label="Time until token launch">—</div>
       <time id="launch-clock-date"></time><a id="launch-clock-token" hidden target="_blank" rel="noopener noreferrer">View token ↗</a></div>
+    <ol class="launch-steps" aria-label="Launch progress">
+      <li data-launch-step="time"><span class="launch-step-number">01</span><div><strong>Launch time</strong><span class="launch-step-detail">Waiting for the date</span></div></li>
+      <li data-launch-step="chain"><span class="launch-step-number">02</span><div><strong>On-chain launch</strong><span class="launch-step-detail">Checks before execution</span></div></li>
+      <li data-launch-step="allocation"><span class="launch-step-number">03</span><div><strong>Initial allocation</strong><span class="launch-step-detail">1% for WORM · 1% for its creator</span></div></li>
+    </ol>
   </section>
   <div class="synapse" id="synapse"></div>
   <div class="stats" id="stats"></div><div id="overview-metrics"></div>

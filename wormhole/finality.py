@@ -1,4 +1,4 @@
-"""Finalized financial receipts; short-lived approvals use monitored L2 confirmations.
+"""Verified inclusion by default, with optional finalized settlement.
 
 All evidence is from the configured RPC, not an independent consensus proof. A missing RPC
 answer never downgrades this policy. A changed accepted anchor requires operator review.
@@ -7,6 +7,7 @@ import fcntl
 import functools
 import threading
 import json
+import os
 import re
 
 from . import config as C, outbox
@@ -14,6 +15,13 @@ from .chain import RpcError
 
 APPROVAL_CONFIRMATIONS = 20
 _lock = threading.Lock()
+
+
+def policy():
+    value = os.environ.get('WH_TX_CONFIRMATION', 'included').strip().lower()
+    if value not in ('included', 'finalized'):
+        raise RpcError('invalid WH_TX_CONFIRMATION: expected included or finalized')
+    return value
 
 
 def _serialized(fn):
@@ -64,7 +72,8 @@ def _pause(reason):
 
 
 def _audit(rpc):
-    """Verify the last finalized checkpoint and every approval used before finalization."""
+    """Verify the finalized checkpoint and all receipts accepted before finalization."""
+    policy()  # Invalid configuration must also block signing before any receipt exists.
     if outbox.finality_value('incident'):
         raise RpcError('chain finality incident requires operator review')
     head = _block(rpc, 'finalized')
@@ -88,7 +97,7 @@ def _audit(rpc):
                 or str(rc.get('blockHash', '')).lower() != anchor['block_hash']
                 or rc.get('status') != anchor['status']
                 or _number(rc.get('blockNumber')) != anchor['block_number']):
-            _pause('accepted_approval_receipt_changed')
+            _pause('accepted_receipt_changed')
         if anchor['block_number'] <= height:
             outbox.anchor(rc, True)
     outbox.finality_value('checkpoint', json.dumps({'number':height, 'hash':head['hash'].lower()}))
@@ -117,10 +126,12 @@ def receipt(rpc, h, *, approval=False):
         return None   # a not-yet-accepted payment can reappear in a different canonical block
     is_finalized = number <= finalized_height
     if not is_finalized:
-        if not approval:
+        included = policy() == 'included'
+        if not included and not approval:
             return None
         latest = _block(rpc, 'latest')
-        if _number(latest['number']) - number + 1 < APPROVAL_CONFIRMATIONS:
+        depth = 1 if included else APPROVAL_CONFIRMATIONS
+        if _number(latest['number']) - number + 1 < depth:
             return None
     # The node can change between reads; do not return evidence from two different inclusions.
     again = rpc.call('eth_getTransactionReceipt', [h])
