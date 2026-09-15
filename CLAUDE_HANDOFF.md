@@ -220,3 +220,12 @@ The authorized rehearsal close-out is now complete under the operator-selected i
 - Launch UI adds server-driven progress for schedule, on-chain creation and initial allocation. Long confirmation labels wrap on phones; delayed status does not show active/completed progress. No client-side launch trigger was added.
 - Rehearsal refund is complete and the rehearsal signer remains paused. Production funding and the final launch timestamp are deferred to the operator. Keep LIVE, TRADING and GAS_REFILL off for this release. Recurring backups and application-specific alerts remain explicitly deferred; manual restore drills and Railway notifications do not replace them.
 - Verification before release: 622 offline tests passed, including 17 confirmation-policy cases. A fresh paired encrypted production backup restored both databases with integrity checks passing and no unresolved transactions. Responsive and launch-state UI checks are recorded with the release evidence.
+
+
+## Operator-selected launch schedule: September 15, 2026
+
+The operator requested launch in 48 hours. The authenticated server schedule was set to September 17, 2026 at 17:39:40 UTC (epoch 1789666780). Use UTC in all public launch information; the UI date now uses a fixed UTC display regardless of the visitor's browser timezone. README and launch readiness describe this schedule; the runtime API remains the source of truth for subsequent changes and launch progress.
+
+Before scheduling, the production wallet and creator recipient, approved metadata, 2% initial-buy settings, balances and current quote were verified. The purchase quote was 68.083317 USDG with a 70 USDG cap and a protected 76.50 USDG reserve; ETH covered the launch fee and gas budget. A fresh paired encrypted backup restored successfully with zero unresolved transactions. Keep actual balances and sensitive operational evidence private.
+
+Scheduling and live execution are distinct. Verify WH_LIVE=1 and the intended bounded upkeep settings after arming; WH_TRADING must remain 0. At the countdown deadline the server begins checks, then the atomic launch/buy and the separate creator 1% transfer proceed under receipt validation. Do not manually trigger an early launch. Runtime state and release verification take precedence over older unscheduled/preparation entries. Deferred recurring backups, application-specific delivered alerts and remaining swap/pool verification limits remain open.

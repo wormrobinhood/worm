@@ -258,7 +258,7 @@ if(lastState)updateLaunchTape(lastState);
   const stale=elapsed>20||lastError;
   panel.dataset.state=schedule.state;
   progress(stale);
-  date.textContent=schedule.at?new Date(schedule.at*1000).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'long'}):'';
+  date.textContent=schedule.at?new Date(schedule.at*1000).toLocaleString('en-GB',{dateStyle:'medium',timeStyle:'long',timeZone:'UTC'}):'';
   if(schedule.at)date.dateTime=new Date(schedule.at*1000).toISOString();else date.removeAttribute('datetime');
   tokenLink.hidden=true;
   if(schedule.state==='launched'){
