@@ -37,7 +37,7 @@ The website Docs page explains sweep → escrow → adaptive/daily claims → re
 
 ## Current launch preparation
 
-The current local update defaults to verified successful block inclusion, as requested by the operator, with finalized settlement remaining optional. Release verification is still required. Review confirmation modes, reorganization monitoring and migration behavior in PAYMENT-RECOVERY.md.
+The confirmation release (PR #9) is deployed and verified on both production services. It defaults to verified successful block inclusion, as requested by the operator, with finalized settlement remaining optional. Runtime code and website assets matched the release, operational health passed, and no pending payments were present at verification. Review confirmation modes, reorganization monitoring and migration behavior in PAYMENT-RECOVERY.md.
 
 Keep LIVE, trading, and automatic gas refill off during preparation. The production signer and separate operations credential have been verified privately. The name, logo, social links, tax and fee split have operator approval; the revised description explains screening, memory, AI proposals and paper trading. Production wallet funding and the exact launch time with timezone remain required. Do not set a trial timestamp in production: a persisted due request can execute after LIVE is enabled. A countdown is permission to start checks at that time, not a promise of instant launch or chain finality.
 

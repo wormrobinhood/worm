@@ -1,10 +1,32 @@
-# Worm
+# WORM
 
-*Knows the dirt on every launch.* A small worm on Robinhood Chain. It digs through every
-[pons](https://www.ponsfamily.com/launchpad) graduation, looks for bad actors, tells the community
-first, and grows longer with the treasury it holds.
+*Knows the dirt on every launch.*
 
-Everything from scouting to fee handling is built and was rehearsed with real money on Robinhood Chain: its own wallet, its own token $WORM on pons, fee claiming, a 50/10/20/20 split of every claim (its creator, a gold reserve, a buyback that burns $WORM, its own operations), compute paid from its own balance, a strategy lab and a readiness gate. Trading is off by policy (`WH_TRADING`) until the brain is mature. Nothing is signed unless `WH_LIVE=1`. Five independent code audits (chain indexer, scoring and learning, trading lab, money paths, server and web) were run before launch; their fixes shipped with an offline test suite of 300+ tests.
+WORM is an on-chain scout for Robinhood Chain. It investigates Pons graduations,
+examines holders and creator history, and flags risk signals. Its memory tracks what
+happens next, while AI proposes improvements and paper trading tests strategies.
+
+The live website is linked in this repository’s About section.
+[Read how the engine works](docs/ENGINE-EVIDENCE.md).
+
+## Launch status
+
+The website and source code are public. The official $WORM token has **not launched**;
+its launch date has not been set. The website will show the countdown when the creator
+chooses the time. Production payments and live trading remain off during preparation.
+
+The launch plan includes an initial purchase of 2% of supply: 1% retained by WORM and
+1% transferred to its creator. Of claimed fees, 50% go to the creator, 10% buy GLD
+reserves, 20% buy back and burn $WORM when a supported pool is available, and 20% fund
+compute, gas, runway, and treasury. Buying tokens for the initial allocation or fee
+buybacks is separate from the disabled discretionary trading system.
+
+Bounded rehearsals used separate test tokens and wallets to verify launch and treasury
+paths. The confirmation release passed 622 offline tests and an actual-service
+outage/crash/restart drill with disposable local EVM funds. These checks are not a
+third-party security certification or a guarantee of uninterrupted operation. See
+[launch readiness](docs/LAUNCH-READINESS.md) and [payment recovery](docs/PAYMENT-RECOVERY.md)
+for the evidence, remaining operational gaps and deployment requirements.
 
 ## What it does
 
@@ -65,7 +87,7 @@ only to take ownership of the mounted volume, then runs the worm as the unprivil
 `/healthz` answers 503 once the indexer has not advanced for 3 minutes, and the process exits after 15 minutes
 of stall so the host restarts it.
 
-## Phase 2 commands
+## Operator commands
 
 ```bash
 python -m wormhole.wallet new        # create the worm's key in .env (never printed), show the address
@@ -75,10 +97,12 @@ python -m wormhole.launch            # dry run of the $WORM launch on pons (simu
 WH_LIVE=1 python -m wormhole.launch --live   # the real launch: 0.0005 ETH fee + gas
 ```
 
-The launch refuses to run unpinned (when the factory's economics preview fails) unless `--unpinned` is given,
-writes `WH_TOKEN_PENDING_TX` to `.env` at broadcast and refuses a second launch while it is set, then writes
-`WH_TOKEN` on success. Every send goes through one locked sender that computes the hash locally, never
-re-broadcasts blindly, and records a pending ledger row before waiting for the receipt.
+The launch checks factory economics and refuses duplicate or unresolved launches. Signed
+transactions and pending bookkeeping are saved durably before submission. Recovery checks
+the existing hash and may rebroadcast only the original signed bytes; it does not create a
+new payment merely because an RPC reply was lost. Successful included receipts require
+matching transaction and event evidence; optional finalized settlement remains available.
+See [initial allocation](docs/INITIAL-ALLOCATION.md) before using the 2% launch/buy path.
 
 Token settings live in `.env`: `WH_TOKEN_NAME`, `WH_TOKEN_SYMBOL`, `WH_TOKEN_X` (also linked from the pages), `WH_TOKEN_TELEGRAM`, `WH_CREATOR_TAX_BPS`
 (default 200 = 2%), `WH_SITE_URL` (logo and website links). `WH_OWNER_WALLET` receives `WH_OWNER_SHARE` (default 0.50)
@@ -97,16 +121,23 @@ the worm's operations money. The local non-live screen needs sandboxed Chromium:
 | USDG | `0x5fc5360d0400a0fd4f2af552add042d716f1d168` |
 | pons fee escrow (creator fees, `claimToken(USDG)`) | `0xd3afeb2a57f70ef218aa82451c51b2fb0416ac9e` |
 
-## What is not real
+## Reading the results
 
-The verdicts are rules written by a person and re-weighted by outcomes. They are a screening aid, not
-an audit and not advice. The paper book is hypothetical. The worm has bought nothing.
+Scores are screening assessments, not audits or guarantees. Rules are adjusted using
+observed outcomes; AI proposals pass validation before adoption. Paper trades are
+simulated, and runway figures are projections. Rehearsal transactions used separate
+test tokens and wallets and do not mean the official $WORM token is already live.
 
 ## Demo mode and going live
 
-Everything runs with `WH_LIVE=0` by default: the worm scores, writes its journal, quotes and simulates
-buys, plans compute top-ups, and writes every decision as "would". Flip `WH_LIVE=1` and
-fund the wallet to make the same code sign and send. Phase 3 to 5 settings:
+With `WH_LIVE=0`, WORM can scan, learn, quote and display its decisions without signing
+chain transactions. Live operation additionally requires a funded dedicated wallet,
+private credentials, reviewed limits, durable state and an explicitly chosen launch
+schedule. Keep `WH_TRADING=0` until the operator separately authorizes trading and its
+execution gates are satisfied. Follow [launch readiness](docs/LAUNCH-READINESS.md)
+before changing production execution settings.
+
+Selected settings:
 
 | variable | meaning |
 |---|---|
