@@ -1,3 +1,3 @@
 #!/bin/sh
-# Re-scan every commit about to leave this machine, plus authors and the push URL.
+# WORM: re-scan outgoing commits, author identities, and the push URL.
 exec python3 "$(git rev-parse --show-toplevel)/scripts/leakcheck.py" --push "$1" "$2"
