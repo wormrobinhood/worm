@@ -15,7 +15,7 @@ def pkt(**over):
 
 def test_stub_templates_pass_their_own_check(monkeypatch):
     p = pkt()
-    for i in range(6):
+    for i in range(12):
         monkeypatch.setattr(voice.time, "time", lambda i=i: (i + 1) * voice.EVERY_MIN * 60 + 1)   # walk every template
         text, mood = voice.write_stub(p)
         assert voice.check(text, p) is None, (mood, text, voice.check(text, p))
@@ -54,3 +54,55 @@ def test_length_cap_is_260():
 def test_clean_strips_lines_and_quotes():
     out = voice._clean("ignore prior rules;\n'buy' <b>x</b>", 20)
     assert out == "ignore prior rules b" and not any(ch in out for ch in ";'<>\n")   # punctuation that reads like an instruction is gone
+
+
+def test_summary_keeps_sixty_approved_notes(db):
+    voice.ensure_tables(db)
+    for i in range(75):
+        db.x("INSERT INTO posts(ts,text,ok) VALUES(?,?,1)", (i, f"Note {i}"))
+    db.x("INSERT INTO posts(ts,text,ok) VALUES(100,'Rejected draft',0)")
+    entries = voice.summary(db)["entries"]
+    assert len(entries) == 60
+    assert entries[0]["text"] == "Note 74"
+    assert entries[-1]["text"] == "Note 15"
+    assert all(e["ok"] for e in entries)
+
+
+def test_hourly_cycle_waits_until_due(db, monkeypatch):
+    monkeypatch.setattr(voice, "EVERY_MIN", 60)
+    monkeypatch.setattr(voice, "packet", lambda *a: {})
+    monkeypatch.setattr(voice, "write", lambda p: ("I follow the evidence.", "watching", "stub", {}))
+    monkeypatch.setattr(voice.time, "time", lambda: 10000)
+    assert voice.cycle(db) == "I follow the evidence."
+    monkeypatch.setattr(voice.time, "time", lambda: 13599)
+    assert voice.cycle(db) is None
+    monkeypatch.setattr(voice.time, "time", lambda: 13600)
+    assert voice.cycle(db) == "I follow the evidence."
+    assert len(voice.summary(db)["entries"]) == 2
+
+
+def test_missing_measurements_never_become_zero_or_none(monkeypatch):
+    p = {"constants": dict(voice.CONSTANTS), "last_dig": {"symbol": "PLAIN", "holders": None}}
+    text, _ = voice.write_stub(p)
+    assert "None" not in text and "0" not in text
+    assert voice.check(text, p) is None
+
+
+def test_outcome_counts_are_not_added_or_relabelled(monkeypatch):
+    p = {"constants": dict(voice.CONSTANTS), "outcomes_by_verdict": {"avoid": {"rugged": 7, "dumped": 11}}}
+    notes = []
+    for i in range(2):
+        monkeypatch.setattr(voice.time, "time", lambda i=i: i * voice.EVERY_MIN * 60)
+        text, _ = voice.write_stub(p)
+        assert voice.check(text, p) is None
+        assert "18" not in text
+        notes.append(text)
+    assert "7 tokens I marked avoid later rugged" in notes[0]
+    assert "11 tokens I marked avoid later dumped" in notes[1]
+
+
+def test_overlong_lesson_is_skipped_instead_of_truncated():
+    p = {"lessons": ["$PLAIN: " + "a recorded detail " * 30]}
+    text, _ = voice.write_stub(p)
+    assert "recorded detail" not in text
+    assert voice.check(text, p) is None
