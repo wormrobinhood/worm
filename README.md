@@ -147,7 +147,7 @@ Selected settings:
 | `WH_OPS_TOKEN` | required for every launch trigger (`POST /api/launch`, header X-Ops-Token), including localhost; unset: launch control disabled. Nothing signs unless `WH_LIVE=1` |
 | `WH_AISURPLUS_FALLBACK` | the paid model used when the free open lane is out of its shared weekly quota (`gpt-5.6-luna`); empty disables the fallback |
 | `WH_AISURPLUS_KEY`, `WH_AISURPLUS_DEPOSIT` | the key minted at aisurplus.io/app/keys (a secret, popped from the environment like the wallet key) and the deposit address aisurplus.io/app/wallet shows for Robinhood Chain |
-| `WH_VOICE_EVERY_MIN` | minutes between journal entries (120) |
+| `WH_VOICE_EVERY_MIN` | minutes between journal entries (60) |
 | `WH_TOPUP_USD`, `WH_TOPUP_BELOW_USD` | compute top-up size and threshold (5, 1) |
 | `WH_TOPUP_COOLDOWN_S`, `WH_TOPUP_MAX_PER_DAY`, `WH_TOPUP_ALWAYS` | at most one top-up per 6 h and two a day (21600, 2); top-ups only happen while the journal or the advisor runs at the provider, and never while every AI Surplus model in use is free, unless `WH_TOPUP_ALWAYS=1` |
 | `WH_LAB_MIN_N`, `WH_LAB_LCB_Z`, `WH_LAB_EXPLORE` | cases an exit rule needs (30), the lower-bound factor (1.5), exploration share (0) |

@@ -242,7 +242,7 @@ def snapshot(rpc, db, brain, paper, hub=None):
             "treasury": _treasury_cached(rpc, db), "voice": V.summary(db), "trader": TR.summary(db),
             "compute": _compute_cached(), "live": C.LIVE, "lab": lab_sum,
             "bad_actors": {"serial": serial, "worst": worst},
-            "paper": paper.summary(), "brain": brain_sum, "events": db.events(40), "advisor": ADV.summary(db),
+            "paper": paper.summary(), "brain": brain_sum, "events": db.events(60), "advisor": ADV.summary(db),
             "character": char, "runway": runway, "disclosure": DISCLOSURE,
             "links": {"pons": "https://www.ponsfamily.com/launchpad/", "explorer": "https://robinhoodchain.blockscout.com/",
                       "x": C.X_URL or None, "site": C.SITE_URL}}

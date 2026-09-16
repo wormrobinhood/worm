@@ -244,7 +244,7 @@ if(lastState)updateLaunchTape(lastState);
  function progress(stale){
   const launched=schedule.state==='launched',allocation=schedule.allocation;
   const statuses={time:schedule.at?'complete':'waiting',chain:launched?'complete':['preparing','launching','pending','due'].includes(schedule.state)?'active':['failed','review'].includes(schedule.state)?'review':'waiting',allocation:allocation?.state==='complete'?'complete':allocation?.state==='review'?'review':launched&&allocation?'active':'waiting'};
-  const details={time:schedule.at?'Date set by the creator':'Waiting for the date',chain:launched?'Token created on-chain':schedule.state==='pending'?'Waiting for confirmation':statuses.chain==='review'?'Operator review required':'Checks before execution',allocation:statuses.allocation==='complete'?'Creator transfer confirmed':statuses.allocation==='review'?'Operator review required':statuses.allocation==='active'?'Creator transfer pending':'1% for WORM · 1% for its creator'};
+  const details={time:schedule.at?'Launch scheduled':'Waiting for the date',chain:launched?'Token created on-chain':schedule.state==='pending'?'Waiting for confirmation':statuses.chain==='review'?'Operator review required':'Checks before execution',allocation:statuses.allocation==='complete'?'Creator transfer confirmed':statuses.allocation==='review'?'Operator review required':statuses.allocation==='active'?'Creator transfer pending':'1% for WORM · 1% for its creator'};
   panel.querySelectorAll('[data-launch-step]').forEach(step=>{
    const key=step.dataset.launchStep;
    step.dataset.status=stale?'waiting':statuses[key];
@@ -288,3 +288,51 @@ if(lastState)updateLaunchTape(lastState);
  }
  setInterval(draw,1000);setInterval(refresh,5000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});refresh();
 })();
+
+// Live refreshes preserve the reader's item, including when new rows arrive above it.
+// Restore synchronously after sizing; a delayed scroll restore would fight touch scrolling.
+let readingUpdateDepth=0;
+function readingRows(el){return [...el.querySelectorAll('.card,.post,li,.lesson,tr')].filter(row=>row.closest('.five-scroll')===el)}
+function readingKey(row){return row.dataset.token||row.dataset.readingKey||row.dataset.lessonKey||row.cells?.[0]?.textContent||null}
+function readingLocator(el){
+ if(el.id)return ()=>document.getElementById(el.id);
+ const panel=el.closest('[data-panel]'),index=panel?[...panel.querySelectorAll('.five-scroll')].indexOf(el):-1;
+ return ()=>panel?.querySelectorAll('.five-scroll')[index];
+}
+function preserveReadingPosition(update){
+ if(readingUpdateDepth)return update();
+ const pageY=window.scrollY;
+ const pageAnchor=pageY>0?[...document.querySelectorAll('.mast,#synapse,.panel[data-panel]')].find(el=>{
+  const r=el.getBoundingClientRect();return r.width&&r.top<=80&&r.bottom>80;
+ }):null;
+ const anchorTop=pageAnchor?.getBoundingClientRect().top;
+ const lists=[...document.querySelectorAll('.five-scroll')].filter(el=>el.getClientRects().length).map(el=>{
+  const top=el.getBoundingClientRect().top;
+  // At the top, show new arrivals. Below it, retain the first visible existing row.
+  const anchors=el.scrollTop>1?readingRows(el).filter(row=>row.getBoundingClientRect().bottom>top).map(row=>({key:readingKey(row),offset:row.getBoundingClientRect().top-top})).filter(x=>x.key):[];
+  return {find:readingLocator(el),top:el.scrollTop,left:el.scrollLeft,anchors};
+ });
+ readingUpdateDepth++;
+ try{
+  const result=update();
+  limitPanelLists();
+  for(const saved of lists){
+   const el=saved.find();if(!el||!el.getClientRects().length)continue;
+   const rows=new Map(readingRows(el).map(row=>[readingKey(row),row]));
+   const anchor=saved.anchors.find(a=>rows.has(a.key));
+   const target=anchor?el.scrollTop+rows.get(anchor.key).getBoundingClientRect().top-el.getBoundingClientRect().top-anchor.offset:saved.top;
+   if(Math.abs(el.scrollTop-target)>1)el.scrollTop=target;
+   if(el.scrollLeft!==saved.left)el.scrollLeft=saved.left;
+  }
+  const target=pageAnchor?.isConnected?pageY+pageAnchor.getBoundingClientRect().top-anchorTop:pageY;
+  if(Math.abs(window.scrollY-target)>1)window.scrollTo({top:target,behavior:'instant'});
+  return result;
+ }finally{readingUpdateDepth--}
+}
+const readingRender=render;render=function(s){return preserveReadingPosition(()=>readingRender(s))};
+const readingFeed=renderFeed;renderFeed=function(feed,force){return preserveReadingPosition(()=>readingFeed(feed,force))};
+const readingDig=renderDig;renderDig=function(){return preserveReadingPosition(()=>readingDig())};
+const readingLimits=limitPanelLists;limitPanelLists=function(){
+ if(readingUpdateDepth)return readingLimits();
+ return preserveReadingPosition(()=>readingLimits());
+};

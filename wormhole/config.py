@@ -88,7 +88,7 @@ TRANSFER_LOG_CAP = 60_000    # stop reading a token's transfers past this and ma
 SNIPE_WINDOW_S = 3           # pons snipe tax window (snipeTaxSeconds on the factory)
 FOLLOW_EVERY_S = 6
 MARK_EVERY_S = 300
-MAX_FEED = 30
+MAX_FEED = 60
 
 # Paper portfolio (no real money in phase 1)
 PAPER_SIZE_USD = 10.0

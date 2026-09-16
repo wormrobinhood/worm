@@ -542,3 +542,24 @@ def test_ops_health_uses_separate_read_only_credential(site,monkeypatch):
     response=client.get('/api/ops/health',headers={'X-Health-Token':'health-test-token'})
     assert response.status_code==503 and response.json()['alerts'][0]['code']=='low_eth'
     assert client.post('/api/launch',headers={'X-Health-Token':'health-test-token'}).status_code in (401,403)
+
+
+def test_state_retains_sixty_recent_scans_and_events(db, monkeypatch):
+    from wormhole.learn import Brain
+    from wormhole.paper import Paper
+    monkeypatch.setattr(server, "treasury", lambda rpc: {"usd": 0.0, "usd_real": 0.0, "stage": 0,
+                                                        "stage_name": "hatchling", "stages": 7, "next_usd": 20})
+    monkeypatch.setattr(server, "_compute_cached", lambda: {"provider": "venice", "balance_usd": None})
+    for i in range(65):
+        token = "0x" + f"{i + 1:040x}"
+        add_grad(db, token, scored_at=int(time.time()) - i)
+        db.x("UPDATE launches SET grad_block=? WHERE token=?", (i, token))
+        db.add_event("verdict", f"Assessment {i}")
+    client = TestClient(make_app(FakeRpc(), db, Brain(db), Paper(db), Hub()))
+    data = client.get("/api/state").json()
+    assert len(data["feed"]) == 60
+    assert data["feed"][0]["token"] == "0x" + f"{65:040x}"
+    assert data["feed"][-1]["token"] == "0x" + f"{6:040x}"
+    assert len(data["events"]) == 60
+    assert data["events"][0]["text"] == "Assessment 64"
+    assert data["events"][-1]["text"] == "Assessment 5"
