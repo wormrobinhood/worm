@@ -3,9 +3,8 @@
 A case starts when a verdict scores at least LAB_MIN_SCORE and has a price. Prices are sampled every
 mark cycle for 48 hours, then every arm (exit policy x entry delay) is simulated on the same path with
 that token's own costs (creator tax + curve fee + slippage per side). Arms keep a running net return
-per dollar risked. An arm becomes the policy the paper book and the trader use only when it has
-LAB_MIN_N cases, its lower confidence bound (mean minus LCB_Z standard errors) is above zero and its mean
-beats the default's on the same cases. Exploration (a random arm on a share of new positions) is off by
+per dollar risked. Historical rankings nominate candidates. Promotion requires the separate fixed future cohort in
+strategy_validation; historical fit alone never promotes an arm. Exploration (a random arm on a share of new positions) is off by
 default: the lab already scores every arm on every case, so an explorer position teaches it nothing."""
 import json
 import logging
@@ -112,12 +111,13 @@ def exit_step(policy, st, price, ts):
     return 0.0, None
 
 
-def simulate(arm, path, t0, fee=FEE):
+def simulate(arm, path, t0, fee=FEE, *, policy=None, delay=None, gas_per_side=0.0):
     """Net return per 1 unit risked for `arm` on `path` [(ts, price), ...], scale-free: every cash leg is
     a fraction of the position times price/entry, so a 1e-5 token and a $100 token with the same shape
     return the same number. `fee` is the per-side cost. None when the arm has no usable entry: the first
     tick at or after its delay is missing, more than ENTRY_SLACK_S late, at a zero price, or the last."""
-    policy, delay = parse_arm(arm)
+    if policy is None:
+        policy, delay = parse_arm(arm)
     entry_i = next((i for i, (ts, _) in enumerate(path) if ts >= t0 + delay), None)
     if entry_i is None or entry_i >= len(path) - 1:
         return None
@@ -125,18 +125,18 @@ def simulate(arm, path, t0, fee=FEE):
     if ets > t0 + delay + ENTRY_SLACK_S or not e or e <= 0:
         return None
     st = {"entry": e, "entry_ts": ets, "qty_left": 1.0, "tp_done": [], "peak": e, "trail_on": False}
-    cash = 0.0
+    cash = -gas_per_side
     qty_scale = 1.0 / (1 + fee)          # the entry fee buys fewer tokens
     for ts, p in path[entry_i + 1:]:
         frac, why = exit_step(policy, st, p, ts)
         while frac > 0:
-            cash += frac * qty_scale * (p / e) * (1 - fee)
+            cash += frac * qty_scale * (p / e) * (1 - fee) - gas_per_side
             st["qty_left"] -= frac
             frac, why = exit_step(policy, st, p, ts) if st["qty_left"] > 0 else (0, None)
         if st["qty_left"] <= 1e-9:
             break
     if st["qty_left"] > 1e-9:
-        cash += st["qty_left"] * qty_scale * (path[-1][1] / e) * (1 - fee)
+        cash += st["qty_left"] * qty_scale * (path[-1][1] / e) * (1 - fee) - gas_per_side
     return cash - 1.0                    # net return per 1 unit risked
 
 
@@ -237,7 +237,7 @@ def ranking(db):
     return out
 
 
-def current_policy(db):
+def research_policy(db):
     """The arm in use: the best-bounded arm with enough cases whose lower bound is above zero and whose
     mean beats the default's on the same table, else the default."""
     arms = ranking(db)
@@ -252,6 +252,14 @@ def current_policy(db):
     return DEFAULT, "default until the lab has enough cases"
 
 
+def current_policy(db):
+    from . import strategy_validation
+    evidence = strategy_validation.summary(db)
+    if evidence['passed']:
+        return evidence['arm'], 'confirmed on a fixed future cohort'
+    return DEFAULT, 'default until a fixed future cohort passes'
+
+
 def pick_arm(db):
     """Arm for a new position: the current policy, or a random other arm when exploration is on."""
     best, _ = current_policy(db)
@@ -261,9 +269,10 @@ def pick_arm(db):
 
 
 def summary(db):
+    from . import strategy_validation
     ensure_tables(db)
     cur, why = current_policy(db)
-    return {"in_use": cur, "why": why, "arms": ranking(db), "min_n": LAB_MIN_N, "cost_per_side": FEE, "explore": EXPLORE,
+    return {"in_use": cur, "why": why, "validation": strategy_validation.summary(db), "arms": ranking(db), "min_n": LAB_MIN_N, "cost_per_side": FEE, "explore": EXPLORE,
             "cases_active": db.one("SELECT COUNT(*) n FROM lab_cases WHERE status='active'")["n"],
             "cases_resolved": db.one("SELECT COUNT(*) n FROM lab_cases WHERE status='resolved'")["n"],
             "cases_stale": db.one("SELECT COUNT(*) n FROM lab_cases WHERE status='stale'")["n"],

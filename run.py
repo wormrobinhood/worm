@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 
+from wormhole import strategy_validation
 from wormhole import config as C
 from wormhole.chain import Rpc
 from wormhole.db import DB, prune_launches
@@ -40,7 +41,7 @@ def build():
     launch_schedule.initialize(db)
     advisor.load(db)                              # learned exit arms into the lab before anything parses an arm name
     brain = Brain(db)
-    paper = Paper(db)
+    paper = Paper(db, rpc)
     hub = Hub()
     newest = lambda: db.one("SELECT token,name,symbol,grad_ts FROM launches WHERE graduated=1"
                             " ORDER BY grad_block DESC LIMIT 1")
@@ -234,6 +235,7 @@ def main():
                 T._say_hourly(db, 'error', 'payments paused: transaction journal needs reconciliation')
             stages = [("own", lambda: L.announce(db)),
                       ("prices", lambda: refresh_scored(db)), ("lab", lambda: lab.tick(db)),
+                      ("strategy_validation", lambda: strategy_validation.tick(db, rpc)),
                       ("paper", paper.retry_pending), ("paper mark", paper.mark), ("brain", brain.check),
                       ("shadow", lambda: advisor.shadow.evaluate(db)),
                       ("advisor", lambda: advisor.due(db)[0] and advisor.run(db, brain.summary(), lab.summary(db))),

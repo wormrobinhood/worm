@@ -140,8 +140,12 @@ def compute(brain_summary, lab_summary, runway, min_trade_usd=10.0):
 
     total = int(round(sum(WEIGHTS[p["id"]] * p["score"] for p in parts)))
     evidence_ok = (n_healthy >= HEALTHY_MIN and n_avoid >= HEALTHY_MIN and sk > 0)
-    ready = bool(total >= READY_AT and evidence_ok and parts[0]["positive"] and runway.get("can_invest"))
-    nxt = next((p for p in parts if p["score"] < 100), None)
+    validation = lab_summary.get("validation") or {}
+    prospective_ok = bool(validation.get("passed"))
+    if not prospective_ok:
+        parts[0]["detail"] += "; fresh validation: %d/%d completed (%s)" % (validation.get("n", 0), validation.get("required", 30), validation.get("status", "not started"))
+    ready = bool(prospective_ok and total >= READY_AT and evidence_ok and parts[0]["positive"] and runway.get("can_invest"))
+    nxt = parts[0] if not prospective_ok else next((p for p in parts if p["score"] < 100), None)
     return {"score": total, "ready_at": READY_AT, "ready": ready, "parts": parts, "weights": WEIGHTS,
             "next": (nxt["label"] + ": " + nxt["detail"]) if nxt else "every part is at full marks",
-            "gate": "real trades require %d%% readiness, positive measured skill, at least 10 checked healthy and 10 avoid verdicts, a positive strategy bound and surplus; execution safety gates also apply" % READY_AT}
+            "gate": "real trades require %d%% readiness, positive measured skill, at least 10 checked healthy and 10 avoid verdicts, a positive strategy bound, a passing fixed future cohort and surplus; execution safety gates also apply" % READY_AT}

@@ -22,7 +22,7 @@ def test_weights_sum_to_one():
 def test_real_money_and_full_evidence_is_ready(monkeypatch):
     monkeypatch.setattr(lab, "LAB_MIN_N", 30)
     card = {"avoid": {"rugged": 12, "dumped": 3, "flat": 2}, "looks healthy": {"grew": 5, "flat": 5, "rugged": 1}}
-    r = R.compute({"scorecard": card}, _lab(40, 0.15, stdev=0.3), RUNWAY_OK)   # lower bound +5.5%
+    r = R.compute({"scorecard": card}, {**_lab(40, 0.15, stdev=0.3), "validation": {"passed": True}}, RUNWAY_OK)   # lower bound +5.5%
     assert part(r, "lab")["positive"] is True and abs(part(r, "lab")["lcb"] - 0.0551) < 1e-3
     assert part(r, "accuracy")["score"] == 100
     assert r["score"] >= R.READY_AT and r["ready"] is True
@@ -83,3 +83,9 @@ def test_score_is_bounded():
     assert 0 <= r["score"] <= 100 and all(0 <= p["score"] <= 100 for p in r["parts"])
     assert set(r) == {"score", "ready_at", "ready", "parts", "weights", "next", "gate"}
     assert [p["id"] for p in r["parts"]] == ["lab", "accuracy", "runway", "surplus"]
+
+
+def test_historical_edge_without_future_validation_cannot_unlock_trading():
+    card = {"avoid": {"rugged": 100}, "looks healthy": {"grew": 100}}
+    r = R.compute({"scorecard": card}, _lab(100, 0.5, stdev=0.01), RUNWAY_OK)
+    assert r['ready'] is False and 'fresh validation' in r['next']

@@ -239,3 +239,59 @@ Scheduling and live execution are distinct. Verify WH_LIVE=1 and the intended bo
 - Refreshes retain the reader's visible row and offset, including tables whose scroll wrappers are rebuilt. Intentional tab navigation still resets its lists.
 - Validation: 628 offline Python tests pass. Chromium checks at 390px and 1440px verify three repeated prepends in each list, page position, viewport-height changes, scan expansion, recreated learning tables and no horizontal overflow. Native phone touch momentum and Safari have not been tested.
 - Deployment setting: `WH_VOICE_EVERY_MIN=60`. Launch scheduling, transactions, trading policy and wallet configuration are outside this update.
+
+## Local trading hardening: 2026-09-17
+
+The user accepted the recommendation to improve paper evidence and execution safeguards before
+considering real trading. This update is **local only**. Nothing was pushed, deployed, enabled or
+sent on chain. `LIVE_SELL_READY=False` remains in the source; runtime flags and private files were
+not edited. Do not treat this work or passing tests as authorization to open trading.
+
+- New `trade_checks.py` shares read-only USDG pool, fresh price, buy/reverse quote, gas, impact and
+  round-trip checks. New paper entries require complete healthy scores of at least 70; quote/gas
+  failures defer entry. Old rows retain their legacy model. Policies are frozen per new position;
+  partial exits need quotes before profit flags advance, and stale valuations are labeled in the UI.
+- New `strategy_validation.py` freezes a research candidate and default before 30 future eligible
+  tokens from distinct unseen creators. It records future paths separately, includes stressed costs
+  and gas, fails incomplete cohorts, and waits for the entire fixed sample. Promotion requires a
+  positive return bound and (for alternatives) a positive paired improvement bound. Passes expire
+  after seven days or policy changes. Historical rankings remain exploratory. Readiness and live
+  entry code independently require a current prospective pass. This is still simulation, not proof
+  of executable profits or immunity to correlated markets.
+- New `live_trading.py` implements a gated USDG buy/sell path: exact token/Permit2 approvals with
+  readback and expiry, refreshed quotes, minimum output and deadlines, integer token amounts,
+  durable pre-broadcast hashes and receipt-derived net transfers. Atomic settlement is idempotent.
+  Ambiguous orders keep their hash/slot; missing receipt evidence becomes REVIEW, not a guessed
+  fill. Live ETH entry support is withheld because its settlement path was incomplete. Demo
+  behavior and historical rows remain separate. The existing private outbox recovers signed bytes.
+- New `trade_risk.py` blocks entries on unpriced holdings or gross loss at the configured trigger
+  (default $10), with a 24-hour latch. Winners do not erase losing positions. Reverted buys and
+  interrupted approval attempts reserve estimated gas. Exits ignore the entry policy/readiness/loss
+  pause; the separate live-exit release gate and global sender recovery rules still apply. This is
+  an observed-loss trigger, not a guaranteed loss ceiling. Fees remain conservative USD estimates.
+- Main marker runs prospective trials. README and LAUNCH-READINESS link to
+  `docs/TRADING-HARDENING.md`, which describes migration behavior and remaining rehearsal gates.
+  No production data migration was executed locally; schema additions are additive at startup.
+
+Verification: **663 offline tests passed**, including prospective-cohort leakage/missing-data/
+expiry checks, quote and gas rejection, exact approval readbacks, partial/full sells, receipt
+mismatches, rollback on bookkeeping failure, missing broadcast acknowledgements, duplicate
+reconciliation and loss gating. One existing Starlette/AnyIO deprecation warning remains.
+Inline website JavaScript syntax and `git diff --check` passed.
+
+Still required before any live pilot: review this exact revision, collect prospective evidence,
+inspect quoted paper results, rehearse the new USDG buy/partial/full-exit path on a separate bounded
+wallet, verify actual gas and failure recovery, review polling latency and alerts/backups, and get
+separate operator authorization. Earlier launch/treasury rehearsals do not cover these new orders.
+
+
+## Trading hardening publication: 2026-09-17
+
+The operator subsequently authorized publication to the dedicated WORM repository and Railway.
+This supersedes the local-only publication restriction in the entry above, while preserving the
+separate prohibition on enabling discretionary trading. Before publication, the repository SSH
+identity and Chrome account were verified as WORM, the commit author/committer used the dedicated
+GitHub noreply address, and the production variable and public state both confirmed trading off.
+The current 663-test suite and inline JavaScript syntax checks passed. No private state, local work
+artifacts or environment credentials belong in the release. GitHub checks and Railway deployment
+health must pass before reporting the release as complete.

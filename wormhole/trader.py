@@ -1,14 +1,10 @@
-"""Phase 4: buys from the surplus above the 90-day reserve, exits by the lab's policy, every decision public.
+"""Discretionary trading, separate from launch allocation and treasury buybacks.
 
-Demo (WH_LIVE=0): the same decisions with real quotes from the Uniswap v4 Quoter and a simulated swap,
-written as 'would'. Live: swaps through the Uniswap v4 Universal Router, and only once live sells exist
-(LIVE_SELL_READY): a buy without a stop is not a strategy.
-Policy: verdict 'looks healthy' with complete data and score >= WH_BUY_MIN_SCORE (70); one position per
-token; size min(WH_MAX_POSITION_USD, 10% of the surplus); at most WH_MAX_OPEN open; WH_MAX_DAILY_USD a
-day, both caps re-checked before every buy. Exits: the strategy lab's current policy.
-Pools: quote asset USDG or ETH, single hop. Others are skipped once and say so.
-Live buys are written as PENDING before the broadcast and reconciled from the receipt on the next mark,
-so a failure between the two can never re-buy the same token or escape the daily cap."""
+Historical demo orders keep their original model. New live orders use the bounded USDG pilot in
+live_trading; its release gate remains false until a funded rehearsal is explicitly authorized.
+Readiness, a passing future strategy trial, surplus and risk limits gate buys. Exits remain independent
+of those entry gates. Orders are settled from verified receipts, never from expected quote amounts.
+"""
 import json
 import logging
 import os
@@ -20,7 +16,7 @@ from eth_utils import keccak
 from . import finality
 from . import config as C
 from .chain import addr_from_topic, selector
-from . import lab
+from . import lab, live_trading, trade_checks, trade_risk
 from . import readiness as RD
 from .pons import POOL_REGISTERED, TRANSFER
 from .prices import eth_usd, token_prices, usable_price
@@ -33,11 +29,11 @@ KEY_T = "(address,address,uint24,int24,address)"
 QUOTE_T = f"({KEY_T},bool,uint128,bytes)"
 SWAP_T = f"({KEY_T},bool,uint128,uint128,uint160,bytes)"   # the router on this chain still carries sqrtPriceLimitX96 (0: no limit); the quoter does not
 V4_SWAP, SWAP_EXACT_IN_SINGLE, SETTLE_ALL, TAKE_ALL = b"\x10", b"\x06", b"\x0c", b"\x0f"
-MIN_SCORE = int(os.environ.get("WH_BUY_MIN_SCORE", "70"))
+MIN_SCORE = trade_checks.MIN_SCORE
 MAX_POSITION_USD = float(os.environ.get("WH_MAX_POSITION_USD", "10"))
 MAX_OPEN = int(os.environ.get("WH_MAX_OPEN", "5"))
 MAX_DAILY_USD = float(os.environ.get("WH_MAX_DAILY_USD", "30"))
-LIVE_SELL_READY = False       # flip only when mark() can sell live positions (Permit2 approvals + V4 sell path)
+LIVE_SELL_READY = False       # release gate: bounded USDG exits need a funded rehearsal before enabling
 BLOCK_AFTER_FAIL_S = 6 * 3600 # a token whose buy failed before broadcast is not retried for this long
 SAY_EVERY_S = 3600            # repeated skip messages are written at most this often
 
@@ -48,11 +44,17 @@ def ensure_tables(db):
     db.x("CREATE TABLE IF NOT EXISTS positions(token TEXT PRIMARY KEY, symbol TEXT, opened_ts INTEGER, entry_usd REAL,"
          " size_usd REAL, qty REAL, qty_left REAL, recovered_usd REAL DEFAULT 0, peak_usd REAL, realized_usd REAL DEFAULT 0,"
          " status TEXT, mode TEXT, quote TEXT, pool_key TEXT, closed_ts INTEGER, reason TEXT, policy TEXT, tp_done TEXT, trail_on INTEGER DEFAULT 0)")
-    for col in ("policy TEXT", "tp_done TEXT", "trail_on INTEGER DEFAULT 0"):
+    for col in ("policy TEXT", "tp_done TEXT", "trail_on INTEGER DEFAULT 0", "policy_spec TEXT", "qty_raw TEXT", "qty_left_raw TEXT"):
         try:
             db.x(f"ALTER TABLE positions ADD COLUMN {col}")
         except Exception:
             pass
+    for col in ("execution TEXT", "gas_usd REAL DEFAULT 0"):
+        try:
+            db.x(f"ALTER TABLE trades ADD COLUMN {col}")
+        except Exception:
+            pass
+    db.x("CREATE TABLE IF NOT EXISTS trade_attempts(id INTEGER PRIMARY KEY,ts INTEGER,token TEXT,side TEXT,gas_usd REAL,trade_id INTEGER)")
     db.x("CREATE TABLE IF NOT EXISTS trade_intents(token TEXT PRIMARY KEY, arm TEXT, scored_at INTEGER, status TEXT, blocked_until INTEGER)")
     for col in ("status TEXT", "blocked_until INTEGER"):
         try:
@@ -126,14 +128,14 @@ def quote_buy(rpc, pk, token, amount_in):
     return int(out), int(gas), zero_for_one
 
 
-def swap_calldata(pk, zero_for_one, amount_in, min_out, currency_in, currency_out):
+def swap_calldata(pk, zero_for_one, amount_in, min_out, currency_in, currency_out, deadline=None):
     actions = SWAP_EXACT_IN_SINGLE + SETTLE_ALL + TAKE_ALL
     params = [encode([SWAP_T], [(_key_tuple(pk), zero_for_one, amount_in, min_out, 0, b"")]),
               encode(["address", "uint256"], [currency_in, amount_in]),
               encode(["address", "uint256"], [currency_out, min_out])]
     inputs = [encode(["bytes", "bytes[]"], [actions, params])]
     return selector("execute(bytes,bytes[],uint256)") + encode(["bytes", "bytes[]", "uint256"],
-                                                             [V4_SWAP, inputs, int(time.time()) + 600]).hex()
+                                                             [V4_SWAP, inputs, deadline if deadline is not None else int(time.time()) + 600]).hex()
 
 
 def simulate_buy(rpc, wallet, pk, token, amount_in, min_out, zero_for_one):
@@ -197,7 +199,7 @@ def spent_today(db):
 def open_count(db):
     """Open positions plus live buys still waiting for their receipt: both hold a slot."""
     return (db.one("SELECT COUNT(*) n FROM positions WHERE status='open'")["n"]
-            + db.one("SELECT COUNT(*) n FROM trades WHERE side='buy' AND note='PENDING'")["n"])
+            + db.one("SELECT COUNT(*) n FROM trades WHERE side='buy' AND note IN ('PENDING','REVIEW')")["n"])
 
 
 def candidates(db, limit=3):
@@ -207,7 +209,7 @@ def candidates(db, limit=3):
     return [r for r in db.q("SELECT s.token, s.score, s.scored_at, l.symbol FROM scores s JOIN launches l ON l.token=s.token"
                 " WHERE s.verdict='looks healthy' AND s.score>=? AND s.scored_at>=? AND s.partial=0"
                 " AND s.token NOT IN (SELECT token FROM positions)"
-                " AND s.token NOT IN (SELECT token FROM trades WHERE note='PENDING' AND token IS NOT NULL)"
+                " AND s.token NOT IN (SELECT token FROM trades WHERE note IN ('PENDING','REVIEW') AND token IS NOT NULL)"
                 " AND s.token NOT IN (SELECT token FROM trade_intents WHERE status IS NOT NULL OR COALESCE(blocked_until,0)>?)"
                 " ORDER BY s.scored_at DESC LIMIT ?", (MIN_SCORE, now - 3 * 3600, now, limit))
             if not (C.TOKEN and r["token"].lower() == C.TOKEN)]          # never its own token
@@ -231,6 +233,8 @@ def decide(rpc, db, runway, live, acct=None, ready=None):
     if live and acct and not LIVE_SELL_READY:
         _say_once(db, "trade", "live buys stay off until live sells exist")
         return
+    if live:
+        return live_trading.decide(rpc, db, runway, acct, ready)
     spent = spent_today(db)
     n_open = open_count(db)
     if n_open >= MAX_OPEN or spent >= MAX_DAILY_USD:
@@ -275,83 +279,24 @@ def decide(rpc, db, runway, live, acct=None, ready=None):
             continue
         min_out = int(out * 0.97)
         px = size / (out / 1e18)
-        if live and acct:
-            if pk["quote"] != C.ZERO:
-                _skip(db, token, sym, "unsupported", f"skip ${sym}: live USDG-quoted buys need the Permit2 setup (phase 4 live step)")
-                continue
-            # the row exists before the network hears of the buy: a crash or a raise in between leaves a
-            # PENDING/FAILED trace that blocks a second buy and counts against the daily cap
-            db.x("INSERT INTO trades(ts,token,symbol,side,usd,qty,price_usd,tx,mode,note) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                 (now, token, sym, "buy", size, out / 1e18, px, None, "live", "PENDING"))
-            tid = db.one("SELECT MAX(id) id FROM trades")["id"]
-            try:
-                data = swap_calldata(pk, zfo, amount_in, min_out, C.ZERO, token)
-                h, _ = send_tx(rpc, acct, C.UNIVERSAL_ROUTER, data, value=amount_in, wait=False)
-                db.x("UPDATE trades SET tx=? WHERE id=?", (h, tid))
-                db.add_event("trade", f"buying ${size:.2f} of ${sym} (about {out / 1e18:,.0f} tokens, arm {it['arm']}): sent {h}", token)
-                n_open += 1
-                spent += size
-            except Exception as e:
-                log.warning("trade submission failed: %s", e)
-                db.x("UPDATE trades SET note=? WHERE id=?", ("FAILED: operator review required", tid))
-                db.x("UPDATE trade_intents SET blocked_until=? WHERE token=?", (now + BLOCK_AFTER_FAIL_S, token))
-                db.add_event("error", f"buy ${sym} outcome needs review; not retried for {BLOCK_AFTER_FAIL_S // 3600} h", token)
-        else:
-            sim = simulate_buy(rpc, wallet, pk, token, amount_in, min_out, zfo)
-            db.x("INSERT INTO trades(ts,token,symbol,side,usd,qty,price_usd,tx,mode,note) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                 (now, token, sym, "buy", size, out / 1e18, px, None, "demo", f"quote {out / 1e18:,.0f} tokens for {size:.2f} {qname}; {sim}"))
-            db.x("INSERT OR REPLACE INTO positions(token,symbol,opened_ts,entry_usd,size_usd,qty,qty_left,peak_usd,status,mode,quote,pool_key,policy,tp_done)"
-                 " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (token, sym, now, px, size, out / 1e18, out / 1e18, px, "open", "demo", qname, json.dumps(dict(pk)), it["arm"], "[]"))
-            db.add_event("trade", f"demo: would buy ${size:.2f} of ${sym} for {out / 1e18:,.0f} tokens, arm {it['arm']} ({sim})", token)
-            n_open += 1
-            spent += size
+        sim = simulate_buy(rpc, wallet, pk, token, amount_in, min_out, zfo)
+        db.x("INSERT INTO trades(ts,token,symbol,side,usd,qty,price_usd,tx,mode,note) VALUES(?,?,?,?,?,?,?,?,?,?)",
+             (now, token, sym, "buy", size, out / 1e18, px, None, "demo", f"quote {out / 1e18:,.0f} tokens for {size:.2f} {qname}; {sim}"))
+        db.x("INSERT OR REPLACE INTO positions(token,symbol,opened_ts,entry_usd,size_usd,qty,qty_left,peak_usd,status,mode,quote,pool_key,policy,tp_done)"
+             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (token, sym, now, px, size, out / 1e18, out / 1e18, px, "open", "demo", qname, json.dumps(dict(pk)), it["arm"], "[]"))
+        db.add_event("trade", f"demo: would buy ${size:.2f} of ${sym} for {out / 1e18:,.0f} tokens, arm {it['arm']} ({sim})", token)
+        n_open += 1
+        spent += size
 
 
 def reconcile(rpc, db):
-    """Live buys broadcast earlier: read the receipt. Mined and successful opens the position with the
-    quantity the wallet actually received (the token's Transfer logs; the quote as a fallback); reverted
-    is written as such. No receipt yet leaves the row PENDING, holding its slot and its share of the cap."""
+    """Reconcile durable live intents; incomplete evidence stays held for review."""
     ensure_tables(db)
-    wallet = C.WALLET
-    for t in db.q("SELECT * FROM trades WHERE side='buy' AND note='PENDING' AND tx IS NOT NULL"):
-        try:
-            rc = finality.receipt(rpc, t["tx"])
-        except Exception as e:
-            log.info("receipt for %s not read: %s", t["tx"], e)
-            continue
-        if not rc:
-            continue
-        if rc.get("status") != "0x1":
-            db.x("UPDATE trades SET note='REVERTED' WHERE id=?", (t["id"],))
-            db.x("UPDATE trade_intents SET blocked_until=? WHERE token=?", (int(time.time()) + BLOCK_AFTER_FAIL_S, t["token"]))
-            db.add_event("error", f"buy ${t['symbol']} reverted on chain: {t['tx']}; not retried for {BLOCK_AFTER_FAIL_S // 3600} h", t["token"])
-            continue
-        qty = received_qty(rc, t["token"], wallet) if wallet else None
-        if not qty:
-            qty = t["qty"]
-        px = t["usd"] / qty if qty else t["price_usd"]
-        db.x("UPDATE trades SET note='SUCCESS', qty=?, price_usd=? WHERE id=?", (qty, px, t["id"]))
-        pk = db.one("SELECT * FROM pools WHERE token=?", (t["token"],))
-        it = db.one("SELECT arm FROM trade_intents WHERE token=?", (t["token"],))
-        qname = "ETH" if pk and pk["quote"] == C.ZERO else ("USDG" if pk and pk["quote"] == C.USDG else None)
-        db.x("INSERT OR REPLACE INTO positions(token,symbol,opened_ts,entry_usd,size_usd,qty,qty_left,peak_usd,status,mode,quote,pool_key,policy,tp_done)"
-             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-             (t["token"], t["symbol"], t["ts"], px, t["usd"], qty, qty, px, "open", "live", qname,
-              json.dumps(dict(pk)) if pk else None, (it["arm"] if it else None) or lab.DEFAULT, "[]"))
-        db.add_event("trade", f"bought ${t['usd']:.2f} of ${t['symbol']} ({qty:,.0f} tokens received)", t["token"])
+    live_trading.reconcile(rpc, db)
 
 
 def mark(rpc, db, live, acct=None):
-    """Exits by the lab's arm on each position. Demo positions are sold as 'would sell'. Live positions
-    only track their peak until the live sell path exists (LIVE_SELL_READY); the sell itself is deferred.
-
-    Live sell path, still to build (in this order, each written as PENDING first like the buy):
-      1. once per token: token.approve(PERMIT2, max) and PERMIT2.approve(token, UNIVERSAL_ROUTER, uint160.max, expiry)
-      2. amountIn = the wallet's balanceOf(token) share to sell (not qty_left, which may be stale)
-      3. V4_SWAP with zeroForOne = (pk["c0"] == token), SWAP_EXACT_IN_SINGLE(amountIn, min_out),
-         SETTLE_ALL(token, amountIn), TAKE_ALL(quote, min_out); min_out from the Quoter less 3%
-      4. reconcile the receipt: proceeds from the quote asset's Transfer log (ETH: balance delta), then
-         update qty_left/tp_done/trail_on/realized and close when nothing is left."""
+    """Exits stay independent of the entry switch, readiness and the daily loss breaker."""
     ensure_tables(db)
     reconcile(rpc, db)
     opens = db.q("SELECT * FROM positions WHERE status='open'")
@@ -363,7 +308,7 @@ def mark(rpc, db, live, acct=None):
         px = usable_price(prices.get(p["token"]))
         if not px or not p["entry_usd"] or not p["qty"]:
             continue
-        policy, _ = lab.parse_arm(p["policy"] or lab.DEFAULT)
+        policy = json.loads(p['policy_spec']) if p.get('policy_spec') else lab.parse_arm(p["policy"] or lab.DEFAULT)[0]
         st = {"entry": p["entry_usd"], "entry_ts": p["opened_ts"], "qty_left": (p["qty_left"] if p["qty_left"] is not None else p["qty"]) / p["qty"],
               "tp_done": json.loads(p["tp_done"] or "[]"), "peak": max(p["peak_usd"] or 0, px), "trail_on": bool(p["trail_on"])}
         realized = p["realized_usd"] or 0.0
@@ -372,11 +317,11 @@ def mark(rpc, db, live, acct=None):
             db.x("UPDATE positions SET peak_usd=? WHERE token=?", (st["peak"], p["token"]))
             continue
         if p["mode"] == "live":
-            # a live bag can only be sold live: keep the peak so the trailing stop has its history the day
-            # sells exist; tp_done/trail_on stay untouched because no sale happened (marking a take-profit
-            # as done without selling would switch the stop off on a full bag)
             db.x("UPDATE positions SET peak_usd=? WHERE token=?", (st["peak"], p["token"]))
-            _say_once(db, "trade", f"sell ${p['symbol']} ({why}): live selling needs the token approval step, deferred until it exists", p["token"])
+            if live and acct and LIVE_SELL_READY:
+                live_trading.sell(rpc, db, acct, p, st, frac, why)
+            else:
+                _say_once(db, "trade", f"sell ${p['symbol']} ({why}): live selling needs a verified rehearsal; deferred", p["token"])
             continue
         last_why = None
         while frac > 0:
@@ -399,8 +344,8 @@ def summary(db):
     ensure_tables(db)
     return {"positions": db.q("SELECT * FROM positions ORDER BY opened_ts DESC LIMIT 20"),
             "trades": db.q("SELECT * FROM trades ORDER BY id DESC LIMIT 20"),
-            "live_sell_ready": LIVE_SELL_READY, "enabled": C.TRADING,
+            "live_sell_ready": LIVE_SELL_READY, "risk": trade_risk.check(db, latch=False), "enabled": C.TRADING,
             "policy": ("" if C.TRADING else "off by policy until the brain is mature; only the creator turns it on; when on: ")
                       + f"readiness ≥ {RD.READY_AT}% first (evidence only, see the readiness panel); then verdict looks healthy and score ≥ {MIN_SCORE}; size min(${MAX_POSITION_USD:.0f}, 10% of surplus); "
-                      f"≤ {MAX_OPEN} open; ≤ ${MAX_DAILY_USD:.0f} a day; only from the surplus above the 90-day reserve"
+                      f"≤ {MAX_OPEN} open; ≤ ${MAX_DAILY_USD:.0f} a day; only from the surplus above the 90-day reserve; live pilot supports verified USDG pools; daily gross loss breaker applies to entries"
                       + ("" if LIVE_SELL_READY else "; live buys wait for live sells")}

@@ -29,7 +29,7 @@ The latest 1 USDG AI Surplus payment was matched to confirmed provider history a
 
 ## Trading remains a separate gate
 
-WH_TRADING must stay off until explicitly enabled by the operator. The live-sell gate remains closed; do not enable trading just because fee handling is ready. Live exits, execution liquidity/depth and adversarial/slippage behavior require their own implementation and validation.
+WH_TRADING must stay off until explicitly enabled by the operator. The live-sell gate remains closed; do not enable trading just because fee handling is ready. The local USDG buy/sell implementation, prospective strategy tests and entry loss breaker are described in [TRADING-HARDENING.md](TRADING-HARDENING.md). The release gate remains false. These changes need review and a separately authorized funded trading rehearsal; treasury rehearsals do not cover them.
 
 ## Where users can read about the new policies
 
