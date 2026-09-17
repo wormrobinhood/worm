@@ -290,7 +290,7 @@ def test_ranking_uses_lower_bound(db, monkeypatch):
     assert abs(a["lcb"] - (0.3 - lab.LCB_Z * 1.0 / math.sqrt(10))) < 1e-3
     assert abs(b["lcb"] - (0.1 - lab.LCB_Z * 0.1 / math.sqrt(10))) < 1e-3
     assert abs(a["stdev"] - 1.0) < 1e-3 and abs(a["mean_ret"] - 0.3) < 1e-9
-    assert lab.current_policy(db) == ("trail_35@0m", "learned")
+    assert lab.research_policy(db) == ("trail_35@0m", "learned")
 
 
 def test_lower_bound_needs_two_cases(db):
@@ -307,26 +307,26 @@ def test_ranking_prefers_arms_with_enough_cases(db):
     arm_stats(db, "time_6h@0m", 45, -0.1, 0.05)       # -10% avg
     top = lab.ranking(db)[0]
     assert top["arm"] == "trail_35@30m" and top["n"] == 40 and abs(top["mean_ret"] - 0.1) < 1e-9
-    assert lab.current_policy(db) == ("trail_35@30m", "learned")
+    assert lab.research_policy(db) == ("trail_35@30m", "learned")
 
 
 def test_current_policy_beats_default(db):
     lab.ensure_tables(db)
     arm_stats(db, lab.DEFAULT, lab.LAB_MIN_N, 0.2, 0.05)
     arm_stats(db, "trail_35@0m", lab.LAB_MIN_N, 0.1, 0.05)       # positive bound, but below the default
-    arm, why = lab.current_policy(db)
+    arm, why = lab.research_policy(db)
     assert arm == lab.DEFAULT and "default" in why and "confirmed" in why
     arm_stats(db, "hedge_2x@0m", lab.LAB_MIN_N, 0.5, 3.0)        # above the default, but its bound is below zero
-    assert lab.current_policy(db)[0] == lab.DEFAULT
+    assert lab.research_policy(db)[0] == lab.DEFAULT
     arm_stats(db, "ladder@0m", lab.LAB_MIN_N, 0.3, 0.05)         # above the default with a positive bound
-    assert lab.current_policy(db) == ("ladder@0m", "learned")
+    assert lab.research_policy(db) == ("ladder@0m", "learned")
     arm_stats(db, "ladder@0m", lab.LAB_MIN_N - 1, 0.3, 0.05)     # one case short
-    assert lab.current_policy(db)[0] == lab.DEFAULT
+    assert lab.research_policy(db)[0] == lab.DEFAULT
 
 
 def test_default_policy_until_enough_cases(db):
     lab.ensure_tables(db)
-    arm, why = lab.current_policy(db)
+    arm, why = lab.research_policy(db)
     assert arm == lab.DEFAULT and "default" in why
     assert lab.LAB_MIN_N == 30
 
@@ -383,8 +383,15 @@ def test_zero_edge_paths_do_not_prove_an_edge(db):
         db.many("UPDATE lab_arms SET n=?, sum_ret=?, sum_sq=?, wins=? WHERE name=?", [(*s, a) for a, s in stats.items()])
         rk = lab.ranking(db)
         top_lcb_positive += rk[0]["lcb"] > 0
-        learned += lab.current_policy(db)[1] == "learned"
+        learned += lab.research_policy(db)[1] == "learned"
         best_mean_positive += max(a["mean_ret"] for a in rk) > 0
     assert top_lcb_positive / trials < 0.20
     assert learned / trials < 0.20
     assert best_mean_positive > top_lcb_positive        # the bound is what removes the winner's curse
+
+
+def test_research_winner_cannot_promote_without_prospective_evidence(db):
+    lab.ensure_tables(db)
+    arm_stats(db, "trail_35@0m", 300, 0.9, 0.01)
+    assert lab.research_policy(db)[0] == "trail_35@0m"
+    assert lab.current_policy(db)[0] == lab.DEFAULT

@@ -44,14 +44,17 @@ for the evidence, remaining operational gaps and deployment requirements.
   warned before an unusually bad outcome gains, one that reassured loses, up to 2% a lesson; weights stay
   between 0.5x and 1.5x, and each rule shows its lift.
 - **Trust value per creator**, shown on cards and in the bad-actors table.
-- **Paper book**: what it would have bought at $10 a token, marked to market. No real money.
-- **Strategy lab**: every candidate scoring 60 or more is traded on paper by 24 arms at once (8 exit
-  policies × entry delays of 0, 30 and 60 minutes) on the same sampled price path for 48 hours, with each
-  token's own costs (creator tax + curve fee + 1% slippage a side). Arms keep a running net return per
-  dollar risked. An arm needs 30 cases, a lower confidence bound above zero and a mean above the default's
-  to become the policy the paper book and the trader use; exploration is off (`WH_LAB_EXPLORE`). Until
-  then the default is `costout_1.5x@0m`: at +50% sell two thirds (the cost comes back), trail the rest 40%
-  below its peak, cut at -35% before that, never hold past 48 hours.
+- **Paper book**: simulated $10 positions on complete healthy scores of at least 70, with
+  verified USDG pools, buy/sell quotes, estimated gas and liquidity checks. Existing positions
+  retain their original model; unpriced holdings are labeled.
+- **Strategy lab**: 24 baseline arms (8 exits × 0/30/60-minute delays) plus AI proposals
+  compare sampled 48-hour price paths. Historical results nominate a candidate. Promotion
+  requires a fixed cohort of 30 future eligible tokens from distinct, previously unseen
+  creators, positive results after stressed costs and gas, and improvement over the default.
+  Missing outcomes cannot be discarded to pass the gate. The default paper strategy takes
+  partial profit at +50%, trails the remainder 40% below its peak, stops at −35% before the
+  first profit target and limits holding time to 48 hours. See
+  [trading hardening and remaining release gates](docs/TRADING-HARDENING.md).
 - **Advisor**: every two hours (`WH_ADVISOR_EVERY_MIN`), once a few more verdicts have resolved, the writer
   (`WH_ADVISOR_MODEL`, default the voice's model) reads the worm's records and proposes scoring rules (up to
   three conditions over at-scan metrics plus points) and exit arms in a strict JSON form. Nothing it says runs
@@ -150,8 +153,9 @@ Selected settings:
 | `WH_VOICE_EVERY_MIN` | minutes between journal entries (60) |
 | `WH_TOPUP_USD`, `WH_TOPUP_BELOW_USD` | compute top-up size and threshold (5, 1) |
 | `WH_TOPUP_COOLDOWN_S`, `WH_TOPUP_MAX_PER_DAY`, `WH_TOPUP_ALWAYS` | at most one top-up per 6 h and two a day (21600, 2); top-ups only happen while the journal or the advisor runs at the provider, and never while every AI Surplus model in use is free, unless `WH_TOPUP_ALWAYS=1` |
-| `WH_LAB_MIN_N`, `WH_LAB_LCB_Z`, `WH_LAB_EXPLORE` | cases an exit rule needs (30), the lower-bound factor (1.5), exploration share (0) |
-| `WH_READY_AT` | readiness needed before real trades (80) |
+| `WH_LAB_MIN_N`, `WH_LAB_LCB_Z`, `WH_LAB_EXPLORE` | research cases (30), ranking bound factor (1.5), paper exploration share (0); separate prospective validation is mandatory for promotion |
+| `WH_READY_AT` | readiness needed before real trades (80), plus a current passing future cohort and execution gates |
+| `WH_MAX_DAILY_LOSS_USD` | gross-loss trigger for pausing new entries (10); exits continue; not a guaranteed loss ceiling |
 | `WH_ADVISOR_MODEL`, `WH_ADVISOR_EVERY_MIN`, `WH_ADVISOR_MIN_NEW` | the advisor's writer (default: the voice's), minutes between runs (120), new resolved verdicts a run needs (3) |
 | `WH_RESCAN_TOKEN` | lets a remote caller use `/api/rescan/<token>` by sending the header `X-Rescan-Token`; unset, only loopback clients may rescan (the queue is capped at 100 and an address is not queued twice within 10 minutes) |
 | `WH_BUY_MIN_SCORE`, `WH_MAX_POSITION_USD`, `WH_MAX_OPEN`, `WH_MAX_DAILY_USD` | trader limits (70, 10, 5, 30) |

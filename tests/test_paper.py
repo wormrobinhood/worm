@@ -16,9 +16,19 @@ TRAIL = "trailing stop 40% below the peak"
 
 
 @pytest.fixture
-def feed(monkeypatch):
+def feed(monkeypatch, db):
     prices = {TOKEN: 1.0, OTHER: 1.0}
     monkeypatch.setattr(P, "token_prices", lambda addrs: {a: {"price_usd": prices.get(a)} for a in addrs})
+    def entry(rpc, database, token, dollars):
+        cost = lab.token_cost(database, token)
+        price = prices[token]
+        qty = dollars / price / (1 + cost)
+        return {'price': price, 'pool': {'cost': cost}, 'minimum_raw': int(qty * 1e18), 'gas_usd': 0,
+                'liquidation_usd': qty * price * (1 - cost)}
+    def exit_quote(rpc, pool, token, amount):
+        return {'minimum_raw': round(amount / 1e18 * prices[token] * (1 - pool['cost']) * 1e6), 'gas_usd': 0}
+    monkeypatch.setattr(P.execution, 'entry', entry)
+    monkeypatch.setattr(P.execution, 'exit_quote', exit_quote)
     return prices
 
 
@@ -67,7 +77,7 @@ def test_paper_stop_reason_on_a_single_tick(db, feed):
     assert row["status"] == "closed" and row["reason"] == "stop at -35%"
 
 
-def test_paper_consider_is_idempotent_under_threads(db, monkeypatch):
+def test_paper_consider_is_idempotent_under_threads(db, monkeypatch, feed):
     def slow_prices(addrs):
         time.sleep(0.2)
         return {a: {"price_usd": 1.0} for a in addrs}
@@ -116,7 +126,7 @@ def test_paper_summary_open_value_uses_the_cost(db, feed):
     s = pb.summary()
     row = s["open"][0]
     assert row["hedged"] is False and abs(row["change_pct"] - 20) < 1e-9
-    assert abs(row["pnl_usd"] - (row["qty"] * 1.2 * 0.96 - 10.0)) < 1e-9
+    assert abs(row["pnl_usd"] - (row["qty"] * 1.2 * 0.96 - 10.0)) < 1e-6
 
 
 def test_partial_scores_are_not_traded(db, feed):
@@ -140,3 +150,30 @@ def test_delayed_arm_waits(db, feed, monkeypatch):
     db.x("UPDATE intents SET scored_at=scored_at-1800 WHERE token=?", (TOKEN,))
     pb.consider(TOKEN, {"score": 80, "verdict": "looks healthy", "metrics": {}})
     assert db.one("SELECT policy FROM paper WHERE token=?", (TOKEN,))["policy"] == "costout_1.5x@30m"
+
+
+def test_failed_partial_quote_does_not_mark_take_profit_done(db, feed, monkeypatch):
+    pb = book(db)
+    pb.consider(TOKEN, {'score': 80, 'verdict': 'looks healthy', 'metrics': {}})
+    original = P.execution.exit_quote
+    qty = db.one('SELECT qty FROM paper')['qty']
+    def fail_partial(rpc, pk, token, amount):
+        if amount < int(qty * 1e18) - 10000:
+            raise ValueError('quote outage')
+        return original(rpc, pk, token, amount)
+    monkeypatch.setattr(P.execution, 'exit_quote', fail_partial)
+    feed[TOKEN] = 1.6
+    pb.mark()
+    row = db.one('SELECT * FROM paper')
+    assert row['tp_done'] == '[]' and row['qty_left'] == qty and row['realized_usd'] == 0
+
+
+def test_missing_mark_is_unknown_not_fake_profit(db, feed, monkeypatch):
+    pb = book(db)
+    pb.consider(TOKEN, {'score': 80, 'verdict': 'looks healthy', 'metrics': {}})
+    db.x('UPDATE paper SET marked_ts=1')
+    monkeypatch.setattr(P.execution, 'exit_quote', lambda *a: (_ for _ in ()).throw(ValueError('quote outage')))
+    pb.mark()
+    s = pb.summary()
+    assert s['open'][0]['pnl_usd'] is None and s['unpriced_count'] == 1
+    assert not s['risk']['allowed']
