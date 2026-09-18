@@ -1,25 +1,23 @@
 """Readiness: how close the worm is to trading real money, measured from evidence only.
 
 Four parts, each 0-100, weighted into one number. None of them can be raised by hand:
-  exit rule proven   the strategy lab has resolved cases and its best rule's lower confidence bound on
-                     net return after costs is positive
+  strategy proven    the strategy the paper book trades (an entry rule plus the exit rule) has passed a
+                     prospective paper cohort: enough closed positions, from different creators, whose
+                     lower confidence bound on net return after quoted fills, gas and costs is positive
   warnings right     verdicts that reached a check show skill over the base rate: avoid verdicts rug
-                     more often than average and healthy verdicts less often
+                     more often than average and healthy verdicts less often. The public scout's grade;
+                     it moves the number, the trading gate is the paper cohort
   runway             a real treasury that covers the 90-day reserve
   surplus            real money above the reserve to trade with
-Real trades unlock at READY_AT and start at the minimum size."""
-import math
+Real trades unlock at READY_AT, only while a paper cohort holds a fresh pass, and start at the minimum size."""
 import os
 
-from . import lab
-
 READY_AT = int(os.environ.get("WH_READY_AT", "80"))
-CASES_FULL = int(os.environ.get("WH_READY_CASES", "30"))        # resolved lab cases for full marks on volume
 VERDICTS_FULL = int(os.environ.get("WH_READY_VERDICTS", "20"))  # checked verdicts for full marks on volume
-EDGE_FULL = 0.10       # best arm's lower confidence bound on net return per dollar risked that earns full marks
+EDGE_FULL = 0.10       # a finished cohort's lower bound on net return per dollar risked that earns full marks
 SKILL_FULL = 0.30      # skill over the base rate that earns full marks on "warnings right"
 HEALTHY_MIN = 10       # "looks healthy" verdicts checked before "warnings right" may pass 50
-WEIGHTS = {"lab": 0.35, "accuracy": 0.30, "runway": 0.20, "surplus": 0.15}
+WEIGHTS = {"lab": 0.50, "accuracy": 0.15, "runway": 0.20, "surplus": 0.15}
 
 
 def _pct(x):
@@ -33,16 +31,6 @@ def _checked(card, verdict):
 
 def _bad(counts):
     return counts.get("rugged", 0) + counts.get("dumped", 0)
-
-
-def lower_bound(arm):
-    """The arm's lower confidence bound on its mean net return: the lab's own figure when it reports one,
-    else mean - 2 * stdev / sqrt(n). None when it cannot be computed (then the rule is not proven)."""
-    if arm.get("lcb") is not None:
-        return float(arm["lcb"])
-    if arm.get("mean_ret") is None or arm.get("stdev") is None or not arm.get("n"):
-        return None
-    return float(arm["mean_ret"]) - 2.0 * float(arm["stdev"]) / math.sqrt(float(arm["n"]))
 
 
 def skill(card):
@@ -71,26 +59,25 @@ def skill(card):
 def compute(brain_summary, lab_summary, runway, min_trade_usd=10.0):
     parts = []
 
-    # 1. exit rule proven: the best arm with enough cases, judged by its lower confidence bound
-    arms = lab_summary.get("arms") or []
-    min_n = lab.LAB_MIN_N
-    best = next((a for a in arms if a["n"] >= min_n and a["mean_ret"] is not None), None)
-    resolved = lab_summary.get("cases_resolved") or 0
-    volume = min(1.0, resolved / CASES_FULL)
-    lcb = lower_bound(best) if best else None
-    positive = lcb is not None and lcb > 0
-    edge = max(0.0, min(1.0, lcb / EDGE_FULL)) if lcb is not None else 0.0
-    if best is None:
-        most = max((a["n"] for a in arms), default=0)
-        detail = "%d resolved cases; no exit rule has %d cases yet (%d more)" % (resolved, min_n, max(0, min_n - most))
-    elif lcb is None:
-        detail = "best rule %s averages %+.0f%% net after costs over %d cases; no confidence bound yet, so not proven" % (
-            best["arm"], best["mean_ret"] * 100, best["n"])
+    # 1. strategy proven: the paper cohort of the rule that is furthest along (strategy_validation)
+    v = lab_summary.get("validation") or {}
+    required = int(v.get("required") or 50)
+    passed = bool(v.get("passed"))
+    lcb = v.get("lcb")
+    if passed:
+        score, detail = 100, "paper cohort passed for %s: %+.0f%% a trade after costs, lower bound %+.0f%%" % (
+            ", ".join(v.get("passed_rules") or [v.get("rule") or "the strategy"]), 100 * (v.get("mean_ret") or 0), 100 * (lcb or 0))
     else:
-        detail = "best rule %s averages %+.0f%% net after costs over %d cases; its lower bound is %+.0f%% (%s)" % (
-            best["arm"], best["mean_ret"] * 100, best["n"], lcb * 100, "proven" if positive else "not proven yet")
-    parts.append({"id": "lab", "label": "exit rule proven", "score": _pct(0.5 * volume + 0.5 * edge),
-                  "detail": detail, "positive": bool(positive), "lcb": (round(lcb, 4) if lcb is not None else None)})
+        filled = min(1.0, (v.get("n") or 0) / required)
+        edge = max(0.0, min(1.0, lcb / EDGE_FULL)) if lcb is not None else 0.0
+        score = _pct(0.5 * filled + 0.5 * edge)
+        detail = "paper cohort%s: %d of %d positions closed (%d opened)" % (
+            (" for " + v["rule"]) if v.get("rule") else "", v.get("n") or 0, required, v.get("enrolled") or 0)
+        if lcb is not None:
+            detail += "; the last finished cohort averaged %+.0f%% a trade with a lower bound of %+.0f%% (not proven)" % (
+                100 * (v.get("mean_ret") or 0), 100 * lcb)
+    parts.append({"id": "lab", "label": "strategy proven on paper", "score": score, "detail": detail,
+                  "positive": passed, "lcb": (round(lcb, 4) if lcb is not None else None)})
 
     # 2. warnings right: skill over the base rate, across avoid, mixed and healthy verdicts
     card = brain_summary.get("validated_scorecard", brain_summary.get("scorecard")) or {}
@@ -139,13 +126,8 @@ def compute(brain_summary, lab_summary, runway, min_trade_usd=10.0):
                       "detail": "$%.2f above the reserve; the first trade needs $%.0f" % (surplus, min_trade_usd)})
 
     total = int(round(sum(WEIGHTS[p["id"]] * p["score"] for p in parts)))
-    evidence_ok = (n_healthy >= HEALTHY_MIN and n_avoid >= HEALTHY_MIN and sk > 0)
-    validation = lab_summary.get("validation") or {}
-    prospective_ok = bool(validation.get("passed"))
-    if not prospective_ok:
-        parts[0]["detail"] += "; fresh validation: %d/%d completed (%s)" % (validation.get("n", 0), validation.get("required", 30), validation.get("status", "not started"))
-    ready = bool(prospective_ok and total >= READY_AT and evidence_ok and parts[0]["positive"] and runway.get("can_invest"))
-    nxt = parts[0] if not prospective_ok else next((p for p in parts if p["score"] < 100), None)
+    ready = bool(passed and total >= READY_AT and runway.get("can_invest"))
+    nxt = parts[0] if not passed else next((p for p in parts if p["score"] < 100), None)
     return {"score": total, "ready_at": READY_AT, "ready": ready, "parts": parts, "weights": WEIGHTS,
             "next": (nxt["label"] + ": " + nxt["detail"]) if nxt else "every part is at full marks",
-            "gate": "real trades require %d%% readiness, positive measured skill, at least 10 checked healthy and 10 avoid verdicts, a positive strategy bound, a passing fixed future cohort and surplus; execution safety gates also apply" % READY_AT}
+            "gate": "real trades require %d%% readiness, a fresh pass of a prospective paper cohort and real surplus above the reserve; execution safety gates, the trading budget and the daily loss breaker also apply" % READY_AT}

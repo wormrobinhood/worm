@@ -274,11 +274,13 @@ def research_policy(db):
 
 
 def current_policy(db):
+    """The exit rule new positions get. One default, changed only in code: a change voids every paper
+    cohort (strategy_validation freezes it), so the lab's ranking informs a decision and never makes it."""
     from . import strategy_validation
     evidence = strategy_validation.summary(db)
     if evidence['passed']:
-        return evidence['arm'], 'confirmed on a fixed future cohort'
-    return DEFAULT, 'default until a fixed future cohort passes'
+        return DEFAULT, 'confirmed by a paper cohort: ' + ', '.join(evidence['passed_rules'])
+    return DEFAULT, 'default until a paper cohort passes'
 
 
 def pick_arm(db):
