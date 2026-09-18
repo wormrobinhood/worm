@@ -2,7 +2,7 @@
 # Deployment installs requirements.lock with --require-hashes. Regenerate it when updating dependencies.
 Pillow==12.3.0
 eth-abi==6.0.0
-eth-account==0.13.7
+eth-account==0.14.0
 eth-hash[pycryptodome]==0.8.0
 eth-utils==6.0.0
 fastapi==0.141.1
