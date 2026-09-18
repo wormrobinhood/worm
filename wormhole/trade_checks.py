@@ -18,6 +18,8 @@ PERMIT_TTL = 600
 MAX_ROUNDTRIP_LOSS = 0.15
 MAX_PRICE_IMPACT = 0.08
 MAX_GAS_FRACTION = 0.10
+EXIT_TOLERANCE = 0.03          # a sell's minimum is the quote less this
+EXIT_TOLERANCE_RETRY = 0.10    # after a sell reverted: give up more to get out
 MODEL = 'quoted-usdg-v1'
 
 
@@ -109,14 +111,17 @@ def entry(rpc, db, token, dollars, *, quotes=LIVE_QUOTES, reference=None):
             'liquidation_usd': back * 9700 // 10000 / unit * usd - gas_cost(rpc, sell_gas), 'model': MODEL}
 
 
-def exit_quote(rpc, pk, token, amount, *, quotes=LIVE_QUOTES):
+def exit_quote(rpc, pk, token, amount, *, quotes=LIVE_QUOTES, tolerance=None):
     from .trader import quote_buy
+    tolerance = EXIT_TOLERANCE if tolerance is None else tolerance
+    if not 0 < tolerance <= EXIT_TOLERANCE_RETRY:
+        raise ValueError('sell tolerance out of bounds')
     if rpc is None or not verified(pk, token, quotes) or amount <= 0:
         raise ValueError('sell quote unavailable')
     started = time.time()
     unit, usd = quote_unit(pk)
     out, gas, direction = quote_buy(rpc, pk, pk['quote'], amount)
-    minimum = out * 9700 // 10000
+    minimum = out * (10000 - int(round(tolerance * 10000))) // 10000
     if minimum <= 0:
         raise ValueError('no executable sell quote')
     fee = gas_cost(rpc, gas)

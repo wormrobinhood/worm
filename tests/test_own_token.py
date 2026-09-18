@@ -42,5 +42,10 @@ def test_the_trader_never_lists_its_own_token(db, own):
     for t, sym in ((MINE, "MINE"), ("0x" + "ab" * 20, "OTHER")):
         db.x("INSERT INTO launches(token,symbol,graduated) VALUES(?,?,1)", (t, sym))
         db.x("INSERT INTO scores(token,score,verdict,scored_at,partial,metrics) VALUES(?,?,?,?,0,'{}')", (t, 95, "looks healthy", now))
-    assert [r["symbol"] for r in TR.candidates(db)] == ["OTHER"]
+    assert [r["symbol"] for r in TR.verdict_candidates(db)] == ["OTHER"]
+    from wormhole.paper import Paper
+    Paper(db)                                          # live follows paper: even a paper row for its own token is never a candidate
+    for t, sym in ((MINE, "MINE"), ("0x" + "ab" * 20, "OTHER")):
+        db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,strategy) VALUES(?,?,?,1,10,10,'open','rule-a')", (t, sym, now))
+    assert [r["symbol"] for r in TR.candidates(db, ["rule-a"])] == ["OTHER"]
 

@@ -2,12 +2,14 @@
 
 Historical demo orders keep their original model. New live orders use the bounded USDG pilot in
 live_trading; its release gate remains false until a funded rehearsal is explicitly authorized.
-Readiness, a passing future strategy trial, surplus and risk limits gate buys. Exits remain independent
-of those entry gates. Orders are settled from verified receipts, never from expected quote amounts.
+Live follows paper: the only live candidate is a token the paper book has just bought under an entry rule
+whose paper cohort passed. Readiness, surplus, the lifetime budget and risk limits gate buys. Exits remain
+independent of those entry gates. Orders are settled from verified receipts, never from expected quote amounts.
 """
 import json
 import logging
 import os
+import threading
 import time
 
 from eth_abi import decode, encode
@@ -36,6 +38,9 @@ MAX_DAILY_USD = float(os.environ.get("WH_MAX_DAILY_USD", "30"))
 LIVE_SELL_READY = False       # release gate: bounded USDG exits need a funded rehearsal before enabling
 BLOCK_AFTER_FAIL_S = 6 * 3600 # a token whose buy failed before broadcast is not retried for this long
 SAY_EVERY_S = 3600            # repeated skip messages are written at most this often
+GATE_MAX_AGE_S = 900          # the watcher may act on the marker's last readiness and runway for this long
+_mark_lock = threading.Lock() # the marker and the watcher both mark positions; one at a time
+_gate = {"ts": 0.0, "runway": None, "ready": None}
 
 
 def ensure_tables(db):
@@ -202,9 +207,9 @@ def open_count(db):
             + db.one("SELECT COUNT(*) n FROM trades WHERE side='buy' AND note IN ('PENDING','REVIEW')")["n"])
 
 
-def candidates(db, limit=3):
-    """Newest healthy verdicts with complete data that are not held, not pending, not skipped and not
-    blocked after a failed buy."""
+def verdict_candidates(db, limit=3):
+    """Demo mode only: newest healthy verdicts with complete data that are not held, not pending, not skipped
+    and not blocked after a failed buy."""
     now = int(time.time())
     return [r for r in db.q("SELECT s.token, s.score, s.scored_at, l.symbol FROM scores s JOIN launches l ON l.token=s.token"
                 " WHERE s.verdict='looks healthy' AND s.score>=? AND s.scored_at>=? AND s.partial=0"
@@ -213,6 +218,37 @@ def candidates(db, limit=3):
                 " AND s.token NOT IN (SELECT token FROM trade_intents WHERE status IS NOT NULL OR COALESCE(blocked_until,0)>?)"
                 " ORDER BY s.scored_at DESC LIMIT ?", (MIN_SCORE, now - 3 * 3600, now, limit))
             if not (C.TOKEN and r["token"].lower() == C.TOKEN)]          # never its own token
+
+
+def candidates(db, rules, limit=3):
+    """Live follows paper: tokens the paper book bought in the last ENTRY_MAX_AGE_S under one of `rules` (the
+    entry rules whose paper cohort holds a fresh pass) that are not held, pending, skipped or blocked."""
+    if not rules or not db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper'"):
+        return []
+    if "strategy" not in {r["name"] for r in db.q("PRAGMA table_info(paper)")}:
+        return []
+    now = int(time.time())
+    marks = ",".join("?" for _ in rules)
+    return [r for r in db.q("SELECT p.token, p.symbol, p.opened_ts, p.strategy FROM paper p"
+                f" WHERE p.status='open' AND p.strategy IN ({marks}) AND p.opened_ts>=?"
+                " AND p.token NOT IN (SELECT token FROM positions)"
+                " AND p.token NOT IN (SELECT token FROM trades WHERE note IN ('PENDING','REVIEW') AND token IS NOT NULL)"
+                " AND p.token NOT IN (SELECT token FROM trade_intents WHERE status IS NOT NULL OR COALESCE(blocked_until,0)>?)"
+                " ORDER BY p.opened_ts DESC LIMIT ?", (*rules, now - live_trading.ENTRY_MAX_AGE_S, now, limit))
+            if not (C.TOKEN and r["token"].lower() == C.TOKEN)]          # never its own token
+
+
+def remember_gate(runway, ready):
+    """The marker computes runway and readiness every cycle; the watcher, which sees an entry first, may act
+    on that reading for GATE_MAX_AGE_S."""
+    _gate.update(ts=time.time(), runway=runway, ready=ready)
+
+
+def decide_now(rpc, db, live, acct=None):
+    """Called by the watcher right after a paper entry. Without a recent gate reading nothing is bought."""
+    if not C.TRADING or time.time() - _gate["ts"] > GATE_MAX_AGE_S or not _gate["runway"]:
+        return
+    decide(rpc, db, _gate["runway"], live, acct, _gate["ready"])
 
 
 # ---- decisions --------------------------------------------------------------
@@ -244,7 +280,7 @@ def decide(rpc, db, runway, live, acct=None, ready=None):
         return
     arm = lab.current_policy(db)[0]
     now = int(time.time())
-    for r in candidates(db):
+    for r in verdict_candidates(db):
         if n_open >= MAX_OPEN or spent + size > MAX_DAILY_USD:
             break                                      # the caps hold inside a cycle, not only between cycles
         token, sym = r["token"], r["symbol"] or r["token"][:8]
@@ -289,23 +325,29 @@ def decide(rpc, db, runway, live, acct=None, ready=None):
         spent += size
 
 
-def reconcile(rpc, db):
+def reconcile(rpc, db, acct=None):
     """Reconcile durable live intents; incomplete evidence stays held for review."""
     ensure_tables(db)
-    live_trading.reconcile(rpc, db)
+    live_trading.reconcile(rpc, db, acct)
 
 
-def mark(rpc, db, live, acct=None):
-    """Exits stay independent of the entry switch, readiness and the daily loss breaker."""
+def mark(rpc, db, live, acct=None, prices=None):
+    """Exits stay independent of the entry switch, readiness and the daily loss breaker. `prices` are pool
+    mids the watcher just read from the chain ({token: usd}); without them the price API is asked."""
+    with _mark_lock:
+        _mark(rpc, db, live, acct, prices)
+
+
+def _mark(rpc, db, live, acct, mids):
     ensure_tables(db)
-    reconcile(rpc, db)
+    reconcile(rpc, db, acct if live else None)
     opens = db.q("SELECT * FROM positions WHERE status='open'")
     if not opens:
         return
-    prices = token_prices([p["token"] for p in opens])
+    prices = token_prices([p["token"] for p in opens]) if mids is None else {}
     now = int(time.time())
     for p in opens:
-        px = usable_price(prices.get(p["token"]))
+        px = usable_price(prices.get(p["token"])) if mids is None else mids.get(p["token"])
         if not px or not p["entry_usd"] or not p["qty"]:
             continue
         policy = json.loads(p['policy_spec']) if p.get('policy_spec') else lab.parse_arm(p["policy"] or lab.DEFAULT)[0]
@@ -345,7 +387,8 @@ def summary(db):
     return {"positions": db.q("SELECT * FROM positions ORDER BY opened_ts DESC LIMIT 20"),
             "trades": db.q("SELECT * FROM trades ORDER BY id DESC LIMIT 20"),
             "live_sell_ready": LIVE_SELL_READY, "risk": trade_risk.check(db, latch=False), "enabled": C.TRADING,
-            "policy": ("" if C.TRADING else "off by policy until the brain is mature; only the creator turns it on; when on: ")
-                      + f"readiness ≥ {RD.READY_AT}% first (evidence only, see the readiness panel); then verdict looks healthy and score ≥ {MIN_SCORE}; size min(${MAX_POSITION_USD:.0f}, 10% of surplus); "
-                      f"≤ {MAX_OPEN} open; ≤ ${MAX_DAILY_USD:.0f} a day; only from the surplus above the 90-day reserve; live pilot supports verified USDG pools; daily gross loss breaker applies to entries"
+            "budget": live_trading.budget(db),
+            "policy": ("" if C.TRADING else "off by policy until the strategy is proven on paper; only the creator turns it on; when on: ")
+                      + f"readiness ≥ {RD.READY_AT}% first (evidence only, see the readiness panel); live follows paper: only a token the paper book has just bought under an entry rule whose paper cohort passed; size min(${MAX_POSITION_USD:.0f}, 10% of surplus, what is left of the lifetime budget); "
+                      f"≤ {MAX_OPEN} open; ≤ ${MAX_DAILY_USD:.0f} a day; only from the surplus above the 90-day reserve; verified USDG pools only; losses use the lifetime budget up and profits never refill it (they go to the burn); daily gross loss breaker applies to entries"
                       + ("" if LIVE_SELL_READY else "; live buys wait for live sells")}

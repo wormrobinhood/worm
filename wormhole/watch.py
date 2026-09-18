@@ -198,7 +198,7 @@ def watch_for_s():
     return max(all_looks()) * 60 + 600
 
 
-def _sample(rpc, db, paper, now):
+def _sample(rpc, db, paper, now, on_entry=None):
     rows = db.q("SELECT * FROM watch WHERE status='watching'")
     if not rows:
         return
@@ -236,6 +236,11 @@ def _sample(rpc, db, paper, now):
                  (json.dumps(done), "entered" if entered else r["status"], f"look {look}: {why}", r["token"]))
             if entered:
                 _enroll(db, r, now, mid)
+                if on_entry:
+                    try:
+                        on_entry()               # live follows paper (trader.decide_now); every gate is the trader's own
+                    except Exception as e:
+                        log.warning("entry hook failed: %s", e)
                 continue
         if now - r["t0"] > watch_for_s() or len(done) == len(looks):
             db.x("UPDATE watch SET status='done' WHERE token=? AND status='watching'", (r["token"],))
@@ -254,33 +259,43 @@ def _enroll(db, row, now, mid):
 
 
 class Watcher:
-    """One thread (run.py): every FAST_EVERY_S the open paper positions, every SAMPLE_EVERY_S the watch list."""
+    """One thread (run.py): every FAST_EVERY_S the open positions, every SAMPLE_EVERY_S the watch list.
+    on_entry runs after a paper entry; on_prices receives {token: mid} for the trader's own open positions."""
 
-    def __init__(self, rpc, db, paper):
+    def __init__(self, rpc, db, paper, on_entry=None, on_prices=None):
         self.rpc, self.db, self.paper = rpc, db, paper
+        self.on_entry, self.on_prices = on_entry, on_prices
         self.sampled = 0.0
         ensure_tables(db)
 
-    def step(self, now=None):
-        now = int(now or time.time())
-        opens = self.db.q("SELECT token, pool_key FROM paper WHERE status='open' AND execution_model=? AND pool_key IS NOT NULL",
-                          (execution.MODEL,))
+    def _pools(self, rows):
         pools = {}
-        for p in opens:
+        for p in rows:
             try:
-                pk = json.loads(p["pool_key"])
+                pk = json.loads(p["pool_key"] or "null")
             except ValueError:
                 continue
-            if execution.verified(pk, p["token"], execution.PAPER_QUOTES) and "fee" in pk:
+            if pk and execution.verified(pk, p["token"], execution.PAPER_QUOTES) and "fee" in pk:
                 pools[p["token"]] = pk
-        if pools:
-            mids = {t: m for t, m in poolstate.mids(self.rpc, pools, _eth()).items() if m}
-            if mids:
-                self.paper.mark(prices=mids, value=False)
+        return pools
+
+    def step(self, now=None):
+        now = int(now or time.time())
+        book = self._pools(self.db.q("SELECT token, pool_key FROM paper WHERE status='open' AND execution_model=? AND pool_key IS NOT NULL",
+                                     (execution.MODEL,)))
+        held = {}
+        if self.on_prices and self.db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='positions'"):
+            held = self._pools(self.db.q("SELECT token, pool_key FROM positions WHERE status='open' AND pool_key IS NOT NULL"))
+        if book or held:
+            mids = {t: m for t, m in poolstate.mids(self.rpc, {**held, **book}, _eth()).items() if m}
+            if book and any(t in mids for t in book):
+                self.paper.mark(prices={t: mids[t] for t in book if t in mids}, value=False)
+            if held and any(t in mids for t in held):
+                self.on_prices({t: mids[t] for t in held if t in mids})
         if now - self.sampled >= SAMPLE_EVERY_S:
             self.sampled = now
             _resolve_pools(self.rpc, self.db)
-            _sample(self.rpc, self.db, self.paper, now)
+            _sample(self.rpc, self.db, self.paper, now, self.on_entry)
             self.db.x("DELETE FROM watch_ticks WHERE ts<?", (now - KEEP_TICKS_S,))
             self.db.x("DELETE FROM watch WHERE t0<? AND status!='watching'", (now - KEEP_TICKS_S,))
 

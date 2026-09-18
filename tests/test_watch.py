@@ -202,3 +202,55 @@ def test_flow_features_reach_the_rule(db, chain, monkeypatch):
     first = json.loads(db.one("SELECT flow0 FROM watch")["flow0"])
     assert first["swaps"] == 3 and len(rpc.asked) == 2                # the first window is read once and kept
     assert rpc.asked[1][2] == 900_000
+
+
+# ---- the hooks the trader hangs on the watcher ----------------------------------------------------
+
+def test_the_entry_hook_runs_after_a_paper_entry_and_cannot_break_the_watcher(db, chain):
+    W.add(db, TOKEN, verdict(), "AAA", now=T0)
+    calls = []
+    def hook():
+        calls.append(db.one("SELECT COUNT(*) n FROM paper WHERE status='open'")["n"])
+        raise RuntimeError("the trader is having a bad day")
+    w = W.Watcher(None, db, P.Paper(db), on_entry=hook)
+    walk(w, chain, TOKEN, [1.0 + 0.002 * (i % 7) for i in range(31)])
+    assert calls == [1]                                               # once, and the paper row was already there
+    assert db.one("SELECT status FROM watch")["status"] == "entered"
+
+
+def test_open_trader_positions_get_fresh_pool_prices_every_step(db, chain):
+    from wormhole import trader
+    trader.ensure_tables(db)
+    db.x("INSERT INTO positions(token,symbol,status,mode,pool_key) VALUES(?,?,'open','live',?)", (TOKEN, "AAA", json.dumps(pool(TOKEN))))
+    db.x("INSERT INTO positions(token,symbol,status,mode,pool_key) VALUES(?,?,'closed','live',?)", (OTHER, "BBB", json.dumps(pool(OTHER))))
+    seen = []
+    w = W.Watcher(None, db, P.Paper(db), on_prices=seen.append)
+    chain[TOKEN], chain[OTHER] = 0.5, 0.7
+    w.sampled = T0
+    w.step(T0 + 15)
+    assert seen == [{TOKEN: 0.5}]
+    chain[TOKEN] = None                                               # no answer from the node: no price, no call
+    w.step(T0 + 30)
+    assert len(seen) == 1
+
+
+def test_the_first_rule_that_passes_names_the_position(db, chain, monkeypatch):
+    strict = {"name": "strict", "looks": [30], "conditions": [{"feature": "ret_p0", "op": ">=", "value": 5.0}]}
+    easy = {"name": "easy", "looks": [30], "conditions": [{"feature": "ret_p0", "op": ">=", "value": -0.5}]}
+    later = {"name": "later", "looks": [60], "conditions": [{"feature": "ret_p0", "op": ">=", "value": -0.5}]}
+    monkeypatch.setattr(W, "STRATEGIES", [strict, easy, later])
+    assert W.all_looks() == [30, 60] and W.watch_for_s() == 60 * 60 + 600
+    W.add(db, TOKEN, verdict(), "AAA", now=T0)
+    walk(W.Watcher(None, db, P.Paper(db)), chain, TOKEN, [1.0 + 0.002 * (i % 7) for i in range(31)])
+    assert db.one("SELECT strategy FROM paper")["strategy"] == "easy"
+    assert "easy entered" in db.one("SELECT note FROM watch")["note"]
+
+
+def test_a_collapsed_pool_leaves_the_list(db, chain):
+    W.add(db, TOKEN, verdict(), "AAA", now=T0)
+    w = W.Watcher(None, db, P.Paper(db))
+    now = walk(w, chain, TOKEN, [1.0] * 3 + [0.15] * 26)               # -85% but only 29 minutes old: still watched
+    assert db.one("SELECT status FROM watch")["status"] == "watching"
+    walk(w, chain, TOKEN, [0.15] * 3, start=now)
+    row = db.one("SELECT status, note FROM watch")
+    assert row["status"] == "done" and "collapsed" in row["note"]

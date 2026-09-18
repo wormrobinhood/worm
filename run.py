@@ -217,6 +217,7 @@ def main():
             def entries():
                 tre, rw = box["tre"], box["rw"]
                 rd = readiness.compute(brain.summary(), lab.summary(db), rw, trader.MAX_POSITION_USD)
+                trader.remember_gate(rw, rd)          # the watcher sees a paper entry first and may act on this reading
                 trader.decide(rpc, db, rw, C.LIVE, acct, rd)
 
             def housekeeping():
@@ -272,9 +273,12 @@ def main():
             time.sleep(1)
 
     def watcher():
-        """Read-only: pool prices from the chain for the watch list and the open paper positions."""
+        """Pool prices from the chain for the watch list and every open position. It only reads; what it hands
+        the trader (a fresh entry, fresh prices) passes through the trader's own gates, all closed by default."""
         time.sleep(60)
-        look = second_look.Watcher(rpc, db, paper)
+        look = second_look.Watcher(rpc, db, paper,
+                                   on_entry=lambda: trader.decide_now(rpc, db, C.LIVE, acct),
+                                   on_prices=lambda mids: trader.mark(rpc, db, C.LIVE, acct, prices=mids))
         while True:
             try:
                 look.step()
