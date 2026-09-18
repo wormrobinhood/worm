@@ -45,7 +45,7 @@ for the evidence, remaining operational gaps and deployment requirements.
   between 0.5x and 1.5x, and each rule shows its lift.
 - **Trust value per creator**, shown on cards and in the bad-actors table.
 - **Paper book**: nothing is bought at the verdict. Every complete verdict is watched on-chain (the pool's
-  mid once a minute, its swap flow at each look) and judged again one to four hours later by named entry
+  mid once a minute, its swap flow at each look) and judged again two and four hours later by named entry
   rules; a pass buys $10 on paper at the pool's own quote (USDG and ETH pools, gas and liquidity checks
   included). Open positions are re-priced from the chain every 15 seconds. The rules are hypotheses under
   test, not a proven strategy: see [second look](docs/SECOND-LOOK.md) for the study behind them.

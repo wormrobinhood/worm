@@ -13,7 +13,7 @@ cohort stood at 0 of 30. Entries needed a **looks healthy** verdict of 70 or mor
 USDG pool. About 1 verdict in 120 is healthy, fewer than 1 graduation in 5 pairs with
 USDG, and 10 of the 12 healthy verdicts on record had rugged.
 
-A read-only study of about 300 graduated pools (public data only: the worm's own published
+A read-only study of about 370 graduated pools (public data only: the worm's own published
 assessments, one-minute candles, and every swap of the first hours read from the chain),
 with each token's own costs and honest monitoring (a position is only ever sold at a
 price a poller would really have seen), found:
@@ -22,15 +22,16 @@ price a poller would really have seen), found:
   rules has a lift between 0.95 and 1.05, and several point the wrong way on this chain.
 - Buying at the verdict, or anywhere in the first hour, lost 15 to 25 percent a trade under
   every exit rule tried. The first minutes after graduation are the snipers' exit.
-- Buying a new high on rising volume was the worst entry of all (about −20 percent).
+- A pool that is still busy hours later is being sold into: entries there lost 15 to 20
+  percent, and buying a new high on rising volume was the worst entry of all.
 - A round trip costs 2 percent on a token without creator tax and up to 10 percent on a
   token with a 4 percent tax, before any price move.
 - Exits matter less than entries: on the same entries every reasonable stop-and-trail
   setting landed within about three points of every other, and all beat holding by more than
   twenty. Polling every 15 to 60 seconds was worth two to three points a trade over polling
   every five minutes.
-- No entry rule tested showed an edge that survived a second sample. The least bad
-  families sat between −6 percent and zero.
+- No entry rule tested kept an edge as the sample grew. Every region lost money after
+  costs; the least bad sat between −5 percent and zero.
 
 So there is no proven strategy here, and this update does not pretend otherwise. It
 rebuilds the paper book so that it can find out, prospectively and at no cost, and it
@@ -42,22 +43,21 @@ Nothing is bought at the verdict any more. Every complete verdict (any score; th
 own token never) goes on a watch list. The pool's mid price is read from the chain once a
 minute (one batched storage read of the Uniswap v4 PoolManager for the whole list), and a
 pool whose liquidity is gone (97 percent down half an hour after its verdict) is dropped. At fixed
-looks the path since the verdict is judged by named entry rules, together with the pool's
+looks (two and four hours in) the path since the verdict is judged by named entry rules, together with the pool's
 own swap flow over the last fifteen minutes (count, buy share, USD volume, read from the
 pool's logs). The first rule that passes buys once, on paper, at the pool's own quote.
 USDG and ETH pools are both traded on paper; other pair assets are not.
 
-The rules in force are hypotheses, the least bad of what the study tried:
+The rules in force are hypotheses, the two least bad regions the study found. Both are
+expected to fail their cohorts; they are there to be proven wrong or right in the open:
 
-| rule | looks | buys when |
+| rule | look | buys when |
 |---|---|---|
-| `survivor-v1` | 2, 3 and 4 hours | creator tax at most 1 percent, creator not a serial launcher, at least 20 swaps in the last 15 minutes, not lower than an hour ago, not up more than 10 percent in the last 15 minutes |
-| `flush-v1` | 1 and 2 hours | no creator tax, not a serial launcher, fully diluted value at most 15,000 dollars, at least 10 swaps in the last 15 minutes |
-| `wide-net-v1` | 2 hours | creator tax at most 2 percent, not a serial launcher, at least 20 swaps in the last 15 minutes |
+| `quiet-v1` | 2 hours | creator tax at most 1 percent, creator not a serial launcher, between 1 and 19 swaps in the last 15 minutes (still traded, no longer churned by bots); a fixed third of such tokens, chosen by token address, so the book is not flooded |
+| `runner-v1` | 4 hours | creator tax at most 1 percent, not a serial launcher, worth at least 100,000 dollars fully diluted (about twice its value at graduation), still traded |
 
-`wide-net-v1` is the control group and the unbiased sample: what each look measured is
-stored on the paper row, so the next round of research reads what production really saw.
-Evidence is only ever pooled per rule name; changing a rule means renaming it.
+What each look measured is stored on the paper row. Evidence is only ever pooled per rule
+name; changing a rule means renaming it.
 
 ## The profit lock
 

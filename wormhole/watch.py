@@ -7,6 +7,7 @@ by the entry rule, and only a token that passes is bought on paper. Open positio
 chain every few seconds, so a stop or a trailing stop acts on a fresh price, not a five-minute-old one.
 
 Read-only against the chain (batched storage reads, quoter calls). Nothing here signs or sends."""
+import hashlib
 import json
 import logging
 import time
@@ -31,29 +32,25 @@ FLOW_CAP = 10_000                 # the node's cap per log query; a busier windo
 # renaming it. `looks` are minutes after the verdict; a token is judged once per look and bought by the first
 # rule that passes (one position per token). Every condition reads a feature from features().
 #
-# Where these come from (research of 2026-09-19 on ~300 graduated pools, minute candles and exact swap paths,
-# costs and 15-60 s monitoring included; CLAUDE_HANDOFF.md has the numbers): nothing measured at graduation
-# separates winners; buying at the verdict or in the first hour loses 15-25% a trade; buying a new high on
-# volume is the worst entry of all; no rule tested showed an edge that held on a second sample. So these are
-# hypotheses under prospective test, the least bad of what was tried, not a proven strategy:
-#   survivor  two to four hours old, still traded, not falling over the last hour, not a spike being chased
-#   flush     the contrarian case: a zero-tax token the snipers have finished dumping, cheap and still traded
-#   wide-net  everything alive and cheap to trade at two hours: the control group, and the unbiased sample
-#             (with its features stored on the paper row) that the next round of research is drawn from
-CHEAP = [{"feature": "creator_prev_launches", "op": "<=", "value": 4}]
+# Where these come from (research of 2026-09-19 on ~370 graduated pools, minute candles and exact swap paths,
+# each token's costs and 15-60 s monitoring included; CLAUDE_HANDOFF.md has the numbers): nothing measured at
+# graduation separates winners; buying at the verdict or in the first hour loses 15-25% a trade; a pool that
+# is still busy hours later is being sold into (-15 to -20%), and a new high on volume is the worst entry of
+# all. No rule tested kept an edge as the sample grew. These two are the least bad regions found (about -5% to
+# zero a trade), hypotheses under prospective test and expected to fail it, not a strategy:
+#   quiet    two hours old, cheap to trade, still traded now and then but no longer churned by bots: small
+#            bleed, a rare large winner. A fixed third of them (by token address) so the book is not flooded.
+#   runner   four hours old, worth at least twice its graduation value and cheap to trade.
+CHEAP = [{"feature": "creator_prev_launches", "op": "<=", "value": 4},
+         {"feature": "creator_tax_bps", "op": "<=", "value": 100}]
 STRATEGIES = [
-    {"name": "survivor-v1", "looks": [120, 180, 240],
-     "conditions": CHEAP + [{"feature": "creator_tax_bps", "op": "<=", "value": 100},
-                            {"feature": "swaps_15m", "op": ">=", "value": 20},
-                            {"feature": "ret_60m", "op": ">=", "value": 0.0},
-                            {"feature": "ret_15m", "op": "<=", "value": 0.10}]},
-    {"name": "flush-v1", "looks": [60, 120],
-     "conditions": CHEAP + [{"feature": "creator_tax_bps", "op": "<=", "value": 0},
-                            {"feature": "fdv_usd", "op": "<=", "value": 15_000},
-                            {"feature": "swaps_15m", "op": ">=", "value": 10}]},
-    {"name": "wide-net-v1", "looks": [120],
-     "conditions": CHEAP + [{"feature": "creator_tax_bps", "op": "<=", "value": 200},
-                            {"feature": "swaps_15m", "op": ">=", "value": 20}]},
+    {"name": "quiet-v1", "looks": [120],
+     "conditions": CHEAP + [{"feature": "swaps_15m", "op": ">=", "value": 1},
+                            {"feature": "swaps_15m", "op": "<=", "value": 19},
+                            {"feature": "sample_bucket", "op": "<=", "value": 33}]},
+    {"name": "runner-v1", "looks": [240],
+     "conditions": CHEAP + [{"feature": "fdv_usd", "op": ">=", "value": 100_000},
+                            {"feature": "swaps_15m", "op": ">=", "value": 1}]},
 ]
 STRATEGY = STRATEGIES[0]           # the rule the summaries name first
 SUPPLY = 1_000_000_000             # every Pons token: fully diluted value = price * supply
@@ -171,6 +168,11 @@ def _flows(rpc, db, row, pk, want_first=True):
     return recent, first
 
 
+def sample_bucket(token):
+    """0..99, fixed per token address: a rule that takes `sample_bucket <= 33` trades an unbiased third."""
+    return int(hashlib.sha256(token.lower().encode()).hexdigest()[:8], 16) % 100
+
+
 def features(db, row, now, mid, recent=None, first=None):
     """What the watcher knows at a look: the path of pool mids since the verdict and what the verdict
     measured. None when the path is too thin to judge."""
@@ -188,7 +190,7 @@ def features(db, row, now, mid, recent=None, first=None):
            "rebound": mid / min(min(prices), mid) - 1, "moves_15m": moves,
            "ret_60m": (mid / at(3600) - 1) if at(3600) else None,
            "ret_15m": (mid / at(900) - 1) if at(900) else 0.0, "ret_5m": (mid / at(300) - 1) if at(300) else 0.0,
-           "age_min": (now - row["t0"]) / 60.0, "fdv_usd": mid * SUPPLY}
+           "age_min": (now - row["t0"]) / 60.0, "fdv_usd": mid * SUPPLY, "sample_bucket": sample_bucket(row["token"])}
     if recent:
         out.update(swaps_15m=recent["swaps"], vol_15m_usd=recent["usd"],
                    buy_share_15m=(recent["buys"] / recent["swaps"]) if recent["swaps"] else 0.0)

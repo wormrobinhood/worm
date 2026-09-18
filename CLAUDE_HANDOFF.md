@@ -318,10 +318,15 @@ to the production container was refused by the harness and was not worked around
   15 s polling, costs in). +60/+120/+180 min: −7/−8/−9%. New high on volume: −17 to −22%. Holding
   without exits: −35%. Exit settings differ by ~3 points; 15-60 s polling beats 300 s by 2-3.
 - Dozens of one- and two-condition slices: the best are +5-13% with n=12-25 and negative lower bounds,
-  and the most promising (zero tax, FDV ≤ $15k, 1-2 h old) did not replicate on the candle sample
-  (−8.5%/−1.3%). Conclusion: no demonstrated edge. The rules shipped are hypotheses under test.
-- The harvest scripts and data live in the session scratchpad, not the repo. `wide-net-v1` stores each
-  look's features on the paper row so the next study can run on production's own measurements.
+  and none kept its edge as the sample grew (e.g. zero tax, FDV ≤ $15k, 1-2 h old: +4.7/+10.8% on the
+  first 117 pools, −8.5/−1.3% on 315). Activity is a *negative* signal: ≥20 swaps in the last 15 min at
+  1-3 h: −15 to −20%; 1-19 swaps: −4% to +5% depending on sample and cost model. "Proven runners" (FDV ≥
+  $100k) are −7 to −16% at 1-3 h and about zero at 4 h. Conclusion: no demonstrated edge. The two rules
+  shipped (`quiet-v1`, `runner-v1`) are the least bad regions, expected to fail their cohorts.
+- Final sample: 376 distinct pools (356 with minute candles, 217 with full swap paths, stratified by
+  outcome and weighted back to the population).
+- The harvest scripts and data live in the session scratchpad, not the repo. Every second-look entry
+  stores what its look measured on the paper row (`paper.features`).
 
 Code (see `docs/SECOND-LOOK.md` for the public description):
 - `lab.py`: `exit_step` understands `arm_at`, `trail_tiers`, `floor`; four `lock_*` policies;
@@ -346,7 +351,7 @@ Code (see `docs/SECOND-LOOK.md` for the public description):
 
 Verification: 734 offline tests. Schema changes are additive at startup (`watch`, `watch_ticks`,
 `paper.strategy`, `paper.features`, `strategy_trials.rule/k`). After deploy check: `/api/state`
-answers, `second_look.watching` rises with new verdicts, `lab.validation.rules` lists three
+answers, `second_look.watching` rises with new verdicts, `lab.validation.rules` lists two
 collecting cohorts, the treasury panel is unchanged, and no `watcher step failed` lines repeat in
 the logs. The watcher adds one batched `eth_call` per 15 s while positions are open, one per minute
 for the list, and one or two log queries per look.
@@ -354,5 +359,5 @@ for the list, and one or two log queries per look.
 Open items for the operator: a separate trading wallet before any real money (the pilot still
 shares the treasury's sender and journal); the funded exit rehearsal behind `LIVE_SELL_READY`; an
 ops route for the one remaining `REVIEW` case (a confirmed receipt whose transfers do not match);
-hiding live positions until they close; and the next study once a few hundred wide-net rows exist.
+hiding live positions until they close; and the next study.
 The most promising untested idea is following wallets that were early in earlier winners.

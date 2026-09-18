@@ -285,36 +285,41 @@ def rules(monkeypatch):
 def test_rule_names_are_unique_and_every_feature_is_one_the_watcher_measures(rules):
     assert len(rules) == len(W.STRATEGIES) and all(name.endswith(("-v1", "-v2", "-v3")) for name in rules)
     measured = {"ret_p0", "dd_peak", "rebound", "moves_15m", "ret_60m", "ret_15m", "ret_5m", "age_min", "fdv_usd",
-                "swaps_15m", "vol_15m_usd", "buy_share_15m", "vol_ratio", "creator_tax_bps", "creator_prev_launches",
+                "sample_bucket", "swaps_15m", "vol_15m_usd", "buy_share_15m", "vol_ratio", "creator_tax_bps", "creator_prev_launches",
                 "creator_rugged", "top10_pct", "holders", "snipe_pct", "fleet_pct", "launch_to_grad_s", "score"}
     for rule in W.STRATEGIES:
         assert rule["looks"] == sorted(rule["looks"]) and min(rule["looks"]) >= 60      # the first hour loses: no rule looks that early
         assert {c["feature"] for c in rule["conditions"]} <= measured and all(c["op"] in W.OPS for c in rule["conditions"])
 
 
-def test_survivor_wants_a_cheap_live_token_that_is_not_falling_and_not_spiking(rules):
-    rule = rules["survivor-v1"]
-    assert W.passes(rule, ALIVE) == (True, "")
-    for change, why in (({"ret_60m": -0.05}, "ret_60m"), ({"ret_15m": 0.25}, "ret_15m"), ({"creator_tax_bps": 300}, "creator_tax_bps"),
-                        ({"swaps_15m": 3}, "swaps_15m"), ({"creator_prev_launches": 40}, "creator_prev_launches"), ({"ret_60m": None}, "ret_60m")):
-        ok, said = W.passes(rule, {**ALIVE, **change})
+def test_quiet_wants_a_cheap_token_that_still_trades_but_is_no_longer_churned(rules):
+    rule = rules["quiet-v1"]
+    calm = {**ALIVE, "swaps_15m": 6, "sample_bucket": 10}
+    assert rule["looks"] == [120] and W.passes(rule, calm) == (True, "")
+    for change, why in (({"swaps_15m": 0}, "swaps_15m"), ({"swaps_15m": 60}, "swaps_15m"), ({"creator_tax_bps": 200}, "creator_tax_bps"),
+                        ({"creator_prev_launches": 40}, "creator_prev_launches"), ({"sample_bucket": 80}, "sample_bucket"),
+                        ({"swaps_15m": None}, "swaps_15m")):
+        ok, said = W.passes(rule, {**calm, **change})
         assert not ok and why in said
 
 
-def test_flush_wants_a_zero_tax_token_that_already_fell_and_still_trades(rules):
-    rule = rules["flush-v1"]
-    crashed = {**ALIVE, "creator_tax_bps": 0, "fdv_usd": 9_000, "swaps_15m": 25, "ret_60m": -0.4}
-    assert W.passes(rule, crashed) == (True, "")
-    assert not W.passes(rule, {**crashed, "creator_tax_bps": 100})[0] and not W.passes(rule, {**crashed, "fdv_usd": 60_000})[0]
-    assert not W.passes(rule, {**crashed, "swaps_15m": 2})[0]
+def test_runner_wants_a_cheap_token_worth_twice_its_graduation_value_at_four_hours(rules):
+    rule = rules["runner-v1"]
+    grown = {**ALIVE, "fdv_usd": 250_000, "swaps_15m": 300}
+    assert rule["looks"] == [240] and W.passes(rule, grown) == (True, "")
+    assert not W.passes(rule, {**grown, "fdv_usd": 60_000})[0] and not W.passes(rule, {**grown, "creator_tax_bps": 300})[0]
+    assert not W.passes(rule, {**grown, "swaps_15m": 0})[0]
 
 
-def test_wide_net_is_the_fallback_and_the_specific_rules_name_a_position_first(rules):
-    names = [r["name"] for r in W.STRATEGIES]
-    assert names.index("wide-net-v1") == len(names) - 1
-    falling = {**ALIVE, "ret_60m": -0.2}
-    assert not W.passes(rules["survivor-v1"], falling)[0] and W.passes(rules["wide-net-v1"], falling)[0]
-    assert not W.passes(rules["wide-net-v1"], {**falling, "creator_tax_bps": 400})[0]
+def test_no_rule_buys_a_pool_the_bots_are_still_churning_early(rules):
+    busy = {**ALIVE, "swaps_15m": 400, "fdv_usd": 60_000, "sample_bucket": 5}
+    assert not any(W.passes(rule, busy)[0] for rule in W.STRATEGIES)
+
+
+def test_the_sample_bucket_is_fixed_per_token_and_spreads_evenly():
+    assert W.sample_bucket(TOKEN) == W.sample_bucket(TOKEN.upper().replace("0X", "0x")) and 0 <= W.sample_bucket(TOKEN) <= 99
+    buckets = [W.sample_bucket("0x" + f"{i:040x}") for i in range(3000)]
+    assert 0.28 < sum(b <= 33 for b in buckets) / len(buckets) < 0.40
 
 
 def test_what_the_look_measured_is_kept_on_the_paper_row(db, chain):
@@ -330,7 +335,7 @@ def test_an_unknown_creator_tax_is_read_from_the_launch_and_otherwise_fails_the_
     assert json.loads(db.one("SELECT metrics FROM watch WHERE token=?", (TOKEN,))["metrics"])["creator_tax_bps"] == 400
     W.add(db, OTHER, {"score": 20, "verdict": "avoid", "metrics": {}}, "BBB", now=T0)
     assert json.loads(db.one("SELECT metrics FROM watch WHERE token=?", (OTHER,))["metrics"])["creator_tax_bps"] is None
-    ok, why = W.passes(rules["wide-net-v1"], {**ALIVE, "creator_tax_bps": None})
+    ok, why = W.passes(rules["quiet-v1"], {**ALIVE, "swaps_15m": 5, "sample_bucket": 1, "creator_tax_bps": None})
     assert not ok and "creator_tax_bps" in why
 
 
