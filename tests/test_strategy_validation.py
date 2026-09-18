@@ -106,7 +106,9 @@ def test_a_failure_raises_the_next_bar_and_a_pass_does_not(db):
     cohort(db, [.3 + .001 * i for i in range(V.COHORT_N)], start=2000)
     first_pass = json.loads(db.one("SELECT result FROM strategy_trials WHERE status='passed'")["result"])
     assert first_pass["attempt"] == 2 and first_pass["z"] > 2.0
-    assert db.q("SELECT status,k FROM strategy_trials WHERE rule='rule-a' ORDER BY id")[-1] == {"status": "collecting", "k": 2}
+    assert db.q("SELECT status,k FROM strategy_trials WHERE rule='rule-a' ORDER BY id")[-1] == {"status": "collecting", "k": 2}   # a renewal keeps its bar
+    cohort(db, [-.2] * V.COHORT_N, start=4000)                       # the renewal fails: the retry is a new attempt
+    assert db.q("SELECT status,k FROM strategy_trials WHERE rule='rule-a' ORDER BY id")[-1] == {"status": "collecting", "k": 3}
 
 
 def test_a_pass_expires_unless_a_new_cohort_renews_it(db, monkeypatch):
@@ -142,6 +144,7 @@ def test_rules_are_judged_separately_and_share_the_error_budget(db, monkeypatch)
     s = V.summary(db)
     assert s["passed"] and s["passed_rules"] == ["rule-b"]
     assert {v["rule"]: v["passed"] for v in s["rules"]} == {"rule-a": False, "rule-b": True}
+    assert s["rules"][1]["collecting"]["attempt"] == 2               # rule-b's renewal is judged where it passed, whatever rule-a does
 
 
 def test_gas_cost_applies_to_every_cash_leg():

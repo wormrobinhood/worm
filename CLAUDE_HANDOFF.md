@@ -295,3 +295,64 @@ GitHub noreply address, and the production variable and public state both confir
 The current 663-test suite and inline JavaScript syntax checks passed. No private state, local work
 artifacts or environment credentials belong in the release. GitHub checks and Railway deployment
 health must pass before reporting the release as complete.
+
+
+## Second look, profit lock and paper cohorts: 2026-09-19 (Claude Code; the operator moved development here)
+
+Operator's brief: research why the book stopped learning, restart the evidence, fix the execution
+gaps found in the PR #14 review, prepare (not enable) a small live pilot whose profit is burnt, and
+use his exit design: a hard stop at −30%, a trailing stop once a position is 20% up, a wider
+trail after a big pump. **Live trading stays off.** `WH_TRADING`, `LIVE_SELL_READY` and every
+production variable are untouched; the new lifetime budget defaults to zero.
+
+Research (read-only, public data only: `/api/token/<addr>` for all 1,465 scored tokens, GeckoTerminal
+one-minute candles and on-chain swap logs for a stratified random sample of ~300 pools; shell access
+to the production container was refused by the harness and was not worked around):
+- 1,406 resolved outcomes: 1,067 rugged, 115 dumped, 165 flat, 59 grew. USDG pairs 20%, ETH 57%, the
+  rest tokenised stocks. The USDG-only, healthy-only paper gate admitted ~0.15% of graduations.
+- Best at-scan AUC is 0.64 (top10_pct, and it points the *opposite* way to the rule). Serial creators
+  (5+ launches): 0 of 259 grew. No creator has a trust above 50 yet.
+- Measured round trip with the on-chain quoter: 2.1% at zero creator tax, 4.0% at 1%, 7.9% at 3%,
+  9.9% at 4% (hook fee 1% a side + the tax + ~0.2% impact at $10-50).
+- Entry at the verdict +5/+15/+30 min: −18/−24/−15% a trade (weighted to the population, lock exit,
+  15 s polling, costs in). +60/+120/+180 min: −7/−8/−9%. New high on volume: −17 to −22%. Holding
+  without exits: −35%. Exit settings differ by ~3 points; 15-60 s polling beats 300 s by 2-3.
+- Dozens of one- and two-condition slices: the best are +5-13% with n=12-25 and negative lower bounds,
+  and the most promising (zero tax, FDV ≤ $15k, 1-2 h old) did not replicate on the candle sample
+  (−8.5%/−1.3%). Conclusion: no demonstrated edge. The rules shipped are hypotheses under test.
+- The harvest scripts and data live in the session scratchpad, not the repo. `wide-net-v1` stores each
+  look's features on the paper row so the next study can run on production's own measurements.
+
+Code (see `docs/SECOND-LOOK.md` for the public description):
+- `lab.py`: `exit_step` understands `arm_at`, `trail_tiers`, `floor`; four `lock_*` policies;
+  `DEFAULT = lock_20@0m`; `current_policy` no longer promotes a research arm.
+- `poolstate.py` (new): pool mids from PoolManager `extsload` of slot0, one JSON-RPC batch, USDG and ETH.
+- `watch.py` (new): watch list, minute sampling, swap-flow features from the pool's logs, named entry
+  rules at fixed looks, collapse pruning, the 15 s fast mark of open paper and trader positions, the
+  entry hook. `run.py` runs it in its own thread; it only reads the chain.
+- `paper.py`: `enter()` for second-look entries (ETH pools too, features stored), `mark(prices=, value=)`.
+  The verdict-time entry is kept and labelled `verdict-healthy-v1`; `PAPER_MAX_OPEN` 25.
+- `trade_checks.py`: quote-asset generalisation for paper; the live default stays USDG-only; sell
+  tolerance parameter (3%, 10% after a revert).
+- `strategy_validation.py`: rewritten as paper cohorts (50 members, shared error budget by attempt,
+  rolling renewal, 21-day validity, void on edit). Old trials are marked `superseded`.
+- `readiness.py`: the paper cohort is half the number and the gate; verdict skill no longer blocks.
+- `advisor.py`, `shadow.py`: second screen measure (bad-outcome share), frozen with the rule.
+- `tx.py`: `not_signed` marker on pre-signing failures; optional faster receipt polling.
+- `live_trading.py`, `trader.py`: live follows paper; lifetime budget; release of unsent orders and
+  journal matching by calldata; standing exit approval; quick retry after a reverted sell; watcher
+  hooks (`remember_gate`, `decide_now`, `mark(prices=)`). Demo mode keeps the old verdict candidates.
+- `treasury.py`: `sweep_trading_profit` (ledger kind `trade_profit`, high-water mark in meta).
+
+Verification: 734 offline tests. Schema changes are additive at startup (`watch`, `watch_ticks`,
+`paper.strategy`, `paper.features`, `strategy_trials.rule/k`). After deploy check: `/api/state`
+answers, `second_look.watching` rises with new verdicts, `lab.validation.rules` lists three
+collecting cohorts, the treasury panel is unchanged, and no `watcher step failed` lines repeat in
+the logs. The watcher adds one batched `eth_call` per 15 s while positions are open, one per minute
+for the list, and one or two log queries per look.
+
+Open items for the operator: a separate trading wallet before any real money (the pilot still
+shares the treasury's sender and journal); the funded exit rehearsal behind `LIVE_SELL_READY`; an
+ops route for the one remaining `REVIEW` case (a confirmed receipt whose transfers do not match);
+hiding live positions until they close; and the next study once a few hundred wide-net rows exist.
+The most promising untested idea is following wallets that were early in earlier winners.

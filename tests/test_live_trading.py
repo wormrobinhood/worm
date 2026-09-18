@@ -8,6 +8,8 @@ from wormhole import config as C, lab, live_trading as L, trader, trade_risk
 from test_trader import FakeRpc, receipt, pad, tok, HASH, RUNWAY, candidate
 from wormhole.pons import TRANSFER
 
+ARM = 'costout_1.5x@0m'          # these tests walk a take-profit, a trail and a stop: an arm that has all three
+
 
 @pytest.fixture
 def setup(db, monkeypatch):
@@ -24,7 +26,7 @@ def setup(db, monkeypatch):
     Paper(db)                                          # live follows paper: the book has just bought this token under a passed rule
     db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,strategy) VALUES(?,?,?,?,?,?,'open','rule-a')",
          (token, 'T1', int(time.time()), .01, 10.0, 970.0))
-    monkeypatch.setattr(L.strategy_validation, 'summary', lambda db: {'passed': True, 'arm': lab.DEFAULT, 'passed_rules': ['rule-a']})
+    monkeypatch.setattr(L.strategy_validation, 'summary', lambda db: {'passed': True, 'arm': ARM, 'passed_rules': ['rule-a']})
     monkeypatch.setattr(L.execution, 'pool', lambda *args, **kw: pool)
     monkeypatch.setattr(L.execution, 'entry', lambda *args, **kw: dict(quote))
     monkeypatch.setattr(L, 'approve_exact', lambda *args, **kw: int(time.time()) + 600)

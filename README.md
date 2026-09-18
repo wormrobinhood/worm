@@ -44,27 +44,31 @@ for the evidence, remaining operational gaps and deployment requirements.
   warned before an unusually bad outcome gains, one that reassured loses, up to 2% a lesson; weights stay
   between 0.5x and 1.5x, and each rule shows its lift.
 - **Trust value per creator**, shown on cards and in the bad-actors table.
-- **Paper book**: simulated $10 positions on complete healthy scores of at least 70, with
-  verified USDG pools, buy/sell quotes, estimated gas and liquidity checks. Existing positions
-  retain their original model; unpriced holdings are labeled.
-- **Strategy lab**: 24 baseline arms (8 exits × 0/30/60-minute delays) plus AI proposals
-  compare sampled 48-hour price paths. Historical results nominate a candidate. Promotion
-  requires a fixed cohort of 30 future eligible tokens from distinct, previously unseen
-  creators, positive results after stressed costs and gas, and improvement over the default.
-  Missing outcomes cannot be discarded to pass the gate. The default paper strategy takes
-  partial profit at +50%, trails the remainder 40% below its peak, stops at −35% before the
-  first profit target and limits holding time to 48 hours. See
-  [trading hardening and remaining release gates](docs/TRADING-HARDENING.md).
+- **Paper book**: nothing is bought at the verdict. Every complete verdict is watched on-chain (the pool's
+  mid once a minute, its swap flow at each look) and judged again one to four hours later by named entry
+  rules; a pass buys $10 on paper at the pool's own quote (USDG and ETH pools, gas and liquidity checks
+  included). Open positions are re-priced from the chain every 15 seconds. The rules are hypotheses under
+  test, not a proven strategy: see [second look](docs/SECOND-LOOK.md) for the study behind them.
+- **Strategy lab**: 36 baseline arms (12 exits × 0/30/60-minute delays) plus AI proposals compare sampled
+  48-hour price paths of verdicts scoring 60 or more and of every second-look entry. The ranking informs;
+  it never promotes. The default exit is the profit lock: stop at −30%, a trailing stop that arms at +20%
+  (15% below the peak, 20% past 2x, 25% past 4x), closed after 12 hours if it has done neither.
+- **Paper cohorts**: the gate before real money. A trial freezes one entry rule and the exit policy; the
+  paper positions that rule opens afterwards (the first per creator) are its members, judged once on their
+  realised, quoted results when 50 have closed. All rules share one error budget, a pass is renewed by the
+  next cohort or expires, and editing the strategy voids it. See [second look](docs/SECOND-LOOK.md) and
+  [trading hardening](docs/TRADING-HARDENING.md).
 - **Advisor**: every two hours (`WH_ADVISOR_EVERY_MIN`), once a few more verdicts have resolved, the writer
   (`WH_ADVISOR_MODEL`, default the voice's model) reads the worm's records and proposes scoring rules (up to
   three conditions over at-scan metrics plus points) and exit arms in a strict JSON form. Nothing it says runs
   as code: every rule is backtested on the worm's own resolved verdicts and adopted only if the tokens it fires
-  on moved clearly differently from the rest (a median difference of 10 points that fewer than 2 in 100 random splits would show, 20 cases each side)
+  on moved clearly differently from the rest (a median difference of 10 points, or a difference of 8 points in how often they went bad, that fewer than 1 in 100 random splits would show, 20 cases each side; the measure that passed is frozen for the 80-token future cohort)
   and it is not a copy of an existing rule; arms join the lab and earn their use there. With the stub writer
   the worm runs its own one-metric threshold search through the same gate. Proposals, backtests and fates are
   kept and shown.
-- **Readiness**: one evidence-only number (exit rule proven, warnings right against the base rate, runway,
-  surplus) that has to reach 80 before the trader may buy; demo money counts for nothing.
+- **Readiness**: one evidence-only number (strategy proven on paper, warnings right against the base rate,
+  runway, surplus) that has to reach 80, with a fresh pass of a paper cohort, before the trader may buy; demo
+  money counts for nothing.
 - **Runway**: measures income from claimed fees in the ledger, estimates the planned bills (compute, gas,
   bridge) and projects 90 days under three scenarios. Rule: keep a 90-day reserve; compute, gas and
   bridging come only from the operations share of the claims; no trading by policy.
@@ -154,13 +158,16 @@ Selected settings:
 | `WH_TOPUP_USD`, `WH_TOPUP_BELOW_USD` | compute top-up size and threshold (5, 1) |
 | `WH_TOPUP_COOLDOWN_S`, `WH_TOPUP_MAX_PER_DAY`, `WH_TOPUP_ALWAYS` | at most one top-up per 6 h and two a day (21600, 2); top-ups only happen while the journal or the advisor runs at the provider, and never while every AI Surplus model in use is free, unless `WH_TOPUP_ALWAYS=1` |
 | `WH_LAB_MIN_N`, `WH_LAB_LCB_Z`, `WH_LAB_EXPLORE` | research cases (30), ranking bound factor (1.5), paper exploration share (0); separate prospective validation is mandatory for promotion |
-| `WH_READY_AT` | readiness needed before real trades (80), plus a current passing future cohort and execution gates |
+| `WH_READY_AT` | readiness needed before real trades (80), plus a fresh pass of a paper cohort and execution gates |
+| `WH_TRADING_BUDGET_USD` | the lifetime trading budget (0: no live buys): the most the pilot may ever have at risk or lose; losses use it up and profits never refill it |
+| `WH_TRADING_BURN_SHARE` | share of realised trading profit above its high-water mark that is owed to the burn (1.0) |
+| `WH_PAPER_MAX_OPEN` | open paper positions at once (25) |
 | `WH_MAX_DAILY_LOSS_USD` | gross-loss trigger for pausing new entries (10); exits continue; not a guaranteed loss ceiling |
 | `WH_ADVISOR_MODEL`, `WH_ADVISOR_EVERY_MIN`, `WH_ADVISOR_MIN_NEW` | the advisor's writer (default: the voice's), minutes between runs (120), new resolved verdicts a run needs (3) |
 | `WH_RESCAN_TOKEN` | lets a remote caller use `/api/rescan/<token>` by sending the header `X-Rescan-Token`; unset, only loopback clients may rescan (the queue is capped at 100 and an address is not queued twice within 10 minutes) |
-| `WH_BUY_MIN_SCORE`, `WH_MAX_POSITION_USD`, `WH_MAX_OPEN`, `WH_MAX_DAILY_USD` | trader limits (70, 10, 5, 30) |
+| `WH_MAX_POSITION_USD`, `WH_MAX_OPEN`, `WH_MAX_DAILY_USD` | trader limits (10, 5, 30); `WH_BUY_MIN_SCORE` (70) only applies to the legacy verdict-time paper entry |
 | `WH_OWNER_SHARE`, `WH_GOLD_SHARE`, `WH_BURN_SHARE` | of every claim of creator fees: forwarded to the creator (0.50), spent on tokenized gold kept as a reserve (0.10), spent buying $WORM on its pool and sending it to the burn address (0.20); the rest is operations |
-| `WH_TRADING` | real-trading switch, off by default (0): the worm learns on paper until its brain is mature; on, the readiness gate still applies |
+| `WH_TRADING` | real-trading switch, off by default (0): the worm learns on paper until a strategy is proven there; on, the readiness gate, the paper cohort, the budget and the sell release gate still apply |
 
 Posting to X is manual on purpose: entries sit on the site with a copy button.
 
@@ -169,9 +176,10 @@ Posting to X is manual on purpose: entries sit on the site with a copy button.
 1. Signals and the live page (this).
 2. Its own token on pons, paired with USDG, so creator fees fund it.
 3. The voice: journal entries from telemetry, checked like the fly's; compute paid from its own balance at AI Surplus in USDG on Robinhood Chain, with Venice on Base as the fallback. Built, demo mode.
-4. Buys from the surplus above the 90-day reserve with lab-chosen exits, quoted and simulated on Uniswap v4. Built, demo mode, off by policy (`WH_TRADING`) until the brain is mature;
-   real buys stay off until real sells exist (the Permit2 approval step and the exit path), and every buy is written
-   down before it is sent and reconciled against the chain afterwards.
+4. Buys from the surplus above the 90-day reserve, within a lifetime budget, following the paper book: only a token it
+   has just bought under an entry rule whose paper cohort passed, with realised profit above a high-water mark going to
+   the burn. Built and dormant: off by policy (`WH_TRADING`), without a budget, and behind the sell release gate until a
+   funded rehearsal; every order is written down before it is sent and reconciled against the chain afterwards.
 
 ## The page
 

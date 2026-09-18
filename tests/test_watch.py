@@ -16,6 +16,21 @@ def pool(token, quote=C.USDG):
     return {"token": token, "c0": c0, "c1": c1, "fee": 0, "tick_spacing": 200, "hooks": C.HOOK, "quote": quote}
 
 
+RULE = {"name": "test-look", "looks": [30, 60, 120],
+        "conditions": [{"feature": "creator_tax_bps", "op": "<=", "value": 200},
+                       {"feature": "creator_prev_launches", "op": "<=", "value": 4},
+                       {"feature": "ret_p0", "op": ">=", "value": -0.20},
+                       {"feature": "dd_peak", "op": ">=", "value": -0.35},
+                       {"feature": "moves_15m", "op": ">=", "value": 5}]}
+
+
+@pytest.fixture(autouse=True)
+def one_rule(monkeypatch):
+    """The mechanics are tested against one fixed rule; the rules in production have their own tests below."""
+    monkeypatch.setattr(W, "STRATEGIES", [RULE])
+    monkeypatch.setattr(W, "STRATEGY", RULE)
+
+
 @pytest.fixture
 def chain(monkeypatch, db):
     """Pool mids and fills come from this dict instead of the chain."""
@@ -177,18 +192,17 @@ def test_flow_counts_buys_and_usd_volume_for_a_usdg_pool():
     assert pk["c1"] == TOKEN
     rpc = LogRpc([swap_log(-5_000_000, 10 ** 21), swap_log(2_000_000, -4 * 10 ** 20), swap_log(-1_000_000, 10 ** 20)])
     got = W.flow(rpc, pk, TOKEN, 100, 200)
+    assert W.flow(rpc, {**pk, "quote": "0x" + "cd" * 20}, TOKEN, 100, 200) is None
     assert got == {"swaps": 3, "buys": 2, "usd": pytest.approx(8.0)}
     address, topics, first, last = rpc.asked[0]
     assert address == C.POOL_MANAGER and topics == [W.SWAP_TOPIC, poolstate.pool_id(pk)] and (first, last) == (100, 200)
 
 
 def test_flow_values_an_eth_pool_at_the_fresh_eth_price(monkeypatch):
-    monkeypatch.setattr(W.execution, "eth_usd", lambda strict=False: 2000.0)
     pk = pool(TOKEN, quote=C.ZERO)                                    # ETH is always currency0
     rpc = LogRpc([swap_log(-10 ** 16, 5 * 10 ** 22), swap_log(3 * 10 ** 16, -10 ** 23)])
-    assert W.flow(rpc, pk, TOKEN, 1, 2) == {"swaps": 2, "buys": 1, "usd": pytest.approx(80.0)}
-    monkeypatch.setattr(W.execution, "eth_usd", lambda strict=False: None)
-    assert W.flow(rpc, pk, TOKEN, 1, 2) is None                       # no fresh ETH price: not measured, never guessed
+    assert W.flow(rpc, pk, TOKEN, 1, 2, 2000.0) == {"swaps": 2, "buys": 1, "usd": pytest.approx(80.0)}
+    assert W.flow(rpc, pk, TOKEN, 1, 2, None) == {"swaps": 2, "buys": 1, "usd": None}   # the counts stand; dollars are never guessed
 
 
 def test_flow_features_reach_the_rule(db, chain, monkeypatch):
@@ -249,8 +263,93 @@ def test_the_first_rule_that_passes_names_the_position(db, chain, monkeypatch):
 def test_a_collapsed_pool_leaves_the_list(db, chain):
     W.add(db, TOKEN, verdict(), "AAA", now=T0)
     w = W.Watcher(None, db, P.Paper(db))
-    now = walk(w, chain, TOKEN, [1.0] * 3 + [0.15] * 26)               # -85% but only 29 minutes old: still watched
+    now = walk(w, chain, TOKEN, [1.0] * 3 + [0.02] * 26)               # -98% but only 29 minutes old: still watched
     assert db.one("SELECT status FROM watch")["status"] == "watching"
-    walk(w, chain, TOKEN, [0.15] * 3, start=now)
+    walk(w, chain, TOKEN, [0.02] * 3, start=now)
     row = db.one("SELECT status, note FROM watch")
     assert row["status"] == "done" and "collapsed" in row["note"]
+
+
+# ---- the rules in production ----------------------------------------------------------------------
+
+ALIVE = {"creator_prev_launches": 0, "creator_tax_bps": 100, "swaps_15m": 60, "ret_60m": 0.04, "ret_15m": 0.02,
+         "fdv_usd": 40_000, "ret_p0": -0.3, "vol_15m_usd": 3000.0}
+
+
+@pytest.fixture
+def rules(monkeypatch):
+    monkeypatch.undo()                                   # the module's own rule set, not the test rule
+    return {r["name"]: r for r in W.STRATEGIES}
+
+
+def test_rule_names_are_unique_and_every_feature_is_one_the_watcher_measures(rules):
+    assert len(rules) == len(W.STRATEGIES) and all(name.endswith(("-v1", "-v2", "-v3")) for name in rules)
+    measured = {"ret_p0", "dd_peak", "rebound", "moves_15m", "ret_60m", "ret_15m", "ret_5m", "age_min", "fdv_usd",
+                "swaps_15m", "vol_15m_usd", "buy_share_15m", "vol_ratio", "creator_tax_bps", "creator_prev_launches",
+                "creator_rugged", "top10_pct", "holders", "snipe_pct", "fleet_pct", "launch_to_grad_s", "score"}
+    for rule in W.STRATEGIES:
+        assert rule["looks"] == sorted(rule["looks"]) and min(rule["looks"]) >= 60      # the first hour loses: no rule looks that early
+        assert {c["feature"] for c in rule["conditions"]} <= measured and all(c["op"] in W.OPS for c in rule["conditions"])
+
+
+def test_survivor_wants_a_cheap_live_token_that_is_not_falling_and_not_spiking(rules):
+    rule = rules["survivor-v1"]
+    assert W.passes(rule, ALIVE) == (True, "")
+    for change, why in (({"ret_60m": -0.05}, "ret_60m"), ({"ret_15m": 0.25}, "ret_15m"), ({"creator_tax_bps": 300}, "creator_tax_bps"),
+                        ({"swaps_15m": 3}, "swaps_15m"), ({"creator_prev_launches": 40}, "creator_prev_launches"), ({"ret_60m": None}, "ret_60m")):
+        ok, said = W.passes(rule, {**ALIVE, **change})
+        assert not ok and why in said
+
+
+def test_flush_wants_a_zero_tax_token_that_already_fell_and_still_trades(rules):
+    rule = rules["flush-v1"]
+    crashed = {**ALIVE, "creator_tax_bps": 0, "fdv_usd": 9_000, "swaps_15m": 25, "ret_60m": -0.4}
+    assert W.passes(rule, crashed) == (True, "")
+    assert not W.passes(rule, {**crashed, "creator_tax_bps": 100})[0] and not W.passes(rule, {**crashed, "fdv_usd": 60_000})[0]
+    assert not W.passes(rule, {**crashed, "swaps_15m": 2})[0]
+
+
+def test_wide_net_is_the_fallback_and_the_specific_rules_name_a_position_first(rules):
+    names = [r["name"] for r in W.STRATEGIES]
+    assert names.index("wide-net-v1") == len(names) - 1
+    falling = {**ALIVE, "ret_60m": -0.2}
+    assert not W.passes(rules["survivor-v1"], falling)[0] and W.passes(rules["wide-net-v1"], falling)[0]
+    assert not W.passes(rules["wide-net-v1"], {**falling, "creator_tax_bps": 400})[0]
+
+
+def test_what_the_look_measured_is_kept_on_the_paper_row(db, chain):
+    W.add(db, TOKEN, verdict(), "AAA", now=T0)
+    walk(W.Watcher(None, db, P.Paper(db)), chain, TOKEN, [1.0 + 0.002 * (i % 7) for i in range(31)])
+    kept = json.loads(db.one("SELECT features FROM paper")["features"])
+    assert kept["creator_tax_bps"] == 100 and "ret_p0" in kept and "fdv_usd" in kept and kept["moves_15m"] >= 5
+
+
+def test_an_unknown_creator_tax_is_read_from_the_launch_and_otherwise_fails_the_rule(db, rules):
+    db.x("INSERT INTO launches(token,symbol,creator_tax_bps) VALUES(?,?,?)", (TOKEN, "AAA", 400))
+    W.add(db, TOKEN, {"score": 20, "verdict": "avoid", "metrics": {}}, now=T0)
+    assert json.loads(db.one("SELECT metrics FROM watch WHERE token=?", (TOKEN,))["metrics"])["creator_tax_bps"] == 400
+    W.add(db, OTHER, {"score": 20, "verdict": "avoid", "metrics": {}}, "BBB", now=T0)
+    assert json.loads(db.one("SELECT metrics FROM watch WHERE token=?", (OTHER,))["metrics"])["creator_tax_bps"] is None
+    ok, why = W.passes(rules["wide-net-v1"], {**ALIVE, "creator_tax_bps": None})
+    assert not ok and "creator_tax_bps" in why
+
+
+def test_a_look_whose_flow_could_not_be_read_waits_instead_of_being_spent(db, chain, monkeypatch):
+    monkeypatch.setattr(W, "STRATEGIES", [{"name": "flow-test", "looks": [30], "conditions": [{"feature": "swaps_15m", "op": ">=", "value": 2}]}])
+    db.x("INSERT INTO launches(token,symbol,grad_block) VALUES(?,?,?)", (TOKEN, "AAA", 900_000))
+    W.add(db, TOKEN, verdict(), "AAA", now=T0)
+
+    class Down(LogRpc):
+        def get_logs(self, *a, **k):
+            raise RuntimeError("429 Too Many Requests")
+    w = W.Watcher(Down([]), db, P.Paper(db))
+    now = walk(w, chain, TOKEN, [1.0 + 0.002 * (i % 7) for i in range(33)])
+    assert json.loads(db.one("SELECT looks_done FROM watch")["looks_done"]) == []      # three minutes of outage: still due
+    w.rpc = LogRpc([swap_log(-5_000_000, 10 ** 21)] * 3)
+    walk(w, chain, TOKEN, [1.004], start=now)
+    assert db.one("SELECT strategy FROM paper")["strategy"] == "flow-test"
+    db.x("DELETE FROM paper"); db.x("DELETE FROM watch"); db.x("DELETE FROM watch_ticks")
+    W.add(db, TOKEN, verdict(), "AAA", now=T0)
+    w = W.Watcher(Down([]), db, P.Paper(db))
+    walk(w, chain, TOKEN, [1.0 + 0.002 * (i % 7) for i in range(42)])                 # past the retry window: the look is spent
+    assert json.loads(db.one("SELECT looks_done FROM watch")["looks_done"]) == [30] and not db.q("SELECT 1 FROM paper")

@@ -18,8 +18,9 @@ from .scorer import SWAP_TOPIC
 log = logging.getLogger("wormhole.watch")
 FAST_EVERY_S = 15                 # open positions
 SAMPLE_EVERY_S = 60               # watched tokens
-DEAD_BELOW = 0.2                  # a pool 80% under its first reading ...
-DEAD_AFTER_S = 1800               # ... half an hour after the verdict is dropped: nothing buys a collapse
+DEAD_BELOW = 0.03                 # a pool 97% under its first reading ...
+DEAD_AFTER_S = 1800               # ... half an hour after the verdict had its liquidity pulled: nothing to watch
+FLOW_RETRY_S = 600                # a look whose swap flow could not be read is tried again for this long
 KEEP_TICKS_S = 3 * 86400
 POOLS_PER_STEP = 3                # pool lookups are two log queries each: a few per step, never a burst
 MAX_TRIES = 5                     # pool lookups per token before it is given up as unsupported
@@ -27,19 +28,35 @@ FLOW_WINDOW_S = 900               # the pool's own swaps are counted over this l
 FLOW_CAP = 10_000                 # the node's cap per log query; a busier window is measured as "at least this"
 
 # Entry rules, each frozen under its name: evidence is only ever pooled per name, so changing a rule means
-# renaming it. `looks` are minutes after the verdict; a token is judged once per look per rule and bought by
-# the first rule that passes (one position per token). Every condition reads a feature from features().
-# The numbers come from the research notes of 2026-09-19 (CLAUDE_HANDOFF.md): nothing measured at graduation
-# separates winners, so every rule waits and asks whether the token is still alive and wanted.
+# renaming it. `looks` are minutes after the verdict; a token is judged once per look and bought by the first
+# rule that passes (one position per token). Every condition reads a feature from features().
+#
+# Where these come from (research of 2026-09-19 on ~300 graduated pools, minute candles and exact swap paths,
+# costs and 15-60 s monitoring included; CLAUDE_HANDOFF.md has the numbers): nothing measured at graduation
+# separates winners; buying at the verdict or in the first hour loses 15-25% a trade; buying a new high on
+# volume is the worst entry of all; no rule tested showed an edge that held on a second sample. So these are
+# hypotheses under prospective test, the least bad of what was tried, not a proven strategy:
+#   survivor  two to four hours old, still traded, not falling over the last hour, not a spike being chased
+#   flush     the contrarian case: a zero-tax token the snipers have finished dumping, cheap and still traded
+#   wide-net  everything alive and cheap to trade at two hours: the control group, and the unbiased sample
+#             (with its features stored on the paper row) that the next round of research is drawn from
+CHEAP = [{"feature": "creator_prev_launches", "op": "<=", "value": 4}]
 STRATEGIES = [
-    {"name": "second-look-v1", "looks": [30, 60, 120],
-     "conditions": [{"feature": "creator_tax_bps", "op": "<=", "value": 200},
-                    {"feature": "creator_prev_launches", "op": "<=", "value": 4},
-                    {"feature": "ret_p0", "op": ">=", "value": -0.20},
-                    {"feature": "dd_peak", "op": ">=", "value": -0.35},
-                    {"feature": "moves_15m", "op": ">=", "value": 5}]},
+    {"name": "survivor-v1", "looks": [120, 180, 240],
+     "conditions": CHEAP + [{"feature": "creator_tax_bps", "op": "<=", "value": 100},
+                            {"feature": "swaps_15m", "op": ">=", "value": 20},
+                            {"feature": "ret_60m", "op": ">=", "value": 0.0},
+                            {"feature": "ret_15m", "op": "<=", "value": 0.10}]},
+    {"name": "flush-v1", "looks": [60, 120],
+     "conditions": CHEAP + [{"feature": "creator_tax_bps", "op": "<=", "value": 0},
+                            {"feature": "fdv_usd", "op": "<=", "value": 15_000},
+                            {"feature": "swaps_15m", "op": ">=", "value": 10}]},
+    {"name": "wide-net-v1", "looks": [120],
+     "conditions": CHEAP + [{"feature": "creator_tax_bps", "op": "<=", "value": 200},
+                            {"feature": "swaps_15m", "op": ">=", "value": 20}]},
 ]
 STRATEGY = STRATEGIES[0]           # the rule the summaries name first
+SUPPLY = 1_000_000_000             # every Pons token: fully diluted value = price * supply
 OPS = {">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b}
 
 
@@ -60,8 +77,11 @@ def add(db, token, result, symbol=None, now=None):
     keep = {k: metrics.get(k) for k in ("creator_tax_bps", "creator_prev_launches", "creator_rugged", "top10_pct",
                                         "holders", "snipe_pct", "fleet_pct", "launch_to_grad_s")}
     keep["score"], keep["verdict"] = result.get("score"), result.get("verdict")
+    launch = db.one("SELECT symbol, creator_tax_bps FROM launches WHERE token=?", (token,)) or {}
+    if keep["creator_tax_bps"] is None:
+        keep["creator_tax_bps"] = launch.get("creator_tax_bps")     # unknown stays unknown: a rule that reads it then fails
     if symbol is None:
-        symbol = (db.one("SELECT symbol FROM launches WHERE token=?", (token,)) or {}).get("symbol")
+        symbol = launch.get("symbol")
     return bool(db.xc("INSERT OR IGNORE INTO watch(token,symbol,t0,status,metrics) VALUES(?,?,?,'new',?)",
                       (token, symbol or token[:8], int(now or time.time()), json.dumps(keep))))
 
@@ -97,18 +117,24 @@ def _s256(word):
     return v - (1 << 256) if v >> 255 else v
 
 
-def flow(rpc, pk, token, first, last):
-    """The pool's swaps in blocks [first, last]: how many, how many were buys, and the USD that changed hands.
-    Amounts are the swapper's deltas: a positive token delta is a buy. None when the node did not answer."""
+def flow(rpc, pk, token, first, last, eth_usd=None):
+    """The pool's swaps in blocks [first, last]: how many, how many were buys, and the USD that changed hands
+    (None for an ETH pool while no ETH price is known; the counts stand). Amounts are the swapper's deltas: a
+    positive token delta is a buy. None when the node did not answer."""
+    if pk.get("quote") == C.USDG:
+        unit, usd = 10 ** 6, 1.0
+    elif pk.get("quote") == C.ZERO:
+        unit, usd = 10 ** 18, eth_usd
+    else:
+        return None
     try:
-        unit, usd = execution.quote_unit(pk)
         logs = list(rpc.get_logs(C.POOL_MANAGER, [SWAP_TOPIC, poolstate.pool_id(pk)], first, last, 20_000, cap=FLOW_CAP))
     except Exception as e:
         log.info("watch flow read failed: %s", e)
         return None
     token_is_0 = pk["c0"] == token
     swaps = buys = 0
-    volume = 0.0
+    raw = 0
     for lg in logs:
         data = lg.get("data", "")[2:]
         if len(data) < 128:
@@ -116,28 +142,31 @@ def flow(rpc, pk, token, first, last):
         a0, a1 = _s256(data[0:64]), _s256(data[64:128])
         swaps += 1
         buys += (a0 if token_is_0 else a1) > 0
-        volume += abs(a1 if token_is_0 else a0) / unit * usd
-    return {"swaps": swaps, "buys": buys, "usd": volume}
+        raw += abs(a1 if token_is_0 else a0)
+    return {"swaps": swaps, "buys": buys, "usd": (raw / unit * usd) if usd else None}
 
 
-def _flows(rpc, db, row, pk):
-    """Swap flow for a look: the last FLOW_WINDOW_S, and (read once, kept) the same span right after graduation."""
+def _flows(rpc, db, row, pk, want_first=True):
+    """Swap flow for a look: the last FLOW_WINDOW_S, and, when a rule compares against it (vol_ratio), the same
+    span right after graduation (read once, kept). A busy pool's window is megabytes of logs: nothing is read
+    that no rule uses."""
     blocks = int(FLOW_WINDOW_S / C.BLOCK_TIME)
     try:
         head = rpc.block_number()
     except Exception:
         return None, None
-    recent = flow(rpc, pk, row["token"], head - blocks, head)
+    eth = _eth()
+    recent = flow(rpc, pk, row["token"], head - blocks, head, eth)
     first = None
     try:
         first = json.loads(row.get("flow0") or "null")
     except ValueError:
         pass
-    if first is None:
+    if first is None and want_first:
         grad = (db.one("SELECT grad_block FROM launches WHERE token=?", (row["token"],)) or {}).get("grad_block")
         if grad:
-            first = flow(rpc, pk, row["token"], grad, grad + blocks)
-            if first is not None:
+            first = flow(rpc, pk, row["token"], grad, grad + blocks, eth)
+            if first is not None and first["usd"] is not None:
                 db.x("UPDATE watch SET flow0=? WHERE token=?", (json.dumps(first), row["token"]))
     return recent, first
 
@@ -157,12 +186,13 @@ def features(db, row, now, mid, recent=None, first=None):
     moves = sum(1 for a, b in zip(window, window[1:]) if a["price"] != b["price"])
     out = {"ret_p0": mid / row["p0"] - 1, "dd_peak": mid / max(max(prices), mid) - 1,
            "rebound": mid / min(min(prices), mid) - 1, "moves_15m": moves,
+           "ret_60m": (mid / at(3600) - 1) if at(3600) else None,
            "ret_15m": (mid / at(900) - 1) if at(900) else 0.0, "ret_5m": (mid / at(300) - 1) if at(300) else 0.0,
-           "age_min": (now - row["t0"]) / 60.0}
+           "age_min": (now - row["t0"]) / 60.0, "fdv_usd": mid * SUPPLY}
     if recent:
         out.update(swaps_15m=recent["swaps"], vol_15m_usd=recent["usd"],
                    buy_share_15m=(recent["buys"] / recent["swaps"]) if recent["swaps"] else 0.0)
-        if first and first["usd"] > 0:
+        if first and first["usd"] and recent["usd"] is not None:
             out["vol_ratio"] = recent["usd"] / first["usd"]
     try:
         out.update({k: v for k, v in json.loads(row["metrics"] or "{}").items() if isinstance(v, (int, float))})
@@ -182,8 +212,8 @@ def passes(strategy, f):
     """(True, "") or (False, the first condition that failed). A feature the watcher could not measure fails."""
     for c in strategy["conditions"]:
         v = f.get(c["feature"])
-        if c["feature"] in ("creator_tax_bps", "creator_prev_launches") and v is None:
-            v = 0
+        if c["feature"] == "creator_prev_launches" and v is None:
+            v = 0                                  # no earlier launch on record
         if v is None or not OPS[c["op"]](v, c["value"]):
             return False, f"{c['feature']} {v if v is None else round(v, 3)} is not {c['op']} {c['value']}"
     return True, ""
@@ -221,15 +251,20 @@ def _sample(rpc, db, paper, now, on_entry=None):
             look = due[-1]                         # after an outage only the latest due look is judged
             done = sorted(set(done) | set(due))
             rules = [rule for rule in STRATEGIES if look in rule["looks"]]
-            recent, first = (_flows(rpc, db, r, pools[r["token"]]) if any(_needs_flow(rule) for rule in rules)
-                             else (None, None))
+            recent, first = None, None
+            if any(_needs_flow(rule) for rule in rules):
+                want_first = any(c["feature"] == "vol_ratio" for rule in rules for c in rule["conditions"])
+                recent, first = _flows(rpc, db, r, pools[r["token"]], want_first)
+                if recent is None and now < r["t0"] + look * 60 + FLOW_RETRY_S:
+                    continue                       # the node did not answer: the look waits a minute, it is not spent
             f = features(db, r, now, mid, recent, first)
             entered, why = False, "price path too thin"
             for rule in rules if f else []:
                 ok, why = passes(rule, f)
                 if ok:
                     entered = paper.enter(r["token"], r["symbol"], mid, rule["name"],
-                                          f"{rule['name']} at {look} min: {f['ret_p0'] * 100:+.0f}% since the verdict")
+                                          f"{rule['name']} at {look} min: {f['ret_p0'] * 100:+.0f}% since the verdict",
+                                          features={k: (round(v, 6) if isinstance(v, float) else v) for k, v in f.items()})
                     why = f"{rule['name']} entered" if entered else "book full or quote unavailable"
                     break
             db.x("UPDATE watch SET looks_done=?, status=?, note=? WHERE token=?",
@@ -267,6 +302,8 @@ class Watcher:
         self.on_entry, self.on_prices = on_entry, on_prices
         self.sampled = 0.0
         ensure_tables(db)
+        from . import trader
+        trader.ensure_tables(db)                   # the pool cache and the positions table the fast mark reads
 
     def _pools(self, rows):
         pools = {}

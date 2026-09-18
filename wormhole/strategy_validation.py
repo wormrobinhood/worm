@@ -4,10 +4,10 @@ A trial freezes one strategy when it starts: an entry rule (watch.STRATEGIES, by
 the book uses. Its members are the paper positions that rule opens afterwards, the first one per creator,
 and a member's result is what the paper book realised: pool-quoted fills, gas and the token's own costs.
 When the first COHORT_N members have all closed, the trial is evaluated once. Nothing is replaced and no
-running bound is peeked at. Every trial that did not end in a pass makes the next bar higher (the error
-budget is spent 1/(k(k+1)) at a time), so retrying until luck wins gets harder each time. The next cohort
-starts as soon as one ends, so a pass is renewed by fresh evidence or expires; editing the rule or the
-exit policy voids it.
+running bound is peeked at. All rules share one error budget: the k-th attempt (a rule's first cohort, or a
+retry after a failure or an edit) is judged at TOTAL_ALPHA/(k(k+1)), so trying more rules, or retrying until
+luck wins, gets harder each time. The next cohort starts as soon as one ends, so a pass is renewed by fresh
+evidence (at the bar it passed at) or expires; editing the rule or the exit policy voids it.
 
 These are paper fills against live pool quotes, not proof of executable profit at size."""
 import json
@@ -47,10 +47,14 @@ def rules():
     return list(watch.STRATEGIES)
 
 
-def attempt(db):
-    """The k of the next trial: one more than the trials of this design that have not ended in a pass
-    (failed, voided, or another rule's cohort still collecting). A renewal after a pass costs nothing."""
-    return 1 + db.one("SELECT COUNT(*) n FROM strategy_trials WHERE rule IS NOT NULL AND status!='passed'")['n']
+def attempt(db, rule, spec):
+    """The k a new cohort is judged at. Every attempt takes the next k from one budget shared by all rules:
+    a rule's first cohort, and any retry after a failure or an edit. The renewal of a standing pass is no new
+    attempt and keeps the k it passed at."""
+    last = db.one('SELECT status,spec,k FROM strategy_trials WHERE rule=? ORDER BY id DESC LIMIT 1', (rule,))
+    if last and last['status'] == 'passed' and last['spec'] == spec and last['k']:
+        return last['k']
+    return 1 + db.one('SELECT COALESCE(MAX(k),0) n FROM strategy_trials WHERE rule IS NOT NULL')['n']
 
 
 def stage(db):
@@ -74,7 +78,7 @@ def stage(db):
                 cutoff = db.one("SELECT COALESCE(MAX(p.id),?) n FROM strategy_members m JOIN paper p ON p.token=m.token WHERE m.trial=?",
                                 (cutoff, previous['id']))['n']
             db.x("INSERT INTO strategy_trials(created,cutoff,arm,spec,baseline,status,rule,k) VALUES(?,?,?,?,'','collecting',?,?)",
-                 (int(time.time()), cutoff, lab.DEFAULT, spec, rule['name'], attempt(db)))
+                 (int(time.time()), cutoff, lab.DEFAULT, spec, rule['name'], attempt(db, rule['name'], spec)))
 
 
 def _fresh(row):

@@ -33,7 +33,7 @@ class Paper:
         for col in ("qty_left REAL", "recovered_usd REAL DEFAULT 0", "peak_usd REAL", "realized_usd REAL DEFAULT 0",
                     "policy TEXT", "tp_done TEXT", "trail_on INTEGER DEFAULT 0", "cost REAL",
                     "execution_model TEXT", "pool_key TEXT", "policy_spec TEXT", "gas_usd REAL DEFAULT 0",
-                    "liquidation_usd REAL", "marked_ts INTEGER", "strategy TEXT"):
+                    "liquidation_usd REAL", "marked_ts INTEGER", "strategy TEXT", "features TEXT"):
             try:
                 db.x(f"ALTER TABLE paper ADD COLUMN {col}")
             except Exception:
@@ -68,17 +68,21 @@ class Paper:
         lab_row = self.db.one("SELECT symbol FROM launches WHERE token=?", (token,)) or {}
         self._open(token, lab_row.get("symbol") or token[:8], it["arm"], policy, f"score {result['score']}", VERDICT_ENTRY)
 
-    def enter(self, token, symbol, reference, strategy, why):
+    def enter(self, token, symbol, reference, strategy, why, features=None):
         """Open a position the second look chose (watch.py): no verdict gate, the same fills. `reference` is
-        the pool's mid the watcher just read. Returns True when a row was opened."""
+        the pool's mid the watcher just read; `features` is what the look measured, kept on the row so the
+        next round of research reads what production really saw. Returns True when a row was opened."""
         with self._lock:
             if C.TOKEN and token.lower() == C.TOKEN:
                 return False
             if self.db.one("SELECT 1 FROM paper WHERE token=?", (token,)):
                 return False
             arm = lab.pick_arm(self.db)
-            return self._open(token, symbol or token[:8], arm, lab.parse_arm(arm)[0], why, strategy,
-                              reference=reference, quotes=execution.PAPER_QUOTES)
+            opened = self._open(token, symbol or token[:8], arm, lab.parse_arm(arm)[0], why, strategy,
+                                reference=reference, quotes=execution.PAPER_QUOTES)
+            if opened and features:
+                self.db.x("UPDATE paper SET features=? WHERE token=?", (json.dumps(features), token))
+            return opened
 
     def _open(self, token, sym, arm, policy, why, strategy, reference=None, quotes=execution.LIVE_QUOTES):
         n_open = self.db.one("SELECT COUNT(*) n FROM paper WHERE status='open'")["n"]
@@ -93,7 +97,7 @@ class Paper:
             return False
         price = quote['price']
         cost = lab.token_cost(self.db, token)
-        qty = quote['minimum_raw'] / 1e18
+        qty = quote.get('paper_fill_raw', quote['minimum_raw']) / 1e18
         with self.db.transaction():
             if self.db.one("SELECT 1 FROM paper WHERE token=?", (token,)):
                 return False
@@ -125,7 +129,7 @@ class Paper:
 
     def _quote(self, p, amount):
         bid = execution.exit_quote(self.rpc, json.loads(p['pool_key']), p['token'], amount, quotes=execution.PAPER_QUOTES)
-        return bid['minimum_usd'] - bid['gas_usd'], bid['gas_usd']
+        return bid.get('paper_fill_usd', bid['minimum_usd']) - bid['gas_usd'], bid['gas_usd']
 
     def _mark(self, mids=None, value=True):
         opens = self.db.q("SELECT * FROM paper WHERE status='open'")
@@ -222,4 +226,4 @@ class Paper:
                 "unpriced_count": sum(p["valuation_stale"] for p in opens),
                 "risk": trade_risk.check(self.db, 'paper', latch=False), "execution_model": execution.MODEL,
                 "entry": entry_text(),
-                "rules": f"exits by the strategy lab, in use: {cur} ({why}); fills need the token's own Pons pool (USDG or ETH) and a round-trip quote; gas and 3% quote tolerance included; open positions are re-priced from the chain every few seconds; legacy rows retain their original cost model"}
+                "rules": f"exits by the strategy lab, in use: {cur} ({why}); fills need the token's own Pons pool (USDG or ETH) and a round-trip quote, and are booked at the quote less {execution.PAPER_FILL * 100:.0f}% a side plus gas; open positions are re-priced from the chain every few seconds; legacy rows retain their original cost model"}

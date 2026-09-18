@@ -18,6 +18,8 @@ PERMIT_TTL = 600
 MAX_ROUNDTRIP_LOSS = 0.15
 MAX_PRICE_IMPACT = 0.08
 MAX_GAS_FRACTION = 0.10
+PAPER_FILL = 0.01              # a paper fill is the quote less this, a side: what a fill a second after the quote
+                               # plausibly loses. The 3% tolerance is a live order's revert bound, not an expected fill.
 EXIT_TOLERANCE = 0.03          # a sell's minimum is the quote less this
 EXIT_TOLERANCE_RETRY = 0.10    # after a sell reverted: give up more to get out
 MODEL = 'quoted-usdg-v1'
@@ -106,6 +108,7 @@ def entry(rpc, db, token, dollars, *, quotes=LIVE_QUOTES, reference=None):
     if time.time() >= started + QUOTE_TTL:
         raise ValueError('execution quote expired')
     return {'pool': pk, 'amount_raw': amount, 'out_raw': out, 'minimum_raw': minimum,
+            'paper_fill_raw': int(out * (1 - PAPER_FILL)),
             'gas_usd': fee, 'quoted_at': started, 'expires_at': started + QUOTE_TTL,
             'direction': direction, 'price': price, 'roundtrip_ratio': roundtrip,
             'liquidation_usd': back * 9700 // 10000 / unit * usd - gas_cost(rpc, sell_gas), 'model': MODEL}
@@ -128,5 +131,6 @@ def exit_quote(rpc, pk, token, amount, *, quotes=LIVE_QUOTES, tolerance=None):
     if time.time() >= started + QUOTE_TTL:
         raise ValueError('sell quote expired')
     return {'amount_raw': amount, 'out_raw': out, 'minimum_raw': minimum, 'minimum_usd': minimum / unit * usd,
+            'paper_fill_usd': out * (1 - PAPER_FILL) / unit * usd,
             'gas_usd': fee, 'quoted_at': started, 'expires_at': started + QUOTE_TTL,
             'direction': direction, 'pool': pk}

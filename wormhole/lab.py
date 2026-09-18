@@ -1,7 +1,7 @@
 """The strategy lab: every candidate token is traded on paper by many policies at once.
 
-A case starts when a verdict scores at least LAB_MIN_SCORE and has a price. Prices are sampled every
-mark cycle for 48 hours, then every arm (exit policy x entry delay) is simulated on the same path with
+A case starts when a verdict scores at least LAB_MIN_SCORE and has a price, or when the paper book enters a
+token at a second look (watch.py). Prices are sampled every mark cycle for 48 hours, then every arm (exit policy x entry delay) is simulated on the same path with
 that token's own costs (creator tax + curve fee + slippage per side). Arms keep a running net return
 per dollar risked. Historical rankings nominate candidates. Promotion requires the separate fixed future cohort in
 strategy_validation; historical fit alone never promotes an arm. Exploration (a random arm on a share of new positions) is off by
@@ -26,7 +26,7 @@ LCB_Z = float(os.environ.get("WH_LAB_LCB_Z", "1.5"))          # standard errors 
 # 1.0 lets the best of 24 arms pass on zero-edge paths in ~23% of trials at n=30 (tests/test_lab.py measures it), 1.5 in ~12%
 ENTRY_SLACK_S = 900                                            # an arm needs a tick within 15 min of its entry time
 STALE_TAIL_S = 2 * 3600                                        # a path whose last tick is older than this before the horizon is no case
-DEFAULT = "costout_1.5x@0m"
+DEFAULT = "lock_20@0m"         # changing this voids every paper cohort (strategy_validation freezes it): deliberate, never casual
 
 # tp: list of (multiple, fraction of the initial tokens to sell); trail: drawdown from peak that sells the
 # rest; trail_from_start: trailing active before any take-profit; stop: loss that sells everything before
@@ -43,6 +43,17 @@ POLICIES = {
     "trail_35":     {"tp": [], "trail": 0.35, "trail_from_start": True, "stop": None, "max_age": HORIZON_S},
     "time_6h":      {"tp": [], "trail": None, "trail_from_start": False, "stop": -0.40, "max_age": 6 * 3600},
     "time_24h":     {"tp": [], "trail": None, "trail_from_start": False, "stop": -0.40, "max_age": 24 * 3600},
+    # The profit-lock family (the creator's design, 2026-09-19): nothing is sold into strength. A hard stop cuts
+    # the loss; once the position is 20% up a trailing stop follows the peak, wider after a big pump so a runner
+    # can run; a position that has done neither within 12 hours is dead money and is closed.
+    "lock_20":       {"tp": [], "trail": 0.15, "trail_from_start": False, "stop": -0.30, "max_age": 12 * 3600,
+                      "arm_at": 1.2, "trail_tiers": [(2.0, 0.20), (4.0, 0.25)]},
+    "lock_20_tight": {"tp": [], "trail": 0.10, "trail_from_start": False, "stop": -0.20, "max_age": 12 * 3600,
+                      "arm_at": 1.2, "trail_tiers": [(2.0, 0.15), (4.0, 0.20)]},
+    "lock_20_wide":  {"tp": [], "trail": 0.20, "trail_from_start": False, "stop": -0.30, "max_age": 12 * 3600,
+                      "arm_at": 1.2, "trail_tiers": [(2.0, 0.30), (4.0, 0.40)]},
+    "lock_50":       {"tp": [], "trail": 0.20, "trail_from_start": False, "stop": -0.30, "max_age": 12 * 3600,
+                      "arm_at": 1.5, "trail_tiers": [(3.0, 0.30)]},
 }
 DELAYS = (0, 30, 60)
 ARMS = [f"{p}@{d}m" for p in POLICIES for d in DELAYS]

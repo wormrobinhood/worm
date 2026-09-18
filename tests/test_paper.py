@@ -49,7 +49,8 @@ def test_paper_buy_uses_the_token_cost(db, feed):
     assert db.one("SELECT cost FROM paper WHERE token=?", (OTHER,))["cost"] == lab.FEE
 
 
-def test_paper_close_keeps_reason(db, feed):
+def test_paper_close_keeps_reason(db, feed, monkeypatch):
+    monkeypatch.setattr(lab, "pick_arm", lambda db: "costout_1.5x@0m")      # an arm with a take-profit and a trail
     pb = book(db)
     pb.consider(TOKEN, {"score": 80, "verdict": "looks healthy", "metrics": {}})
     qty = db.one("SELECT qty FROM paper WHERE token=?", (TOKEN,))["qty"]
@@ -68,7 +69,8 @@ def test_paper_close_keeps_reason(db, feed):
     assert TRAIL in ev and "None" not in ev
 
 
-def test_paper_stop_reason_on_a_single_tick(db, feed):
+def test_paper_stop_reason_on_a_single_tick(db, feed, monkeypatch):
+    monkeypatch.setattr(lab, "pick_arm", lambda db: "costout_1.5x@0m")
     pb = book(db)
     pb.consider(TOKEN, {"score": 80, "verdict": "looks healthy", "metrics": {}})
     feed[TOKEN] = 0.5
@@ -177,3 +179,83 @@ def test_missing_mark_is_unknown_not_fake_profit(db, feed, monkeypatch):
     s = pb.summary()
     assert s['open'][0]['pnl_usd'] is None and s['unpriced_count'] == 1
     assert not s['risk']['allowed']
+
+
+# ---- the default exit: the profit lock ------------------------------------------------------------
+
+def enter(db, feed, price=1.0):
+    pb = book(db)
+    feed[TOKEN] = price
+    assert pb.enter(TOKEN, "AAA", price, "rule-a", "second look")
+    return pb
+
+
+def test_the_default_exit_is_the_profit_lock(db, feed):
+    pb = enter(db, feed)
+    row = db.one("SELECT policy, strategy, policy_spec FROM paper")
+    assert row["policy"] == lab.DEFAULT == "lock_20@0m" and row["strategy"] == "rule-a"
+    assert lab.parse_arm(lab.DEFAULT)[0]["stop"] == -0.30 and lab.parse_arm(lab.DEFAULT)[0]["arm_at"] == 1.2
+    feed[TOKEN] = 0.72
+    pb.mark(prices={TOKEN: 0.72}, value=False)                       # -28%: inside the stop
+    assert db.one("SELECT status FROM paper")["status"] == "open"
+    feed[TOKEN] = 0.69                                               # the pool's bid at that moment fills the exit
+    pb.mark(prices={TOKEN: 0.69}, value=False)
+    row = db.one("SELECT status, reason, pnl_usd FROM paper")
+    assert row["status"] == "closed" and row["reason"] == "stop at -30%" and row["pnl_usd"] < -3.0
+
+
+def test_the_lock_sells_nothing_on_the_way_up_and_everything_on_the_trail(db, feed):
+    pb = enter(db, feed)
+    for price in (1.1, 1.25, 1.6):                                   # +25% arms it; nothing is sold into strength
+        feed[TOKEN] = price
+        pb.mark(prices={TOKEN: price}, value=False)
+    row = db.one("SELECT status, trail_on, qty, qty_left, peak_usd FROM paper")
+    assert row["status"] == "open" and row["trail_on"] == 1 and row["qty_left"] == row["qty"] and row["peak_usd"] == 1.6
+    feed[TOKEN] = 1.37                                               # 1.6 * 0.85 = 1.36: holds
+    pb.mark(prices={TOKEN: 1.37}, value=False)
+    assert db.one("SELECT status FROM paper")["status"] == "open"
+    feed[TOKEN] = 1.35
+    pb.mark(prices={TOKEN: 1.35}, value=False)
+    row = db.one("SELECT status, reason, pnl_usd FROM paper")
+    assert row["status"] == "closed" and row["reason"] == "trailing stop 15% below the peak" and row["pnl_usd"] > 2.0
+
+
+def test_a_big_pump_gets_a_wider_trail(db, feed):
+    pb = enter(db, feed)
+    for price in (2.0, 4.0, 3.1):                                    # peak 4x trails 25% (3.0): 3.1 holds
+        feed[TOKEN] = price
+        pb.mark(prices={TOKEN: price}, value=False)
+    assert db.one("SELECT status FROM paper")["status"] == "open"
+    feed[TOKEN] = 2.95
+    pb.mark(prices={TOKEN: 2.95}, value=False)
+    row = db.one("SELECT status, reason FROM paper")
+    assert row["status"] == "closed" and row["reason"] == "trailing stop 25% below the peak"
+
+
+def test_dead_money_is_closed_after_twelve_hours(db, feed, monkeypatch):
+    pb = enter(db, feed)
+    opened = db.one("SELECT opened_ts FROM paper")["opened_ts"]
+    monkeypatch.setattr(P.time, "time", lambda: opened + 12 * 3600 + 1)
+    feed[TOKEN] = 1.05
+    pb.mark(prices={TOKEN: 1.05}, value=False)
+    assert db.one("SELECT status, reason FROM paper") == {"status": "closed", "reason": "time limit"}
+
+
+def test_a_second_look_entry_is_once_per_token_and_never_its_own(db, feed, monkeypatch):
+    pb = enter(db, feed)
+    assert not pb.enter(TOKEN, "AAA", 1.0, "rule-a", "again")
+    monkeypatch.setattr(C, "TOKEN", OTHER)
+    feed[OTHER] = 1.0
+    assert not pb.enter(OTHER, "BBB", 1.0, "rule-a", "own token")
+    assert db.one("SELECT COUNT(*) n FROM paper")["n"] == 1
+
+
+def test_the_fast_mark_does_not_ask_for_a_valuation_quote(db, feed, monkeypatch):
+    pb = enter(db, feed)
+    asked = []
+    original = P.execution.exit_quote
+    monkeypatch.setattr(P.execution, "exit_quote", lambda *a, **k: asked.append(a) or original(*a, **k))
+    pb.mark(prices={TOKEN: 1.05}, value=False)
+    assert asked == [] and db.one("SELECT last_usd, liquidation_usd FROM paper")["last_usd"] == 1.05
+    pb.mark()                                                        # the slow mark values the position from a bid
+    assert len(asked) == 1

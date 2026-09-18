@@ -99,7 +99,7 @@ def candidate(db, i, quote=C.ZERO, scored_at=None, partial=0, pool=True):
     return t
 
 
-def position(db, token, mode, entry, qty=1000.0, policy=lab.DEFAULT, sym="POS"):
+def position(db, token, mode, entry, qty=1000.0, policy="costout_1.5x@0m", sym="POS"):
     db.x("INSERT INTO positions(token,symbol,opened_ts,entry_usd,size_usd,qty,qty_left,peak_usd,status,mode,quote,policy,tp_done)"
          " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (token, sym, NOW - 600, entry, 10.0, qty, qty, entry, "open", mode, "ETH", policy, "[]"))
 
