@@ -99,7 +99,7 @@ def candidate(db, i, quote=C.ZERO, scored_at=None, partial=0, pool=True):
     return t
 
 
-def position(db, token, mode, entry, qty=1000.0, policy=lab.DEFAULT, sym="POS"):
+def position(db, token, mode, entry, qty=1000.0, policy="costout_1.5x@0m", sym="POS"):
     db.x("INSERT INTO positions(token,symbol,opened_ts,entry_usd,size_usd,qty,qty_left,peak_usd,status,mode,quote,policy,tp_done)"
          " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (token, sym, NOW - 600, entry, 10.0, qty, qty, entry, "open", mode, "ETH", policy, "[]"))
 
@@ -146,7 +146,7 @@ def test_eth_sizing_needs_fresh_price(tdb, monkeypatch):
     assert tdb.one("SELECT COUNT(*) n FROM trades")["n"] == 0 and rpc.calls == []
     assert len(events(tdb, "skip $T1: no fresh ETH price")) == 1              # said once an hour, not once a cycle
     assert tdb.one("SELECT status FROM trade_intents WHERE token=?", (tok(1),))["status"] is None   # not a permanent skip
-    assert [r["token"] for r in trader.candidates(tdb)] == [tok(1)]
+    assert [r["token"] for r in trader.verdict_candidates(tdb)] == [tok(1)]
 
 
 # ---- demo buys and the caps -----------------------------------------------------------------------
@@ -160,7 +160,7 @@ def test_decide_demo_buys_and_records(tdb):
     p = tdb.one("SELECT * FROM positions WHERE token=?", (t,))
     assert p["status"] == "open" and p["mode"] == "demo" and p["qty"] == 1000.0 and p["policy"] == lab.DEFAULT and p["quote"] == "ETH"
     assert "demo: would buy $10.00 of $T1" in events(tdb, "demo: would buy%")[0]["text"]
-    assert trader.candidates(tdb) == []
+    assert trader.verdict_candidates(tdb) == []
 
 
 def test_decide_respects_gates(tdb):
@@ -271,7 +271,7 @@ def test_quote_out_zero_is_skipped(tdb):
     assert tdb.one("SELECT COUNT(*) n FROM trades")["n"] == 0 and tdb.one("SELECT COUNT(*) n FROM positions")["n"] == 0
     assert tdb.one("SELECT status FROM trade_intents WHERE token=?", (t,))["status"] == "no_price"
     assert len(events(tdb, "skip $T1: no liquidity quoted")) == 1
-    assert trader.candidates(tdb) == []
+    assert trader.verdict_candidates(tdb) == []
 
 
 def test_pool_lookup_failure_is_a_skip(tdb):
@@ -285,7 +285,7 @@ def test_pool_lookup_failure_is_a_skip(tdb):
     trader.decide(FakeRpc(), tdb, RUNWAY, False)
     assert tdb.one("SELECT status FROM trade_intents WHERE token=?", (t2,))["status"] == "no_pool"
     assert len(events(tdb, "skip $T2: pool not found")) == 1
-    assert trader.candidates(tdb) == []
+    assert trader.verdict_candidates(tdb) == []
 
 
 def test_skipped_candidates_leave_the_window(tdb):
@@ -306,7 +306,7 @@ def test_partial_scores_and_held_tokens_are_not_candidates(tdb):
     held = candidate(tdb, 2)
     position(tdb, held, "demo", 0.01)
     ok = candidate(tdb, 3)
-    assert [r["token"] for r in trader.candidates(tdb)] == [ok]
+    assert [r["token"] for r in trader.verdict_candidates(tdb)] == [ok]
 
 
 def test_delayed_arm_enters_later(tdb, monkeypatch):
@@ -331,7 +331,7 @@ def test_received_qty_sums_transfer_logs():
 
 def test_trading_off_by_policy_makes_no_decisions(tdb, monkeypatch):
     monkeypatch.setattr(C, "TRADING", False)
-    monkeypatch.setattr(trader, "candidates", lambda *a, **k: (_ for _ in ()).throw(AssertionError("candidates consulted while trading is off")))
+    monkeypatch.setattr(trader, "verdict_candidates", lambda *a, **k: (_ for _ in ()).throw(AssertionError("candidates consulted while trading is off")))
     trader.decide(object(), tdb, RUNWAY, False, ready={"ready": True, "score": 90})
     assert tdb.q("SELECT * FROM positions") == [] and tdb.q("SELECT * FROM trades") == []
     s = trader.summary(tdb)

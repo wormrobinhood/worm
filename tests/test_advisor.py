@@ -265,3 +265,42 @@ def test_summary_shape_before_any_run(db):
     s = A.summary(db)
     assert s["runs"] == 0 and s["last_run"] is None and s["rules"] == [] and s["arms"] == [] and s["due"] is False
     assert s["bar"]["min_n"] == 20 and s["every_min"] == A.EVERY_MIN
+
+
+def saturated(db, n=120, seed=3):
+    """The real market: nearly everything falls ~85-95%, so medians cannot move. A low-holder token goes bad
+    nine times in ten, the rest six in ten; survivors sit near -20."""
+    rnd = random.Random(seed)
+    for i in range(n):
+        few = i % 2 == 0
+        bad = rnd.random() < (0.95 if few else 0.62)
+        m = {"holders": rnd.randint(20, 90) if few else rnd.randint(110, 500), "top10_pct": round(rnd.uniform(20, 60), 1)}
+        scored(db, "0x" + f"{i + 5000:040x}", m, rnd.uniform(-96, -82) if bad else rnd.uniform(-30, 10))
+
+
+def test_a_saturated_market_is_judged_by_how_often_tokens_went_bad(db):
+    saturated(db)
+    hist = A.history(db)
+    warn = {"conditions": [{"metric": "holders", "op": "<=", "value": 100}], "points": -8}
+    bt = A.backtest_rule(hist, warn, -8, {})
+    assert abs(bt["diff"]) < A.MIN_SEP                          # both medians sit near -89: the old gate saw nothing
+    assert bt["accepted"] and bt["test"] == "bad_share" and bt["bad_diff"] >= 20 and "more often" in bt["why"]
+    calm = A.backtest_rule(hist, {"conditions": [{"metric": "holders", "op": ">=", "value": 100}]}, 5, {})
+    assert calm["accepted"] and calm["test"] == "bad_share" and "less often" in calm["why"]
+    assert not A.backtest_rule(hist, warn, 5, {})["accepted"]   # the wrong sign is still refused
+    noise = A.backtest_rule(hist, {"conditions": [{"metric": "top10_pct", "op": ">=", "value": 40}]}, -8, {})
+    assert not noise["accepted"]
+
+
+def test_a_rule_is_rejudged_by_the_measure_it_was_adopted_under(db):
+    saturated(db)
+    hist = A.history(db)
+    warn = {"conditions": [{"metric": "holders", "op": "<=", "value": 100}], "points": -8}
+    assert A.backtest_rule(hist, warn, -8, {}, test="bad_share")["accepted"]
+    assert not A.backtest_rule(hist, warn, -8, {}, test="median")["accepted"]
+
+
+def test_the_stub_search_uses_both_measures(db):
+    saturated(db, n=160)
+    rules = A.stub_propose(A.history(db), set())["rules"]
+    assert any(r["conditions"][0]["metric"] == "holders" and "often" in r["why"] for r in rules)

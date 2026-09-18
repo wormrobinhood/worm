@@ -80,3 +80,22 @@ def test_trading_off_blocks_entries_even_with_perfect_readiness(db,monkeypatch):
             raise AssertionError('Trading off must not sign')
     trader.decide(NoRPC(),db,{'can_invest':True,'surplus_usd':10000},True,NoSigner(),{'ready':True,'score':100})
     assert db.one("SELECT text FROM events WHERE kind='trade'")['text'].startswith('trading is off')
+
+
+def test_future_cohort_is_judged_by_the_measure_frozen_at_staging(db):
+    """A rule screened on how often its tokens went bad is judged the same way on the future cohort, where
+    both medians sit in the same saturated -90s."""
+    A.ensure_tables(db)
+    sid=shadow.stage(db,{**SPEC,'test':'bad_share'},1,[])
+    start=db.one('SELECT created FROM shadow_rules WHERE id=?',(sid,))['created']
+    for i in range(80):
+        high=i%2==0
+        future(db,start,i,high)
+        bad=high or i%8==1                       # every high token and a quarter of the rest went bad
+        db.x("UPDATE outcomes SET change_pct=?,outcome=? WHERE token=?",(-90-i*.01 if bad else -10+i*.01,'rugged' if bad else 'flat',f'case-{i}'))
+    shadow.evaluate(db)
+    row=db.one('SELECT status,result FROM shadow_rules')
+    result=json.loads(row['result'])
+    assert row['status']=='promoted' and result['test']=='bad_share' and result['diff']>=50
+    stored=json.loads(db.one('SELECT spec FROM learned_rules')['spec'])
+    assert stored['test']=='bad_share' and A.apply(db,{'top10_pct':90})

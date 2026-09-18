@@ -23,6 +23,7 @@ WATCH = None               # set by run.py: callable(ev) that tells the screen a
 BUSY_SINCE = 0.0           # when the transaction now in flight was broadcast; 0 when none is
 BUSY_MAX_S = 120           # a transaction that never settles does not stop the digging for longer than this
 MIN_BURN_USD = float(os.environ.get("WH_MIN_BURN_USD", "5.0"))      # a burn is one pool swap: the share is batched so gas and slippage stay small
+MIN_SWEEP_USD = 1.0        # realised trading profit is swept to the burn once it is this far above the high-water mark
 BURN_SLIPPAGE = 0.03       # the swap reverts if the pool delivers less than the quote minus this
 MIN_GOLD_USD = float(os.environ.get("WH_MIN_GOLD_USD", "5.0"))      # a gold buy is one v3 swap: batched like the burn
 GOLD_SLIPPAGE = 0.02       # gold's pools are deep; the swap reverts below the quote minus this
@@ -85,11 +86,45 @@ def owed_to_owner(db):
 
 
 def owed_to_burn(db):
-    """The burn share of every claim so far, minus what was burned or is on its way, in USDG."""
+    """The burn share of every claim so far plus the trading profit swept to the burn, minus what was burned
+    or is on its way, in USDG."""
     pin_claim_shares(db)
     c = db.one("SELECT COALESCE(SUM(amount * burn_share),0) s FROM ledger WHERE kind='claim'")["s"]
+    t = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind='trade_profit'")["s"]
     b = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind IN ('burn','burn_pending')")["s"]
-    return c - b
+    return c + t - b
+
+
+def sweep_trading_profit(db):
+    """Realised trading profit goes to the burn, above a high-water mark: the live book's lifetime realised
+    result (closed positions, gas and failed attempts included) is compared with the highest level already
+    swept, and only the part above it is owed to the burn. After a drawdown nothing is swept until the old
+    high is passed again, so a win is never burnt while an earlier loss is still unrecovered. Bookkeeping
+    only: the burn itself is the usual swap once MIN_BURN_USD is owed. Returns the USDG newly owed."""
+    from . import live_trading
+    ensure_tables(db)
+    if not db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='positions'"):
+        return 0.0
+    try:
+        share = float(os.environ.get("WH_TRADING_BURN_SHARE", "1.0"))
+    except ValueError:
+        share = 1.0
+    share = share if 0 <= share <= 1 else 1.0
+    pnl = live_trading.realized_pnl(db)
+    high = float(db.meta_get("trading_profit_high_water", "0") or 0)
+    gain = pnl - high
+    if gain < MIN_SWEEP_USD:
+        return 0.0
+    owed = round(gain * share, 6)
+    with db.transaction():
+        db.meta_set("trading_profit_high_water", repr(pnl))
+        if owed > 0:
+            db.x("INSERT INTO ledger(ts,kind,asset,amount,note) VALUES(?,?,?,?,?)",
+                 (int(time.time()), "trade_profit", "USDG", owed,
+                  f"realised trading profit above the high-water mark (${high:.2f} -> ${pnl:.2f}); {share * 100:.0f}% owed to the burn"))
+    if owed > 0:
+        db.add_event("treasury", f"trading profit ${gain:.2f} above the high-water mark: ${owed:.2f} owed to the burn")
+    return owed
 
 
 def owed_to_gold(db):
@@ -289,7 +324,7 @@ def summary(rpc, db):
            "burn_min_usd": MIN_BURN_USD, "gold_min_usd": MIN_GOLD_USD,
            "live": C.LIVE, "claimable_usdg": None, "usdg": None, "eth": None,
            "claimed_total": 0.0, "forwarded_total": 0.0, "compute_total": 0.0, "burned_total": 0.0, "burned_qty": 0.0,
-           "gold_total": 0.0, "gold_qty": 0.0, "gold_held": None, "gold_usd": None,
+           "gold_total": 0.0, "gold_qty": 0.0, "gold_held": None, "gold_usd": None, "trading_profit_to_burn": 0.0,
            "owed_to_owner": 0.0, "owed_to_burn": 0.0, "owed_to_gold": 0.0, "burn_state": "", "gold_state": "", "ledger": []}
     try:
         out['claim_policy'] = json.loads(db.meta_get('claim_policy_status') or '{}')
@@ -320,6 +355,8 @@ def summary(rpc, db):
             out["burned_total"] = round(r["s"], 4)
         elif r["kind"] == "gold":
             out["gold_total"] = round(r["s"], 4)
+        elif r["kind"] == "trade_profit":
+            out["trading_profit_to_burn"] = round(r["s"], 4)
     out["burned_qty"] = round(db.one("SELECT COALESCE(SUM(qty),0) q FROM ledger WHERE kind='burn'")["q"] or 0.0, 2)
     out["gold_qty"] = round(db.one("SELECT COALESCE(SUM(qty),0) q FROM ledger WHERE kind='gold'")["q"] or 0.0, 6)
     try:
@@ -707,6 +744,10 @@ def cycle(rpc, db, acct):
         if not claim(rpc, db, acct, claimable):
             return
         db.meta_set("claim_balance_since", "")
+    try:
+        sweep_trading_profit(db)
+    except Exception as e:
+        log.warning("trading profit sweep failed: %s", e)
     for action in (forward, burn, gold):
         if db.one("SELECT 1 FROM ledger WHERE kind LIKE '%_pending' AND tx IS NOT NULL"):
             return

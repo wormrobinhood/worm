@@ -23,6 +23,7 @@ from wormhole import voice, trader, compute, lab, advisor
 from wormhole import launch as L
 from wormhole.budget import projection
 from wormhole import readiness, tx, launch_schedule
+from wormhole import watch as second_look
 import os
 from wormhole.growth import treasury
 from wormhole import budget
@@ -90,6 +91,7 @@ def score_one(token, db, scorer, brain, paper, hub, label, requeue=None, tries=1
             return None
         brain.record(token, r)
         paper.consider(token, r)
+        second_look.add(db, token, r)                 # nothing is bought at the verdict: the pool is watched and judged again later
         db.add_event("verdict", f"{label(token)}: {r['verdict']} [{r['score']}]"
                      + (" (partial data)" if r["metrics"].get("partial") else ""), token)
         hub.notify("score", token)
@@ -215,6 +217,7 @@ def main():
             def entries():
                 tre, rw = box["tre"], box["rw"]
                 rd = readiness.compute(brain.summary(), lab.summary(db), rw, trader.MAX_POSITION_USD)
+                trader.remember_gate(rw, rd)          # the watcher sees a paper entry first and may act on this reading
                 trader.decide(rpc, db, rw, C.LIVE, acct, rd)
 
             def housekeeping():
@@ -269,7 +272,21 @@ def main():
                 log.exception('launch scheduler paused; review pending state')
             time.sleep(1)
 
-    for fn in (pipeline, worker, marker, watchdog, launch_clock):
+    def watcher():
+        """Pool prices from the chain for the watch list and every open position. It only reads; what it hands
+        the trader (a fresh entry, fresh prices) passes through the trader's own gates, all closed by default."""
+        time.sleep(60)
+        look = second_look.Watcher(rpc, db, paper,
+                                   on_entry=lambda: trader.decide_now(rpc, db, C.LIVE, acct),
+                                   on_prices=lambda mids: trader.mark(rpc, db, C.LIVE, acct, prices=mids))
+        while True:
+            try:
+                look.step()
+            except Exception as e:
+                log.warning("watcher step failed: %s", e)
+            time.sleep(second_look.FAST_EVERY_S)
+
+    for fn in (pipeline, worker, marker, watchdog, launch_clock, watcher):
         threading.Thread(target=fn, daemon=True, name=fn.__name__).start()
     if screen:
         screen.start()

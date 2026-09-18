@@ -1,7 +1,7 @@
 """The strategy lab: every candidate token is traded on paper by many policies at once.
 
-A case starts when a verdict scores at least LAB_MIN_SCORE and has a price. Prices are sampled every
-mark cycle for 48 hours, then every arm (exit policy x entry delay) is simulated on the same path with
+A case starts when a verdict scores at least LAB_MIN_SCORE and has a price, or when the paper book enters a
+token at a second look (watch.py). Prices are sampled every mark cycle for 48 hours, then every arm (exit policy x entry delay) is simulated on the same path with
 that token's own costs (creator tax + curve fee + slippage per side). Arms keep a running net return
 per dollar risked. Historical rankings nominate candidates. Promotion requires the separate fixed future cohort in
 strategy_validation; historical fit alone never promotes an arm. Exploration (a random arm on a share of new positions) is off by
@@ -26,11 +26,14 @@ LCB_Z = float(os.environ.get("WH_LAB_LCB_Z", "1.5"))          # standard errors 
 # 1.0 lets the best of 24 arms pass on zero-edge paths in ~23% of trials at n=30 (tests/test_lab.py measures it), 1.5 in ~12%
 ENTRY_SLACK_S = 900                                            # an arm needs a tick within 15 min of its entry time
 STALE_TAIL_S = 2 * 3600                                        # a path whose last tick is older than this before the horizon is no case
-DEFAULT = "costout_1.5x@0m"
+DEFAULT = "lock_20@0m"         # changing this voids every paper cohort (strategy_validation freezes it): deliberate, never casual
 
 # tp: list of (multiple, fraction of the initial tokens to sell); trail: drawdown from peak that sells the
 # rest; trail_from_start: trailing active before any take-profit; stop: loss that sells everything before
 # the first take-profit; max_age: seconds.
+# Optional, for the profit-lock family: arm_at: the multiple at which the trailing stop arms without selling
+# anything; trail_tiers: [(peak multiple, drawdown)], the drawdown in force once the peak reached that
+# multiple (overrides trail); floor: once armed, the stop never sits below entry * floor.
 POLICIES = {
     "hedge_2x":     {"tp": [(2.0, 0.60)], "trail": 0.50, "trail_from_start": False, "stop": -0.50, "max_age": HORIZON_S},
     "costout_1.5x": {"tp": [(1.5, 0.667)], "trail": 0.40, "trail_from_start": False, "stop": -0.35, "max_age": HORIZON_S},
@@ -40,6 +43,17 @@ POLICIES = {
     "trail_35":     {"tp": [], "trail": 0.35, "trail_from_start": True, "stop": None, "max_age": HORIZON_S},
     "time_6h":      {"tp": [], "trail": None, "trail_from_start": False, "stop": -0.40, "max_age": 6 * 3600},
     "time_24h":     {"tp": [], "trail": None, "trail_from_start": False, "stop": -0.40, "max_age": 24 * 3600},
+    # The profit-lock family (the creator's design, 2026-09-19): nothing is sold into strength. A hard stop cuts
+    # the loss; once the position is 20% up a trailing stop follows the peak, wider after a big pump so a runner
+    # can run; a position that has done neither within 12 hours is dead money and is closed.
+    "lock_20":       {"tp": [], "trail": 0.15, "trail_from_start": False, "stop": -0.30, "max_age": 12 * 3600,
+                      "arm_at": 1.2, "trail_tiers": [(2.0, 0.20), (4.0, 0.25)]},
+    "lock_20_tight": {"tp": [], "trail": 0.10, "trail_from_start": False, "stop": -0.20, "max_age": 12 * 3600,
+                      "arm_at": 1.2, "trail_tiers": [(2.0, 0.15), (4.0, 0.20)]},
+    "lock_20_wide":  {"tp": [], "trail": 0.20, "trail_from_start": False, "stop": -0.30, "max_age": 12 * 3600,
+                      "arm_at": 1.2, "trail_tiers": [(2.0, 0.30), (4.0, 0.40)]},
+    "lock_50":       {"tp": [], "trail": 0.20, "trail_from_start": False, "stop": -0.30, "max_age": 12 * 3600,
+                      "arm_at": 1.5, "trail_tiers": [(3.0, 0.30)]},
 }
 DELAYS = (0, 30, 60)
 ARMS = [f"{p}@{d}m" for p in POLICIES for d in DELAYS]
@@ -91,6 +105,16 @@ def token_cost(db, token):
 
 # ---- the exit rule shared by simulation, the paper book and the trader ---------------------------
 
+def trail_pct(policy, peak_mult):
+    """The drawdown from the peak that sells: the last tier whose multiple the peak has reached, else the
+    policy's flat trail."""
+    pct = policy.get("trail")
+    for m, t in policy.get("trail_tiers") or []:
+        if peak_mult >= m:
+            pct = t
+    return pct
+
+
 def exit_step(policy, st, price, ts):
     """Advance one position by one price. st: {entry, entry_ts, qty_left, tp_done, peak, trail_on}.
     Returns (fraction_of_initial_to_sell, reason) or (0, None)."""
@@ -101,11 +125,19 @@ def exit_step(policy, st, price, ts):
             st["tp_done"].append(m)
             st["trail_on"] = True
             return min(frac, st["qty_left"]), f"take profit at {m:g}x"
+    if policy.get("arm_at") and not st.get("trail_on") and st["peak"] >= st["entry"] * policy["arm_at"]:
+        st["trail_on"] = True                  # in profit: from here the trailing stop guards it, nothing is sold yet
     if not st["tp_done"] and policy["stop"] is not None and mult <= 1 + policy["stop"] and st["qty_left"] > 0:
         return st["qty_left"], f"stop at {int(policy['stop'] * 100)}%"
     trail_on = st.get("trail_on") or policy["trail_from_start"]
-    if trail_on and policy["trail"] and st["qty_left"] > 0 and price <= st["peak"] * (1 - policy["trail"]):
-        return st["qty_left"], f"trailing stop {int(policy['trail'] * 100)}% below the peak"
+    pct = trail_pct(policy, st["peak"] / st["entry"])
+    if trail_on and pct and st["qty_left"] > 0:
+        level = st["peak"] * (1 - pct)
+        if policy.get("floor") and st.get("trail_on") and st["entry"] * policy["floor"] > level:
+            if price <= st["entry"] * policy["floor"]:
+                return st["qty_left"], f"profit lock at {policy['floor']:g}x"
+        elif price <= level:
+            return st["qty_left"], f"trailing stop {int(round(pct * 100))}% below the peak"
     if policy["max_age"] and ts - st["entry_ts"] >= policy["max_age"] and st["qty_left"] > 0:
         return st["qty_left"], "time limit"
     return 0.0, None
@@ -253,11 +285,13 @@ def research_policy(db):
 
 
 def current_policy(db):
+    """The exit rule new positions get. One default, changed only in code: a change voids every paper
+    cohort (strategy_validation freezes it), so the lab's ranking informs a decision and never makes it."""
     from . import strategy_validation
     evidence = strategy_validation.summary(db)
     if evidence['passed']:
-        return evidence['arm'], 'confirmed on a fixed future cohort'
-    return DEFAULT, 'default until a fixed future cohort passes'
+        return DEFAULT, 'confirmed by a paper cohort: ' + ', '.join(evidence['passed_rules'])
+    return DEFAULT, 'default until a paper cohort passes'
 
 
 def pick_arm(db):

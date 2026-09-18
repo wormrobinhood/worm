@@ -54,3 +54,35 @@ def test_complete_healthy_scores_only():
                    {'score': 90, 'verdict': 'looks healthy', 'metrics': 'broken'}):
         assert not E.eligible(tok(1), result)
     assert E.eligible(tok(1), {'score': 70, 'verdict': 'looks healthy', 'metrics': '{}'})
+
+
+def test_a_paper_fill_is_the_quote_less_one_percent_not_the_revert_bound(db, quotes):
+    token, pk = quotes
+    q = E.entry(object(), db, token, 10.)
+    assert q['paper_fill_raw'] == 990 * 10**18 and q['minimum_raw'] == 970 * 10**18     # the live order still reverts below 97%
+    bid = E.exit_quote(object(), pk, token, 10**21)
+    assert bid['paper_fill_usd'] == pytest.approx(9.7 * .99) and bid['minimum_usd'] == pytest.approx(9.7 * .97)
+
+
+def test_a_sell_may_give_up_more_only_within_bounds(db, quotes):
+    token, pk = quotes
+    wide = E.exit_quote(object(), pk, token, 10**21, tolerance=E.EXIT_TOLERANCE_RETRY)
+    assert wide['minimum_raw'] == 9_700_000 * 9000 // 10000
+    for bad in (0, -0.1, 0.5):
+        with pytest.raises(ValueError, match='tolerance'):
+            E.exit_quote(object(), pk, token, 10**21, tolerance=bad)
+
+
+def test_eth_pools_are_for_the_paper_book_only(db, quotes, monkeypatch):
+    token, pk = quotes
+    pk.update(quote=C.ZERO, c0=C.ZERO, c1=token)
+    with pytest.raises(ValueError):
+        E.entry(object(), db, token, 10.)                                  # the live default: USDG only
+    monkeypatch.setattr(E, 'eth_usd', lambda strict=False: 2500.0)
+    monkeypatch.setattr(trader, 'quote_buy', lambda rpc, pool, target, amount: ((1000 * 10**18 if target == token else 3_880_000_000_000_000), 100000, target == token))
+    q = E.entry(object(), db, token, 10., quotes=E.PAPER_QUOTES, reference=.01)
+    assert q['amount_raw'] == 4 * 10**15 and q['pool']['quote'] == C.ZERO  # $10 of ETH at $2,500
+    assert q['roundtrip_ratio'] == pytest.approx((3.88e15 * .97 / 1e18 * 2500 - .1) / 10)
+    monkeypatch.setattr(E, 'eth_usd', lambda strict=False: None)
+    with pytest.raises(ValueError, match='ETH price'):
+        E.entry(object(), db, token, 10., quotes=E.PAPER_QUOTES, reference=.01)

@@ -93,7 +93,7 @@ MAX_FEED = 60
 # Paper portfolio (no real money in phase 1)
 PAPER_SIZE_USD = 10.0
 PAPER_MIN_SCORE = 60
-PAPER_MAX_OPEN = 10
+PAPER_MAX_OPEN = int(os.environ.get("WH_PAPER_MAX_OPEN", "25"))   # the second-look book opens several positions a day and holds each up to 12 h
 PAPER_TAKE_PROFIT = 1.0      # +100%
 PAPER_STOP_LOSS = -0.5       # -50%
 PAPER_MAX_AGE_S = 24 * 3600

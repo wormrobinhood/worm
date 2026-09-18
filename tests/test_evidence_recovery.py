@@ -120,10 +120,12 @@ def test_lab_failure_rolls_back_arm_aggregates(db, monkeypatch):
 
 def test_readiness_cannot_be_bought_with_treasury():
     from test_readiness import RUNWAY_OK, _lab
-    r = readiness.compute({'scorecard': {'avoid': {'rugged': 20}}}, _lab(30, .2, lcb=.1), RUNWAY_OK)
-    assert r['score'] == 82 and not r['ready']
+    rich = {**RUNWAY_OK, 'treasury_usd': 9e6, 'surplus_usd': 9e6, 'runway_days_no_income': 9e6}
+    r = readiness.compute({'scorecard': {'avoid': {'rugged': 20}}}, _lab(), rich)
+    assert r['score'] < readiness.READY_AT and not r['ready']      # full runway and surplus are 35 points, never the gate
+    almost = {'passed': False, 'status': 'collecting', 'n': 49, 'enrolled': 50, 'required': 50, 'mean_ret': .4, 'lcb': .2}
     r = readiness.compute({'scorecard': {'avoid': {'flat': 10, 'rugged': 10},
-                                        'looks healthy': {'flat': 10, 'rugged': 10}}}, _lab(30, .2, lcb=.1), RUNWAY_OK)
+                                        'looks healthy': {'flat': 10, 'rugged': 10}}}, _lab(almost), rich)
     assert not r['ready']
 
 
@@ -210,7 +212,7 @@ def test_legacy_results_are_visible_but_not_new_readiness_evidence(db):
     assert summary['scorecard']['looks healthy']['flat'] == 1
     assert summary['validated_scorecard'] == {}
     from test_readiness import RUNWAY_OK, _lab
-    assert readiness.compute(summary, _lab(30, .2, lcb=.1), RUNWAY_OK)['parts'][1]['checked'] == 0
+    assert readiness.compute(summary, _lab(), RUNWAY_OK)['parts'][1]['checked'] == 0
 
 
 def test_db_migration_preserves_legacy_outcomes(tmp_path):

@@ -1,5 +1,10 @@
 # Trading hardening: September 17, 2026
 
+> Superseded in part on September 19, 2026 by [second look](SECOND-LOOK.md): paper entries no longer
+> come from healthy verdicts, the sampled 30-token trial became a 50-position paper cohort, and live
+> candidates follow the paper book. The execution checks, exact approvals, receipt accounting and
+> journal described here still apply.
+
 This update does not enable trading. `WH_TRADING` is unchanged and the code release gate
 `LIVE_SELL_READY` remains false. Publication of these safeguards does not authorize live
 trading, a funded rehearsal, or changes to wallet and launch settings.

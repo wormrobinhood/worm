@@ -89,9 +89,10 @@ class ReceiptPending(RpcError):
     """Submitted, but not yet settled under the receipt policy. Never authorize a new retry."""
 
 
-def wait_receipt(rpc, h, say, *, approval=False):
-    for _ in range(int(RECEIPT_WAIT_S / RECEIPT_POLL_S) if RECEIPT_POLL_S else RECEIPT_WAIT_S):
-        time.sleep(RECEIPT_POLL_S)
+def wait_receipt(rpc, h, say, *, approval=False, poll_s=None):
+    poll_s = RECEIPT_POLL_S if poll_s is None else min(poll_s, RECEIPT_POLL_S)
+    for _ in range(int(RECEIPT_WAIT_S / poll_s) if poll_s else RECEIPT_WAIT_S):
+        time.sleep(poll_s)
         rc = finality.receipt(rpc, h, approval=approval)
         if rc:
             ok = rc.get("status") == "0x1"
@@ -122,7 +123,24 @@ def recover(rpc):
         return not unresolved
 
 
-def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=True, say=None, on_broadcast=None, min_remaining_eth=0.0, fee_limit_eth=None, valid_until=None):
+def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=True, say=None, on_broadcast=None, min_remaining_eth=0.0, fee_limit_eth=None, valid_until=None, poll_s=None):
+    """send_tx proper, plus one promise to callers: an exception raised before the key was used carries
+    not_signed=True. No transaction can exist then, so an order may be released instead of held for review.
+    Anything raised from signing onwards carries no such mark and must be treated as possibly sent."""
+    progress = {"signed": False}
+    try:
+        return _send_tx(rpc, acct, to, data, value, gas, gas_floor, wait, say, on_broadcast, min_remaining_eth,
+                        fee_limit_eth, valid_until, poll_s, progress)
+    except BaseException as e:
+        if not progress["signed"]:
+            try:
+                e.not_signed = True
+            except Exception:
+                pass
+        raise
+
+
+def _send_tx(rpc, acct, to, data, value, gas, gas_floor, wait, say, on_broadcast, min_remaining_eth, fee_limit_eth, valid_until, poll_s, progress):
     """Sign, broadcast, wait for the receipt. Returns (hash, receipt), or (hash, None) with wait=False.
     gas: a fixed limit, or None to estimate and add 30%; gas_floor is a minimum either way.
     valid_until: optional local quote-validity bound, checked before RPC work and immediately before signing.
@@ -197,6 +215,7 @@ def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=Tr
         if not C.LIVE or (C.DATA_DIR / 'payments.paused').exists():
             raise RuntimeError('payments paused before signing')
         check_freshness()
+        progress["signed"] = True           # from here on a transaction may exist: never report "not signed"
         signed = acct.sign_transaction(tx)
         raw = _hex(signed.raw_transaction)
         h_local = _hex(signed.hash)
@@ -213,7 +232,7 @@ def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=Tr
         say(f"broadcast {h}")
     if not wait:
         return h, None
-    rc = wait_receipt(rpc, h, say, approval=approval)
+    rc = wait_receipt(rpc, h, say, approval=approval, poll_s=poll_s)
     if rc.get('status') not in ('0x0', '0x1'):
         raise RuntimeError('invalid receipt status; transaction retained for reconciliation')
     outbox.state(h, 'settled')

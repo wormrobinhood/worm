@@ -12,3 +12,5 @@
 0xeaf6a45f9460dd08a88943523125561f33be47dff2e559ee25d175e3ef6286fe
 # keccak of the golden launch calldata built from public constants, tests/test_launch.py
 bb9fa58bac0f443d719a2100a3c9627f476184235ad5e3ab7a9daa8c4ea23267
+# $WORM Uniswap v4 PoolId on Robinhood Chain: keccak256 of the public pool key, pinned in tests/test_poolstate.py
+0x8c3e2408f38d22325e294e68303aae74bd18a130eaa1897d7839211472343389

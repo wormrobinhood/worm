@@ -186,3 +186,39 @@ def test_pause_during_rpc_preflight_prevents_signing(rpc, acct, live):
     with pytest.raises(RuntimeError, match='paused before signing'):
         tx.send_tx(rpc, guarded, C.FACTORY)
     assert not signed and not rpc.raw and not outbox.pending()
+
+
+# ---- not_signed: the promise that lets an order be released instead of held for review ------------
+
+def test_a_refusal_before_signing_says_nothing_was_signed(rpc, acct, live, monkeypatch):
+    rpc.balance = 1000
+    with pytest.raises(RuntimeError) as poor:
+        tx.send_tx(rpc, acct, C.FACTORY)
+    assert getattr(poor.value, "not_signed", False) is True and rpc.raw == []
+    rpc.balance = 10 ** 18
+    (C.DATA_DIR / "payments.paused").touch()
+    try:
+        with pytest.raises(RuntimeError, match="paused") as paused:
+            tx.send_tx(rpc, acct, C.FACTORY)
+    finally:
+        (C.DATA_DIR / "payments.paused").unlink()
+    assert paused.value.not_signed is True
+    with pytest.raises(RuntimeError, match="expired") as stale:
+        tx.send_tx(rpc, acct, C.FACTORY, valid_until=1.0)
+    assert stale.value.not_signed is True
+
+
+def test_a_failure_from_signing_onwards_is_never_called_unsigned(rpc, acct, live):
+    rpc.script = ["insufficient funds for gas"]                      # the node refused bytes that were signed and journaled
+    with pytest.raises(RpcError) as refused:
+        tx.send_tx(rpc, acct, C.FACTORY)
+    assert not getattr(refused.value, "not_signed", False) and len(rpc.raw) == 0 and len(sends(rpc)) == 1
+
+    def storage_down(h):
+        raise OSError("disk full")
+    from wormhole import outbox
+    for item in outbox.pending():                                    # the refused bytes stay journaled for review; clear them for this test
+        outbox.state(item["hash"], "settled")
+    with pytest.raises(OSError) as journal:
+        tx.send_tx(rpc, acct, C.FACTORY, data="0x01", on_broadcast=storage_down)
+    assert not getattr(journal.value, "not_signed", False)           # signed, journaled, not broadcast: held for review
