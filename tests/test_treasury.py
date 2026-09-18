@@ -537,3 +537,54 @@ def test_a_transaction_in_flight_marks_the_worm_busy_until_it_settles(monkeypatc
     T.watch("burn", "burning", "0x2")
     monkeypatch.setattr(T, "BUSY_SINCE", T.BUSY_SINCE - T.BUSY_MAX_S - 1)   # a transaction that never settles
     assert not T.working()
+
+
+# ---- trading profit to the burn, above a high-water mark ------------------------------------------
+
+def live_position(db, i, size, realized, status="closed"):
+    trader.ensure_tables(db)
+    db.x("INSERT INTO positions(token,symbol,size_usd,realized_usd,status,mode) VALUES(?,?,?,?,?,'live')",
+         ("0x" + f"{i:040x}", f"P{i}", size, realized, status))
+
+
+def test_trading_profit_is_owed_to_the_burn_only_above_the_high_water_mark(db):
+    T.ensure_tables(db)
+    assert T.sweep_trading_profit(db) == 0.0                         # no trader tables yet: nothing to sweep
+    live_position(db, 1, 10.0, 16.0)                                 # +6
+    live_position(db, 2, 10.0, 99.0, status="open")                  # an open position is no profit yet
+    assert T.sweep_trading_profit(db) == pytest.approx(6.0) and T.owed_to_burn(db) == pytest.approx(6.0)
+    assert T.sweep_trading_profit(db) == 0.0                         # the same profit is never swept twice
+    live_position(db, 3, 10.0, 6.5)                                  # -3.5: lifetime +2.5, under the +6 high
+    assert T.sweep_trading_profit(db) == 0.0
+    live_position(db, 4, 10.0, 13.0)                                 # +3: lifetime +5.5, still under the high
+    assert T.sweep_trading_profit(db) == 0.0 and T.owed_to_burn(db) == pytest.approx(6.0)
+    live_position(db, 5, 10.0, 12.2)                                 # +2.2: lifetime +7.7, 1.7 above the old high
+    assert T.sweep_trading_profit(db) == pytest.approx(1.7) and T.owed_to_burn(db) == pytest.approx(7.7)
+    notes = [r["note"] for r in rows(db, "trade_profit")]
+    assert len(notes) == 2 and "high-water mark" in notes[0]
+    assert "owed to the burn" in db.one("SELECT text FROM events WHERE kind='treasury' ORDER BY id DESC LIMIT 1")["text"]
+
+
+def test_wasted_gas_counts_against_trading_profit_and_small_gains_wait(db):
+    live_position(db, 1, 10.0, 10.8)                                 # +0.8: under the sweep minimum
+    assert T.sweep_trading_profit(db) == 0.0
+    live_position(db, 2, 10.0, 11.0)                                 # lifetime +1.8
+    db.x("INSERT INTO trades(ts,token,side,mode,note,gas_usd) VALUES(?,?,'buy','live','REVERTED',0.5)", (int(time.time()), "0x" + "77" * 20))
+    assert T.sweep_trading_profit(db) == pytest.approx(1.3)
+
+
+def test_the_burn_share_of_trading_profit_is_configurable_and_bounded(db, monkeypatch):
+    live_position(db, 1, 10.0, 20.0)
+    monkeypatch.setenv("WH_TRADING_BURN_SHARE", "0.5")
+    assert T.sweep_trading_profit(db) == pytest.approx(5.0)
+    live_position(db, 2, 10.0, 20.0)
+    monkeypatch.setenv("WH_TRADING_BURN_SHARE", "7")                 # nonsense falls back to all of it
+    assert T.sweep_trading_profit(db) == pytest.approx(10.0)
+
+
+def test_swept_profit_is_reserved_like_any_other_burn_money(db):
+    ledger(db, "claim", 10.0)
+    live_position(db, 1, 10.0, 18.0)
+    T.sweep_trading_profit(db)
+    assert T.owed_to_burn(db) == pytest.approx(10.0 * C.BURN_SHARE + 8.0)
+    assert T.free_usd(db, 100.0) == pytest.approx(100.0 - T.owed_total(db))
