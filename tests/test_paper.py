@@ -19,14 +19,14 @@ TRAIL = "trailing stop 40% below the peak"
 def feed(monkeypatch, db):
     prices = {TOKEN: 1.0, OTHER: 1.0}
     monkeypatch.setattr(P, "token_prices", lambda addrs: {a: {"price_usd": prices.get(a)} for a in addrs})
-    def entry(rpc, database, token, dollars):
+    def entry(rpc, database, token, dollars, quotes=None, reference=None):
         cost = lab.token_cost(database, token)
-        price = prices[token]
+        price = reference or prices[token]
         qty = dollars / price / (1 + cost)
         return {'price': price, 'pool': {'cost': cost}, 'minimum_raw': int(qty * 1e18), 'gas_usd': 0,
                 'liquidation_usd': qty * price * (1 - cost)}
-    def exit_quote(rpc, pool, token, amount):
-        return {'minimum_raw': round(amount / 1e18 * prices[token] * (1 - pool['cost']) * 1e6), 'gas_usd': 0}
+    def exit_quote(rpc, pool, token, amount, quotes=None):
+        return {'minimum_usd': amount / 1e18 * prices[token] * (1 - pool['cost']), 'gas_usd': 0}
     monkeypatch.setattr(P.execution, 'entry', entry)
     monkeypatch.setattr(P.execution, 'exit_quote', exit_quote)
     return prices
@@ -157,7 +157,7 @@ def test_failed_partial_quote_does_not_mark_take_profit_done(db, feed, monkeypat
     pb.consider(TOKEN, {'score': 80, 'verdict': 'looks healthy', 'metrics': {}})
     original = P.execution.exit_quote
     qty = db.one('SELECT qty FROM paper')['qty']
-    def fail_partial(rpc, pk, token, amount):
+    def fail_partial(rpc, pk, token, amount, **kw):
         if amount < int(qty * 1e18) - 10000:
             raise ValueError('quote outage')
         return original(rpc, pk, token, amount)
@@ -172,7 +172,7 @@ def test_missing_mark_is_unknown_not_fake_profit(db, feed, monkeypatch):
     pb = book(db)
     pb.consider(TOKEN, {'score': 80, 'verdict': 'looks healthy', 'metrics': {}})
     db.x('UPDATE paper SET marked_ts=1')
-    monkeypatch.setattr(P.execution, 'exit_quote', lambda *a: (_ for _ in ()).throw(ValueError('quote outage')))
+    monkeypatch.setattr(P.execution, 'exit_quote', lambda *a, **k: (_ for _ in ()).throw(ValueError('quote outage')))
     pb.mark()
     s = pb.summary()
     assert s['open'][0]['pnl_usd'] is None and s['unpriced_count'] == 1

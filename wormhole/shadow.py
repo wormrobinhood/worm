@@ -64,11 +64,11 @@ def evaluate(db):
                   'unknown':COHORT_N-len(hist),'alpha':alpha,'accepted':False}
         if len(fired) >= A.MIN_N and len(other) >= A.MIN_N:
             perms = min(20000,max(2000,int(2/alpha)))
-            diff,p = A.judge(fired,other,perms=perms,seed=ordinal)
+            test = spec.get('test') if spec.get('test') in A.TESTS else 'median'   # the measure frozen at staging
+            diff,p = A.judge(fired,other,perms=perms,seed=ordinal,stat=test)
             p = (round(p*perms)+1)/(perms+1)  # finite randomization must never report probability zero
-            result.update(diff=diff,p=p,permutations=perms)
-            direction = diff <= -A.MIN_SEP if spec['points'] < 0 else diff >= A.MIN_SEP
-            result['accepted'] = bool(direction and p <= alpha)
+            result.update(diff=diff,p=p,permutations=perms,test=test)
+            result['accepted'] = bool(A.separated(test,diff,spec['points']) and p <= alpha)
         result['why'] = 'passed fixed future cohort' if result['accepted'] else 'future cohort did not establish sufficient evidence'
         with db.transaction():
             current = db.one("SELECT status FROM shadow_rules WHERE id=?",(ordinal,))

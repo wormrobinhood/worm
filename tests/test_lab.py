@@ -157,6 +157,54 @@ def test_too_short_a_path_is_no_case():
     assert lab.simulate("hedge_2x@60m", path([1.0, 1.1], step=300), 0) is None
 
 
+LOCK = {"tp": [], "trail": 0.15, "trail_from_start": False, "stop": -0.30, "max_age": lab.HORIZON_S,
+        "arm_at": 1.2, "trail_tiers": [(2.0, 0.20), (4.0, 0.25)]}
+
+
+def lock(prices, **changes):
+    return lab.simulate("lock", path(prices), 0, policy={**LOCK, **changes}, delay=0)
+
+
+def test_profit_lock_stops_the_loss_before_it_arms():
+    # never reached 1.2x: the trailing stop stays off (1.15 -> 0.9 is 22% under the peak and holds); -30% sells
+    assert abs(lock([1.0, 1.15, 0.9, 0.69, 2.0]) - net([(1.0, 0.69)])) < 1e-9
+
+
+def test_profit_lock_arms_in_profit_and_sells_nothing_until_the_trail():
+    # 1.25 arms it; 1.25 * 0.85 = 1.0625: the 1.07 tick holds, the 1.06 tick sells everything
+    assert abs(lock([1.0, 1.25, 1.07, 1.06, 3.0]) - net([(1.0, 1.06)])) < 1e-9
+
+
+def test_profit_lock_widens_the_trail_after_a_big_pump():
+    # peak 4.0 trails 25% (3.0); a 20% trail would have sold the 3.1 tick
+    assert abs(lock([1.0, 2.0, 4.0, 3.1, 2.9]) - net([(1.0, 2.9)])) < 1e-9
+    # peak 2.0 trails 20% (1.6): 1.65 holds, 1.55 sells
+    assert abs(lock([1.0, 2.0, 1.65, 1.55]) - net([(1.0, 1.55)])) < 1e-9
+
+
+def test_profit_lock_floor_never_gives_back_the_entry():
+    # armed at 1.2 with a 15% trail the stop would sit at 1.02; a 1.08 floor sells the 1.07 tick instead
+    assert abs(lock([1.0, 1.2, 1.07, 0.5], floor=1.08) - net([(1.0, 1.07)])) < 1e-9
+    # the floor does not apply before the position arms
+    assert abs(lock([1.0, 1.1, 1.05, 0.69], floor=1.08) - net([(1.0, 0.69)])) < 1e-9
+    # and the trail takes over once it is above the floor
+    assert abs(lock([1.0, 2.0, 1.59], floor=1.08) - net([(1.0, 1.59)])) < 1e-9
+
+
+def test_profit_lock_state_survives_a_restart():
+    # the book stores peak and trail_on between cycles: a position that armed earlier sells on the trail
+    st = {"entry": 1.0, "entry_ts": 0, "qty_left": 1.0, "tp_done": [], "peak": 1.3, "trail_on": True}
+    frac, why = lab.exit_step(LOCK, st, 1.10, 600)
+    assert frac == 1.0 and why == "trailing stop 15% below the peak"
+    st = {"entry": 1.0, "entry_ts": 0, "qty_left": 1.0, "tp_done": [], "peak": 1.1, "trail_on": False}
+    assert lab.exit_step(LOCK, st, 0.95, 600) == (0.0, None)
+
+
+def test_old_policies_do_not_need_the_new_keys():
+    for name, pol in lab.POLICIES.items():
+        assert lab.trail_pct(pol, 5.0) == pol.get("trail") or pol.get("trail_tiers"), name
+
+
 def test_exit_step_never_sells_more_than_is_left():
     pol = lab.POLICIES["ladder"]
     st = {"entry": 1.0, "entry_ts": 0, "qty_left": 0.2, "tp_done": [], "peak": 1.0, "trail_on": False}

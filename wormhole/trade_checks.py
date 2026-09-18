@@ -36,13 +36,35 @@ def eligible(token, result):
                 and not result.get('partial') and not metrics.get('partial'))
 
 
-def pool(rpc, db, token):
+LIVE_QUOTES = (C.USDG,)            # what the live pilot may spend
+PAPER_QUOTES = (C.USDG, C.ZERO)    # the paper book also reads ETH pools: most graduations pair with ETH
+
+
+def verified(pk, token, quotes=LIVE_QUOTES):
+    """The token's own Pons pool against an asset the caller accepts."""
+    return bool(pk and pk.get('quote') in quotes and pk.get('hooks') == C.HOOK
+                and {pk.get('c0'), pk.get('c1')} == {token, pk['quote']})
+
+
+def quote_unit(pk):
+    """(base units per whole quote asset, USD per whole quote asset). ETH needs a fresh price; a stale or
+    missing one raises, so nothing is ever sized or valued from a guess."""
+    if pk['quote'] == C.USDG:
+        return 10 ** 6, 1.0
+    if pk['quote'] == C.ZERO:
+        price = eth_usd(strict=True)
+        if price is None or not math.isfinite(price) or price <= 0:
+            raise ValueError('fresh ETH price unavailable')
+        return 10 ** 18, float(price)
+    raise ValueError('unsupported quote asset')
+
+
+def pool(rpc, db, token, quotes=LIVE_QUOTES):
     from .trader import pool_key, ensure_tables
     ensure_tables(db)
     pk = pool_key(rpc, db, token)
-    if (not pk or pk['quote'] != C.USDG or pk['hooks'] != C.HOOK
-            or set((pk['c0'], pk['c1'])) != {token, C.USDG}):
-        raise ValueError('pilot requires a verified USDG pool')
+    if not verified(pk, token, quotes):
+        raise ValueError('pilot requires a verified USDG pool' if quotes == LIVE_QUOTES else 'no verified pool in a supported asset')
     return pk
 
 
@@ -55,24 +77,27 @@ def gas_cost(rpc, units):
     return (math.ceil(units * 1.3) + 240_000) * math.ceil(gp * 1.25) / 1e18 * price
 
 
-def entry(rpc, db, token, dollars):
+def entry(rpc, db, token, dollars, *, quotes=LIVE_QUOTES, reference=None):
+    """A buy quote with its round trip. `reference` is the mid the caller just read from the pool; without
+    one the price API's reading is used. Raw amounts are in the pool's quote asset."""
     from .trader import quote_buy
     if rpc is None or not math.isfinite(dollars) or dollars <= 0:
         raise ValueError('execution quotes unavailable')
     started = time.time()
-    pk = pool(rpc, db, token)
-    price = usable_price(token_prices([token]).get(token))
-    if price is None:
+    pk = pool(rpc, db, token, quotes)
+    unit, usd = quote_unit(pk)
+    price = reference if reference is not None else usable_price(token_prices([token]).get(token))
+    if price is None or not math.isfinite(price) or price <= 0:
         raise ValueError('fresh reference price unavailable')
-    amount = int(dollars * 1e6)
+    amount = int(dollars / usd * unit)
     out, gas, direction = quote_buy(rpc, pk, token, amount)
     if out <= 0:
         raise ValueError('buy quote unavailable')
     minimum = out * 9700 // 10000
     impact = 1 - (out / 1e18 * price / dollars)
-    back, sell_gas, _ = quote_buy(rpc, pk, C.USDG, minimum)
+    back, sell_gas, _ = quote_buy(rpc, pk, pk['quote'], minimum)
     fee = gas_cost(rpc, gas)
-    roundtrip = (back * (1 - SLIPPAGE) / 1e6 - fee - gas_cost(rpc, sell_gas)) / dollars
+    roundtrip = (back * (1 - SLIPPAGE) / unit * usd - fee - gas_cost(rpc, sell_gas)) / dollars
     if (not math.isfinite(impact) or abs(impact) > MAX_PRICE_IMPACT
             or roundtrip < 1 - MAX_ROUNDTRIP_LOSS or fee > dollars * MAX_GAS_FRACTION):
         raise ValueError('price impact, round-trip loss or gas exceeds the pilot limit')
@@ -80,22 +105,23 @@ def entry(rpc, db, token, dollars):
         raise ValueError('execution quote expired')
     return {'pool': pk, 'amount_raw': amount, 'out_raw': out, 'minimum_raw': minimum,
             'gas_usd': fee, 'quoted_at': started, 'expires_at': started + QUOTE_TTL,
-            'direction': direction, 'price': price, 'roundtrip_ratio': roundtrip, 'liquidation_usd': back * 9700 // 10000 / 1e6 - gas_cost(rpc, sell_gas), 'model': MODEL}
+            'direction': direction, 'price': price, 'roundtrip_ratio': roundtrip,
+            'liquidation_usd': back * 9700 // 10000 / unit * usd - gas_cost(rpc, sell_gas), 'model': MODEL}
 
 
-def exit_quote(rpc, pk, token, amount):
+def exit_quote(rpc, pk, token, amount, *, quotes=LIVE_QUOTES):
     from .trader import quote_buy
-    if (rpc is None or pk['quote'] != C.USDG or pk['hooks'] != C.HOOK
-            or {pk['c0'], pk['c1']} != {token, C.USDG} or amount <= 0):
+    if rpc is None or not verified(pk, token, quotes) or amount <= 0:
         raise ValueError('sell quote unavailable')
     started = time.time()
-    out, gas, direction = quote_buy(rpc, pk, C.USDG, amount)
+    unit, usd = quote_unit(pk)
+    out, gas, direction = quote_buy(rpc, pk, pk['quote'], amount)
     minimum = out * 9700 // 10000
     if minimum <= 0:
         raise ValueError('no executable sell quote')
     fee = gas_cost(rpc, gas)
     if time.time() >= started + QUOTE_TTL:
         raise ValueError('sell quote expired')
-    return {'amount_raw': amount, 'out_raw': out, 'minimum_raw': minimum,
+    return {'amount_raw': amount, 'out_raw': out, 'minimum_raw': minimum, 'minimum_usd': minimum / unit * usd,
             'gas_usd': fee, 'quoted_at': started, 'expires_at': started + QUOTE_TTL,
             'direction': direction, 'pool': pk}

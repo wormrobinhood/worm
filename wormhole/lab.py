@@ -31,6 +31,9 @@ DEFAULT = "costout_1.5x@0m"
 # tp: list of (multiple, fraction of the initial tokens to sell); trail: drawdown from peak that sells the
 # rest; trail_from_start: trailing active before any take-profit; stop: loss that sells everything before
 # the first take-profit; max_age: seconds.
+# Optional, for the profit-lock family: arm_at: the multiple at which the trailing stop arms without selling
+# anything; trail_tiers: [(peak multiple, drawdown)], the drawdown in force once the peak reached that
+# multiple (overrides trail); floor: once armed, the stop never sits below entry * floor.
 POLICIES = {
     "hedge_2x":     {"tp": [(2.0, 0.60)], "trail": 0.50, "trail_from_start": False, "stop": -0.50, "max_age": HORIZON_S},
     "costout_1.5x": {"tp": [(1.5, 0.667)], "trail": 0.40, "trail_from_start": False, "stop": -0.35, "max_age": HORIZON_S},
@@ -91,6 +94,16 @@ def token_cost(db, token):
 
 # ---- the exit rule shared by simulation, the paper book and the trader ---------------------------
 
+def trail_pct(policy, peak_mult):
+    """The drawdown from the peak that sells: the last tier whose multiple the peak has reached, else the
+    policy's flat trail."""
+    pct = policy.get("trail")
+    for m, t in policy.get("trail_tiers") or []:
+        if peak_mult >= m:
+            pct = t
+    return pct
+
+
 def exit_step(policy, st, price, ts):
     """Advance one position by one price. st: {entry, entry_ts, qty_left, tp_done, peak, trail_on}.
     Returns (fraction_of_initial_to_sell, reason) or (0, None)."""
@@ -101,11 +114,19 @@ def exit_step(policy, st, price, ts):
             st["tp_done"].append(m)
             st["trail_on"] = True
             return min(frac, st["qty_left"]), f"take profit at {m:g}x"
+    if policy.get("arm_at") and not st.get("trail_on") and st["peak"] >= st["entry"] * policy["arm_at"]:
+        st["trail_on"] = True                  # in profit: from here the trailing stop guards it, nothing is sold yet
     if not st["tp_done"] and policy["stop"] is not None and mult <= 1 + policy["stop"] and st["qty_left"] > 0:
         return st["qty_left"], f"stop at {int(policy['stop'] * 100)}%"
     trail_on = st.get("trail_on") or policy["trail_from_start"]
-    if trail_on and policy["trail"] and st["qty_left"] > 0 and price <= st["peak"] * (1 - policy["trail"]):
-        return st["qty_left"], f"trailing stop {int(policy['trail'] * 100)}% below the peak"
+    pct = trail_pct(policy, st["peak"] / st["entry"])
+    if trail_on and pct and st["qty_left"] > 0:
+        level = st["peak"] * (1 - pct)
+        if policy.get("floor") and st.get("trail_on") and st["entry"] * policy["floor"] > level:
+            if price <= st["entry"] * policy["floor"]:
+                return st["qty_left"], f"profit lock at {policy['floor']:g}x"
+        elif price <= level:
+            return st["qty_left"], f"trailing stop {int(round(pct * 100))}% below the peak"
     if policy["max_age"] and ts - st["entry_ts"] >= policy["max_age"] and st["qty_left"] > 0:
         return st["qty_left"], "time limit"
     return 0.0, None

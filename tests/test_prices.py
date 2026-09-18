@@ -152,3 +152,14 @@ def test_refresh_sets_the_baseline_within_six_hours_only(db, monkeypatch):
     assert P.refresh_scored(db) == 2
     assert db.one("SELECT price0 FROM outcomes WHERE token=?", ("0x" + "31" * 20,))["price0"] == 1.0
     assert db.one("SELECT price0 FROM outcomes WHERE token=?", ("0x" + "32" * 20,))["price0"] is None
+
+
+def test_eth_usd_last_is_none_until_a_real_fetch(monkeypatch):
+    from wormhole import prices as PR
+    monkeypatch.setattr(PR, "_eth", (0.0, 2500.0))
+    monkeypatch.setattr(PR, "_eth_failed", 0.0)
+    monkeypatch.setattr(PR, "_get", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    assert PR.eth_usd_last() is None                       # the seed is never a price
+    monkeypatch.setattr(PR, "_eth", (1.0, 2600.0))         # fetched long ago, the API is still down
+    monkeypatch.setattr(PR, "_eth_failed", 0.0)
+    assert PR.eth_usd_last() == 2600.0 and PR.eth_usd(strict=True) is None

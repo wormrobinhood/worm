@@ -133,6 +133,13 @@ def eth_usd(strict=False):
     return _eth[1]
 
 
+def eth_usd_last():
+    """The last ETH price that was really fetched, however old, refreshing it when due; None before the
+    first successful fetch. For marking a position between refreshes, never for sizing a trade."""
+    eth_usd()
+    return _eth[1] if _eth[0] else None
+
+
 def refresh_scored(db, hours=24):
     """Batch-price every token scored in the last `hours`: fills price/fdv/volume on the cards and the
     outcome baseline the brain compares against. One or two API calls per cycle instead of one per token.

@@ -6,9 +6,12 @@ done, the scorecard, the at-scan metrics of the last resolved cases, the lab's r
 hypotheses in a strict form: a scoring rule is at most three conditions over whitelisted at-scan
 metrics plus points; an exit arm is a lab policy within bounds. Nothing the writer says runs as code.
 Every rule is screened historically and then must pass a frozen future cohort before adoption. Historical screening checks if the tokens it
-fires on went on to move differently from the rest: a median difference in the outcome change of at
-least MIN_SEP points that fewer than P_MAX of random splits of the same sizes would show (a permutation
-test), on at least MIN_N cases each side, and it is not a copy of a rule the worm already has. An adopted rule scores future tokens as `ai_<n>` and is re-weighted by the brain like
+fires on went on to move differently from the rest, on either of two measures: a median difference in
+the outcome change of at least MIN_SEP points, or (most tokens fall ~85%, so medians alone saturate) a
+difference of at least MIN_RATE_SEP points in how often they went bad; either must be one that fewer
+than P_MAX / 2 of random splits of the same sizes would show (a permutation test), on at least MIN_N
+cases each side, and the rule must not copy one the worm already has. The measure that passed is frozen
+with the rule: the future cohort and later re-validation use the same one. An adopted rule scores future tokens as `ai_<n>` and is re-weighted by the brain like
 every other rule; an adopted arm joins the lab, where the usual 30-case bar still decides whether it
 is ever used. With the stub writer the worm runs its own one-metric threshold search through the same
 gate, so the loop learns without a model too. Every proposal, its backtest and its fate are kept and
@@ -32,6 +35,9 @@ MIN_NEW = int(os.environ.get("WH_ADVISOR_MIN_NEW", "3"))       # newly resolved 
 MODEL = os.environ.get("WH_ADVISOR_MODEL", "").strip() or voice.MODEL
 MIN_N = 20                     # cases a rule must fire on, and leave, to be judged
 MIN_SEP = 10.0                 # points of outcome change the medians must differ by
+BAD_BELOW = -50.0              # a change at or below this went bad (dumped or rugged)
+MIN_RATE_SEP = 8.0             # or: points the share of bad outcomes must differ by
+TESTS = ("median", "bad_share")   # two measures, each allowed half of P_MAX: most tokens fall ~85%, so medians alone saturate
 PERMS = 400                    # random splits the observed separation is compared with
 P_MAX = 0.02                   # share of random splits allowed to separate as much: past this it is chance
 MAX_PROPOSALS = 5
@@ -191,24 +197,54 @@ def history(db):
     return out
 
 
-def judge(fired, other, perms=PERMS, seed=7):
-    """The median change of the fired cases minus the rest, and the share of random splits of the same
-    sizes whose difference is at least as large on the same side: how easily chance alone does this.
-    Deterministic for a given history."""
+def bad_share(changes):
+    changes = list(changes)
+    return 100.0 * sum(1 for c in changes if c <= BAD_BELOW) / len(changes)
+
+
+def judge(fired, other, perms=PERMS, seed=7, stat="median"):
+    """The fired cases' measure minus the rest's (the median change, or the share that went bad), and the
+    share of random splits of the same sizes whose difference is at least as large on the same side: how
+    easily chance alone does this. Deterministic for a given history."""
+    measure = bad_share if stat == "bad_share" else statistics.median
     rnd = random.Random(seed)
-    diff = statistics.median(fired) - statistics.median(other)
+    diff = measure(fired) - measure(other)
     pool, k, hits = list(fired) + list(other), len(fired), 0
     for _ in range(perms):
         rnd.shuffle(pool)
-        d = statistics.median(pool[:k]) - statistics.median(pool[k:])
+        d = measure(pool[:k]) - measure(pool[k:])
         if diff == 0 or (diff < 0 and d <= diff) or (diff > 0 and d >= diff):
             hits += 1
     return diff, hits / perms
 
 
-def backtest_rule(hist, spec, points, taken):
+def separated(stat, diff, points):
+    """Did the fired side move the way the rule's sign claims, by enough? A warning needs a lower median or a
+    higher bad share; a reassurance the opposite."""
+    if stat == "bad_share":
+        return diff >= MIN_RATE_SEP if points < 0 else diff <= -MIN_RATE_SEP
+    return diff <= -MIN_SEP if points < 0 else diff >= MIN_SEP
+
+
+def measure_all(fired, other, perms=PERMS, seed=7):
+    return {stat: judge(fired, other, perms, seed, stat) for stat in TESTS}
+
+
+def winner(seen, points, allowed=TESTS):
+    """The first allowed measure that separates in the rule's direction at P_MAX / len(TESTS), else None."""
+    return next((stat for stat in allowed if seen[stat][1] <= P_MAX / len(TESTS) and separated(stat, seen[stat][0], points)), None)
+
+
+def screen(fired, other, points, perms=PERMS, seed=7):
+    """(test name or None, {test: (diff, p)}) for one rule on one history."""
+    seen = measure_all(fired, other, perms, seed)
+    return winner(seen, points), seen
+
+
+def backtest_rule(hist, spec, points, taken, test=None):
     """Judge a rule on the history. `taken` maps an existing rule id to (sign, set of tokens it fired on).
-    Returns {n_fired, n_other, median_fired, median_other, diff, p, accepted, why}."""
+    `test` pins the measure (a rule is re-judged by the one it was adopted under); None lets either win.
+    Returns {n_fired, n_other, median_fired, median_other, diff, p, bad_*, test, accepted, why}."""
     fired = [h for h in hist if matches(spec, h["m"])]
     other = [h for h in hist if not matches(spec, h["m"])]
     bt = {"n_fired": len(fired), "n_other": len(other), "accepted": False}
@@ -225,19 +261,25 @@ def backtest_rule(hist, spec, points, taken):
         if other_set and len(mine & other_set) / len(mine | other_set) >= DUPLICATE_JACCARD:
             bt["why"] = f"fires on the same tokens as {rid}" if sign == (points > 0) else f"the mirror image of {rid}"
             return bt
-    diff, p = judge([h["change"] for h in fired], [h["change"] for h in other])
-    bt.update(median_fired=round(statistics.median(h["change"] for h in fired), 1),
-              median_other=round(statistics.median(h["change"] for h in other), 1), diff=round(diff, 1), p=round(p, 3))
-    chance = f"{int(round(p * 100))} in 100 random splits do as much"
-    if points < 0:
-        ok = p <= P_MAX and diff <= -MIN_SEP
-        bt["why"] = (f"fired tokens fell {abs(diff):.0f} points further; {chance}" if ok
-                     else f"fired tokens did not fall clearly further (median difference {diff:+.0f} points; {chance})")
+    a, b = [h["change"] for h in fired], [h["change"] for h in other]
+    seen = measure_all(a, b)
+    won = winner(seen, points, (test,) if test in TESTS else TESTS)
+    diff, p = seen["median"]
+    rate_diff, rate_p = seen["bad_share"]
+    bt.update(median_fired=round(statistics.median(a), 1), median_other=round(statistics.median(b), 1), diff=round(diff, 1), p=round(p, 3),
+              bad_fired=round(bad_share(a), 1), bad_other=round(bad_share(b), 1), bad_diff=round(rate_diff, 1), bad_p=round(rate_p, 3),
+              test=won)
+    chance = f"{int(round((rate_p if won == 'bad_share' else p) * 100))} in 100 random splits do as much"
+    if won == "bad_share":
+        bt["why"] = (f"fired tokens went bad {abs(rate_diff):.0f} points {'more' if points < 0 else 'less'} often "
+                     f"({bt['bad_fired']:.0f}% against {bt['bad_other']:.0f}%); {chance}")
+    elif points < 0:
+        bt["why"] = (f"fired tokens fell {abs(diff):.0f} points further; {chance}" if won
+                     else f"fired tokens did not fall clearly further (median difference {diff:+.0f} points, bad share {rate_diff:+.0f}; {chance})")
     else:
-        ok = p <= P_MAX and diff >= MIN_SEP
-        bt["why"] = (f"fired tokens held up {diff:.0f} points better; {chance}" if ok
-                     else f"fired tokens did not hold up clearly better (median difference {diff:+.0f} points; {chance})")
-    bt["accepted"] = ok
+        bt["why"] = (f"fired tokens held up {diff:.0f} points better; {chance}" if won
+                     else f"fired tokens did not hold up clearly better (median difference {diff:+.0f} points, bad share {rate_diff:+.0f}; {chance})")
+    bt["accepted"] = bool(won)
     return bt
 
 
@@ -279,20 +321,29 @@ def stub_propose(hist, tried, used=()):
                 other = [h["change"] for h in hist if not matches(spec, h["m"])]
                 if len(fired) < MIN_N or len(other) < MIN_N:
                     continue
-                diff, p = judge(fired, other, perms=100)
-                if p <= P_MAX and diff <= -MIN_SEP:
-                    cands.append((-diff, {"conditions": spec["conditions"], "points": -8,
-                                          "why": f"{metric} {'high' if op == '>=' else 'low'}: those tokens fell {abs(diff):.0f} points further"}))
-                elif p <= P_MAX and diff >= MIN_SEP:
-                    cands.append((diff, {"conditions": spec["conditions"], "points": 5,
-                                         "why": f"{metric} {'high' if op == '>=' else 'low'}: those tokens held up {diff:.0f} points better"}))
+                measured = measure_all(fired, other, perms=100)
+                for points in (-8, 5):
+                    won = winner(measured, points)
+                    if not won:
+                        continue
+                    seen = measured
+                    diff = seen[won][0]
+                    size = abs(diff) * (MIN_SEP / MIN_RATE_SEP if won == "bad_share" else 1.0)      # one scale for ranking
+                    side = "high" if op == ">=" else "low"
+                    if won == "bad_share":
+                        text = f"{metric} {side}: those tokens went bad {abs(diff):.0f} points {'more' if points < 0 else 'less'} often"
+                    else:
+                        text = (f"{metric} {side}: those tokens fell {abs(diff):.0f} points further" if points < 0
+                                else f"{metric} {side}: those tokens held up {diff:.0f} points better")
+                    cands.append((size, {"conditions": spec["conditions"], "points": points, "why": text}))
+                    break
     cands.sort(key=lambda x: -x[0])
-    out, seen = [], set()
+    out, used_metrics = [], set()
     for _, spec in cands:
         metric = spec["conditions"][0]["metric"]
-        if metric in seen:
+        if metric in used_metrics:
             continue
-        seen.add(metric)
+        used_metrics.add(metric)
         out.append(spec)
         if len(out) == 3:
             break
@@ -399,7 +450,8 @@ def packet(db, hist, brain_summary, lab_summary):
         "lab": {"in_use": lab_summary.get("in_use"), "arms": arms, "policies": lab_summary.get("policies", {}),
                 "delays_min": lab_summary.get("delays_min", list(lab.DELAYS)), "learned_arms": [r["name"] for r in db.q("SELECT name FROM learned_arms WHERE active=1")]},
         "bar": {"min_cases_each_side": MIN_N, "min_median_separation_pct": MIN_SEP,
-                "chance": f"at most {P_MAX:g} of random splits of the same sizes may separate outcomes as much (permutation test)",
+                "or_min_bad_share_separation_points": MIN_RATE_SEP, "bad_outcome_is_a_change_at_or_below_pct": BAD_BELOW,
+                "chance": f"at most {P_MAX / len(TESTS):g} of random splits of the same sizes may separate outcomes as much on the measure that passes (permutation test)",
                 "points_warning": list(POINTS_WARN), "points_reassuring": list(POINTS_GOOD), "operators": sorted(OPS),
                 "arm_bounds": ARM_BOUNDS, "max_proposals": MAX_PROPOSALS},
         "form": {"rules": [{"conditions": [{"metric": "top10_pct", "op": ">=", "value": 60}], "points": -8, "why": "..."}],
@@ -484,7 +536,7 @@ def revalidate(db, hist):
     retired = []
     for r in db.q("SELECT id, spec, points FROM learned_rules WHERE active=1"):
         spec = json.loads(r["spec"])
-        bt = backtest_rule(hist, spec, float(r["points"]), {})
+        bt = backtest_rule(hist, spec, float(r["points"]), {}, test=spec.get("test") or "median")
         if bt["n_fired"] >= RETIRE_N and not bt["accepted"]:
             db.x("UPDATE learned_rules SET active=0, retired=?, backtest=? WHERE id=?", (int(time.time()), json.dumps(bt), r["id"]))
             retired.append(r["id"])
@@ -564,6 +616,8 @@ def run(db, brain_summary=None, lab_summary=None, force=False):
             bt = backtest_rule(hist, spec, spec["points"], taken)
             spec_out = spec
             if bt["accepted"]:
+                spec = {**spec, "test": bt["test"]}           # the future cohort is judged by the same measure
+                spec_out = spec
                 sid = shadow.stage(db, spec, run_id, hist)
                 if sid is None:
                     status, reason = 'rejected', 'prospective evaluation capacity reached'
@@ -637,4 +691,4 @@ def summary(db):
                 a[k] = {}
     return {"model": MODEL, "every_min": EVERY_MIN, "min_new": MIN_NEW, "due": ok, "state": why, "last_run": last,
             "runs": db.one("SELECT COUNT(*) n FROM advisor_runs")["n"], "suggestions": sug, "rules": rules, "arms": arms, "shadow": shadow.summary(db),
-            "bar": {"min_n": MIN_N, "min_sep": MIN_SEP, "max_rules": MAX_RULES, "max_arms": MAX_ARMS}}
+            "bar": {"min_n": MIN_N, "min_sep": MIN_SEP, "min_rate_sep": MIN_RATE_SEP, "max_rules": MAX_RULES, "max_arms": MAX_ARMS}}
