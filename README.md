@@ -37,7 +37,9 @@ for the evidence, remaining operational gaps and deployment requirements.
   snipe-window buys, unique buyers (dust buys do not count), the creator buying its own curve, top-10 holder
   concentration, the creator's current holding, trades after graduation, missing socials,
   launch-to-graduation pace, throwaway buyer wallets, buyers funded by one wallet just before launch, and
-  bot fleets that buy on every curve and sell at graduation (the patterns behind a fake crowd). Every point is explained on the card. Three hard signals demote a healthy
+  bot fleets that buy on every curve and sell at graduation (the patterns behind a fake crowd). A buy made
+  through a trading bot's router is followed to the wallet that received the tokens in the same transaction,
+  so the people behind a bot are counted as people and the bot is never a whale or a fleet. Every point is explained on the card. Three hard signals demote a healthy
   verdict to mixed; a verdict on incomplete chain reads can never be healthy and is re-checked.
 - **Learns from outcomes.** Each verdict is checked at 1h, 6h and 24h (a rug needs two readings 5 minutes
   apart at -80%, or the 24h check; grew is +100%). Rules are re-weighted against the base rate: a rule that

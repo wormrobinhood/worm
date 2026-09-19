@@ -79,9 +79,9 @@
 <tr><td>creator_grads</td><td>other tokens this creator graduated</td></tr>
 <tr><td>creator_tax</td><td>creator tax charged on every trade</td></tr>
 <tr><td>snipe</td><td>share of the curve supply bought in the 3-second snipe window</td></tr>
-<tr><td>buyers</td><td>unique buyers on the bonding curve; dust buys of under 0.05 percent of the curve do not count</td></tr>
+<tr><td>buyers</td><td>unique buyers on the bonding curve; dust buys of under 0.05 percent of the curve do not count. A buyer is the wallet that holds the tokens when the buy transaction ends: a trading bot's router buys in its own name and hands the tokens to its user in the same transaction, so every buy is followed through the token's own transfers to that user. The same wallets are used by top_buyer, deployer_buy, fresh_buyers, funding_cluster and bot_fleet; the card's <code>routed_pct</code> is the share of the curve bought that way</td></tr>
 <tr><td>deployer_buy</td><td>the creator buying its own curve</td></tr>
-<tr><td>top_buyer</td><td>one wallet's share of all curve buys</td></tr>
+<tr><td>top_buyer</td><td>one wallet's share of all curve buys (the wallet that received the tokens, never the router it bought through)</td></tr>
 <tr><td>fresh_buyers</td><td>share of the buy volume from throwaway wallets whose whole history is this buy; a crowd of new wallets is usually one hand</td></tr>
 <tr><td>bot_fleet</td><td>share of the buy volume from wallets the worm has seen buying on five or more other curves in the last day: fleets that buy every launch and sell into the pool at graduation; fleet wallets are also left out of the buyer count</td></tr>
 <tr><td>funding_cluster</td><td>buyers funded by the same wallet in the half hour before launch, read from the pair token's transfers (USDG and stock pairs; ETH funding leaves no trace); a shared funder is a hard warning</td></tr>
