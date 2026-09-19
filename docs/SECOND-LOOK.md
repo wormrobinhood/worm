@@ -43,21 +43,43 @@ Nothing is bought at the verdict any more. Every complete verdict (any score; th
 own token never) goes on a watch list. The pool's mid price is read from the chain once a
 minute (one batched storage read of the Uniswap v4 PoolManager for the whole list), and a
 pool whose liquidity is gone (97 percent down half an hour after its verdict) is dropped. At fixed
-looks (two and four hours in) the path since the verdict is judged by named entry rules, together with the pool's
+looks (half an hour, two hours and four hours in) the path since the verdict is judged by named entry rules, together with the pool's
 own swap flow over the last fifteen minutes (count, buy share, USD volume, read from the
 pool's logs). The first rule that passes buys once, on paper, at the pool's own quote.
 USDG and ETH pools are both traded on paper; other pair assets are not.
 
-The rules in force are hypotheses, the two least bad regions the study found. Both are
+The rules in force are hypotheses, the least bad regions the studies found. All are
 expected to fail their cohorts; they are there to be proven wrong or right in the open:
 
 | rule | look | buys when |
 |---|---|---|
 | `quiet-v1` | 2 hours | creator tax at most 1 percent, creator not a serial launcher, between 1 and 19 swaps in the last 15 minutes (still traded, no longer churned by bots); a fixed third of such tokens, chosen by token address, so the book is not flooded |
 | `runner-v1` | 4 hours | creator tax at most 1 percent, not a serial launcher, worth at least 100,000 dollars fully diluted (about twice its value at graduation), still traded |
+| `clean-crowd-v1` | 30 minutes | creator tax at most 1 percent, not a serial launcher, at most 5 percent of the curve bought by wallets whose earlier picks all went bad (and at least 150 resolved tokens on record to say so), the pool's price still moving; only the two thirds of tokens the quiet rule never takes. The one rule that looks inside the first hour: what the crowd's record says is worth something early and nothing after the second hour |
 
 What each look measured is stored on the paper row. Evidence is only ever pooled per rule
 name; changing a rule means renaming it.
+
+## The crowd's record (the wallet study)
+
+"Buy what the wallets that were early in winners buy" was tested on 1,451 graduations. A trading bot's
+router buys in its own name, so first every one of 93,216 such buys among the early curve buys was traced
+to the wallet behind it (40,420 wallets in all). Records were built walk-forward: a wallet's earlier pick
+counts only once its 24-hour outcome was known. Result: a good record predicts nothing. Tokens bought
+early by wallets with at least three earlier picks, 40 percent or more of them not bad, turned out not bad
+13.1 percent of the time against 14.5 percent for all (chance alone does better 93 percent of the time),
+and bought with the profit lock they lost 11 to 18 percent a trade at every entry time, like everything
+else. The same for wallets with two or more earlier winners. Copying is not a strategy here.
+
+The opposite is a signal, small and real: the share of the curve bought by wallets whose earlier picks
+(three or more) all went bad. At 30 percent or more, 6 percent of tokens turned out not bad and none
+grew; under 5 percent, 18 percent and 6 percent. As a filter it was worth 7 to 12 points a trade at
+entries in the first hour and nothing after the second, and never a profit by itself: the typical trade
+still lost, and the averages that look good are one or two enormous runners. It is used twice: the
+`losing_crowd` rule on the card (a warning, and a small bonus for a clean crowd), and the
+`clean-crowd-v1` entry rule above. Wallet records live in `wormhole/crowd.py`: buyers are the wallets
+that ended up with the tokens, a pick is folded in when its outcome is resolved, and tokens scored
+before buys were followed are re-read from the chain a few per cycle.
 
 ## The profit lock
 

@@ -41,6 +41,12 @@ FLOW_CAP = 10_000                 # the node's cap per log query; a busier windo
 #   quiet    two hours old, cheap to trade, still traded now and then but no longer churned by bots: small
 #            bleed, a rare large winner. A fixed third of them (by token address) so the book is not flooded.
 #   runner   four hours old, worth at least twice its graduation value and cheap to trade.
+# A third hypothesis came from the wallet study (crowd.py, docs/SECOND-LOOK.md): copying wallets with a good
+# record loses like everything else, but a curve bought by wallets with a LOSING record does clearly worse, and
+# one nearly free of them did 7-12 points better at the early entries. Cheap and clean at 30 minutes measured
+# about -4% a trade (median -9%): the least bad early entry found, still expected to fail.
+#   clean-crowd   half an hour old, cheap to trade, hardly any of the curve bought by wallets whose earlier picks
+#            all went bad, the pool still moving. Only the two thirds of tokens the quiet rule never takes.
 CHEAP = [{"feature": "creator_prev_launches", "op": "<=", "value": 4},
          {"feature": "creator_tax_bps", "op": "<=", "value": 100}]
 STRATEGIES = [
@@ -51,6 +57,11 @@ STRATEGIES = [
     {"name": "runner-v1", "looks": [240],
      "conditions": CHEAP + [{"feature": "fdv_usd", "op": ">=", "value": 100_000},
                             {"feature": "swaps_15m", "op": ">=", "value": 1}]},
+    {"name": "clean-crowd-v1", "looks": [30],
+     "conditions": CHEAP + [{"feature": "crowd_history", "op": ">=", "value": 150},     # crowd.MIN_HISTORY
+                            {"feature": "losing_pct", "op": "<=", "value": 5},
+                            {"feature": "moves_15m", "op": ">=", "value": 1},
+                            {"feature": "sample_bucket", "op": ">=", "value": 34}]},
 ]
 STRATEGY = STRATEGIES[0]           # the rule the summaries name first
 SUPPLY = 1_000_000_000             # every Pons token: fully diluted value = price * supply
@@ -72,7 +83,8 @@ def add(db, token, result, symbol=None, now=None):
         return False
     ensure_tables(db)
     keep = {k: metrics.get(k) for k in ("creator_tax_bps", "creator_prev_launches", "creator_rugged", "top10_pct",
-                                        "holders", "snipe_pct", "fleet_pct", "launch_to_grad_s")}
+                                        "holders", "snipe_pct", "fleet_pct", "launch_to_grad_s",
+                                        "losing_pct", "crowd_history")}
     keep["score"], keep["verdict"] = result.get("score"), result.get("verdict")
     launch = db.one("SELECT symbol, creator_tax_bps FROM launches WHERE token=?", (token,)) or {}
     if keep["creator_tax_bps"] is None:
