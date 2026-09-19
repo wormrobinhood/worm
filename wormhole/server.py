@@ -239,7 +239,7 @@ def snapshot(rpc, db, brain, paper, hub=None):
     runway = projection(db, T.free_usd(db, char.get("usd_real", char["usd"])))   # real money only, minus what is owed away
     brain_sum, lab_sum = brain.summary(), LB.summary(db)
     ready = RD.compute(brain_sum, lab_sum, runway, TR.MAX_POSITION_USD)
-    return {"now": now, "launch": launch_schedule.status(db, now), "stats": st, "scout": _scout(db), "readiness": ready, "lessons": _lessons(db), "feed": feed, "ticker": ticker,
+    return {"now": now, "launch": launch_schedule.status(db, now), "stats": st, "scout": _scout(db), "readiness": ready, "lessons": _lessons(db), "receipts": _receipts(db), "feed": feed, "ticker": ticker,
             "dig": (hub.dig if hub else []), "screen_on": bool(getattr(hub, "screen_on", True)) if hub else True,
             "treasury": _treasury_cached(rpc, db), "voice": V.summary(db), "trader": TR.summary(db),
             "compute": _compute_cached(), "live": C.LIVE, "lab": lab_sum,
@@ -286,6 +286,31 @@ def _lessons(db, limit=8):
                else "missed it" if ((r["verdict"] == "looks healthy" and bad) or (r["verdict"] == "avoid" and good)) else "no lesson")
         out.append({"token": r["token"], "symbol": r["symbol"], "name": r["name"], "verdict": r["verdict"], "score": r["score"],
                     "outcome": r["outcome"], "change_pct": r["change_pct"], "tag": tag, "up": up, "down": down, "scored_at": r["scored_at"]})
+    return out
+
+
+def _receipts(db, limit=12):
+    """The latest warnings that came true: what the card said loudest, and how soon it happened. The count of
+    every warning, right and wrong, is in _scout; this is only the newest of the right ones."""
+    rows = db.q("SELECT o.token,o.score,o.outcome,o.change_pct,o.fired,o.checks,o.scored_at,l.symbol,l.name FROM outcomes o"
+                " LEFT JOIN launches l ON l.token=o.token WHERE o.resolved=1 AND o.verdict='avoid' AND o.outcome IN ('rugged','dumped')"
+                " ORDER BY o.scored_at DESC LIMIT ?", (limit,))
+    out = []
+    for r in rows:
+        try:
+            fired = [f for f in json.loads(r["fired"] or "[]") if isinstance(f, dict)]
+        except ValueError:
+            fired = []
+        try:
+            seen = (json.loads(r["checks"] or "{}") or {}).get("rug_seen") or {}
+        except ValueError:
+            seen = {}
+        worst = min(fired, key=lambda f: f.get("applied", f.get("points", 0)) or 0, default=None)
+        loud = worst if worst and (worst.get("applied", worst.get("points", 0)) or 0) < 0 else None
+        after = int(seen["ts"]) - int(r["scored_at"]) if seen.get("ts") and r["scored_at"] else None
+        out.append({"token": r["token"], "symbol": r["symbol"], "name": r["name"], "score": r["score"], "outcome": r["outcome"],
+                    "change_pct": r["change_pct"], "scored_at": r["scored_at"], "reason": (loud or {}).get("text"),
+                    "after_s": after if after is not None and after >= 0 else None})
     return out
 
 

@@ -306,3 +306,21 @@ body[data-view="overview"] .story:not([hidden]){display:block}
  .story-dots button:focus-visible{outline:2px solid var(--g);outline-offset:-4px;border-radius:6px}
 }
 @media(max-width:600px){.story{padding:14px 14px 10px;margin:16px 0 20px}.story-legend{gap:4px 16px}}
+
+/* Called it: one low row of the newest warnings that came true, swiped sideways on any screen. */
+.receipts{display:none;margin:0 0 26px}
+body[data-view="overview"] .receipts:not([hidden]){display:block}
+.receipts-head{display:flex;justify-content:space-between;align-items:baseline;gap:6px 20px;flex-wrap:wrap;margin-bottom:10px}
+.receipts h2{font:400 clamp(16px,1.3vw,19px)/1.35 'Instrument Serif',Georgia,serif;color:#cfdcd3;margin:2px 0 0;letter-spacing:0}
+.receipts h2 b{font:500 .86em 'IBM Plex Mono',monospace;color:#9ff0ba;font-variant-numeric:tabular-nums}
+.receipts-row{display:flex;gap:10px;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;scrollbar-width:thin;scrollbar-color:#2f4a3a transparent;padding-bottom:6px}
+.receipts-row:focus-visible{outline:2px solid var(--g);outline-offset:3px}
+.receipt{flex:0 0 min(270px,78vw);scroll-snap-align:start;display:flex;flex-direction:column;gap:4px;padding:11px 13px;border:1px solid #24382c;border-left:2px solid #d9776a;border-radius:6px;background:rgba(10,16,12,.94)}
+.receipt header{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.receipt header b{font-weight:600;font-size:14px;color:#e6f2e9;overflow-wrap:anywhere}
+.receipt header strong{font:500 17px 'IBM Plex Mono',monospace;color:#ff9d8f;font-variant-numeric:tabular-nums;white-space:nowrap}
+.receipt-call{margin:0;font:11px/1.5 'IBM Plex Mono',monospace;color:#9db3a4}.receipt-call span{color:#c9a8a1;margin-left:6px}
+.receipt-why{margin:2px 0 4px;font-size:12px;line-height:1.5;color:#b9c9be;flex:1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.receipt .copy{float:none;align-self:flex-start;margin:0;background:transparent;border-color:#2f4a3a;color:#a5dfb7;border-radius:3px;padding:3px 9px;font-size:11px}
+.receipt .copy:hover{background:#15261c}
+@media(max-width:600px){.receipts{margin-bottom:20px}}
