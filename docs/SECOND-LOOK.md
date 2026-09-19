@@ -81,6 +81,28 @@ still lost, and the averages that look good are one or two enormous runners. It 
 that ended up with the tokens, a pick is folded in when its outcome is resolved, and tokens scored
 before buys were followed are re-read from the chain a few per cycle.
 
+## Linked holders and concentration (the bubble-map study)
+
+Every transfer of 1,453 graduated tokens up to the block of the verdict was read, and holders who had passed
+tokens to each other were joined into groups, the way a bubble map draws them. Who counts as a person decides
+everything: linked through routers, custodial bots and multisenders everybody is one group and the read says
+nothing, so a wallet that passed tokens on in ten or more EARLIER tokens is a service, and once a group holds
+10 percent of the circulating supply the chain is asked which of its members are contracts, those are dropped
+and the group is measured again (without that step there is no signal at all: the groups that did well were
+holders tied to lockers and vaults). Walk-forward, 1,244 judged tokens, base rate 14.2 percent not bad and 3.9
+percent grew: a linked group of 10 percent or more was found on 53 tokens (4.3 percent), of which 4 (7.5
+percent) turned out not bad and none grew; at 15 percent, 2 of 29 and none. The same in both halves of the
+period, and about one chance in ten of being luck. The scorer's `linked_wallets` line shows it without points
+(`wormhole/linked.py`); the records decide what it becomes. At the verdict, seconds after graduation, such
+groups are rare; what the biggest holders do in the two hours after is being collected for a later look.
+
+The same data turned the concentration rules around. Over the first day top-10 at half or more was not bad 23
+percent of the time against 13 percent below 35 percent, more holders was worse, and tokens whose creator's
+own group kept 10 percent or more did best of all (32 percent not bad, 9 percent grew, n = 78). Widely spread
+supply at graduation is mostly bots that sell at once. `top10` and `deployer_hold` therefore carry no points
+any more. They are still said on the card, with the plain warning that big holders can sell into everyone at
+any time, because the records cannot see past a day; a creator holding 20 percent still bars a healthy verdict.
+
 ## The profit lock
 
 The default exit is now `lock_20`, the creator's design: nothing is sold into strength.

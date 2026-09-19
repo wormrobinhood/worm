@@ -31,6 +31,7 @@ class FakeRpc(Rpc):
         self.nonces = {}         # address -> transaction count; unknown wallets look well used
         self.default_nonce = 40
         self.fail_batch = False
+        self.code = {}           # address -> bytecode hex; everything else is a plain wallet
 
     def batch(self, calls, chunk=25):
         """The real batch() posts JSON-RPC arrays; here every item goes through call(), None on failure."""
@@ -47,6 +48,8 @@ class FakeRpc(Rpc):
     def call(self, method, params, retries=4):
         if method == "eth_blockNumber":
             return hex(self.latest)
+        if method == "eth_getCode":
+            return self.code.get(params[0].lower(), "0x")
         if method == "eth_getTransactionCount":
             return hex(self.nonces.get(params[0].lower(), self.default_nonce))
         if method == "eth_getLogs":

@@ -41,7 +41,9 @@ for the evidence, remaining operational gaps and deployment requirements.
   through a trading bot's router is followed to the wallet that received the tokens in the same transaction,
   so the people behind a bot are counted as people and the bot is never a whale or a fleet. Every buyer's earlier picks are
   kept on record once their outcomes are known: a curve bought by wallets whose picks all went bad is a warning (a good record
-  was tested and predicts nothing). Every point is explained on the card. Three hard signals demote a healthy
+  was tested and predicts nothing). Holders who passed tokens to each other are read as one group, the way a bubble map draws them
+  (shown without points until the records say what it is worth); concentration is shown without points too, because over a token's
+  first day it pointed the other way, and a creator holding 20% still bars a healthy verdict. Every point is explained on the card. Three hard signals demote a healthy
   verdict to mixed; a verdict on incomplete chain reads can never be healthy and is re-checked.
 - **Learns from outcomes.** Each verdict is checked at 1h, 6h and 24h (a rug needs two readings 5 minutes
   apart at -80%, or the 24h check; grew is +100%). Rules are re-weighted against the base rate: a rule that

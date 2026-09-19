@@ -91,3 +91,18 @@ def test_the_chain_is_re_read_a_few_tokens_a_cycle_and_a_dead_read_is_given_up(d
         assert crowd.tick(rpc, db, backfill=2) == 0
     assert db.one("SELECT COUNT(*) n FROM wallet_folded WHERE source='skipped'")["n"] == 2      # the newest two, after three tries
     assert len([c for c in rpc.calls]) == 6                     # two tokens a cycle, never more
+
+
+def test_the_chain_re_read_also_teaches_who_passes_tokens_on(db):
+    from wormhole import linked
+    t, curve = token(db, 1, "rugged", [ROUTER], by=None)
+    rpc = FakeRpc(GB + 5000)
+    user, friend = addr(0xA000), addr(0xA001)
+    tx = "0x" + format(0xF000, "064x")
+    rpc.transfer(t, LB + 10, curve, ROUTER, 10**21, tx=tx)
+    rpc.curve_buy(curve, LB + 10, ROUTER, ROUTER, 10**21, tx=tx)
+    rpc.transfer(t, LB + 10, ROUTER, user, 10**21, tx=tx)
+    rpc.transfer(t, LB + 40, user, friend, 10**20)
+    assert crowd.tick(rpc, db) == 1
+    assert {x["wallet"] for x in db.q("SELECT wallet FROM token_senders WHERE token=?", (t,))} == {ROUTER, user}
+    assert linked.history(db) == 1

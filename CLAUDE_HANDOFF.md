@@ -463,3 +463,25 @@ swipeable row shows them beneath the full count from `scout` (warnings that came
 checked, and the healthy calls that went wrong), so the row of wins is never shown without the tally of
 everything. Each card has a "copy for X" line built in the browser; nothing is posted by the worm itself
 (posting stays manual). Hidden while there is nothing to show. 764 tests.
+
+## Linked wallets on the card; concentration without points (2026-09-20)
+
+Two decisions by the operator after the bubble-map study (numbers in docs/SECOND-LOOK.md; scripts and data in
+the operator's research folder):
+- `wormhole/linked.py`, scorer rule `linked_wallets`, 0 points. From the transfers the scorer already reads:
+  wallets joined by transfers, skipping the launchpad/pool contracts and any wallet that passed tokens on in
+  10 or more other tokens (`token_senders`, the biggest 400 senders per token, kept 21 days, pruned hourly).
+  When a group holds 10% or more of the circulating supply, `eth_getCode` is asked for up to 80 of its members,
+  hubs first (a new router links everyone), in batches of 10, cached in `code_cache`; contracts are dropped
+  (a wallet that delegates, EIP-7702, is a person) and the group is measured again. A failed code read says
+  nothing rather than guess. Silent until 150 tokens are on record; the chain re-reads of `crowd.py` fill
+  that memory too, so it speaks a few hours after deploy. Metrics `linked_group_pct`, `linked_group_wallets`,
+  `senders_on_record`; open to the advisor; card chip from 10%.
+- `top10` and `deployer_hold` fire with 0 points (every bucket) and say "can sell into everyone at any time"
+  (top-10 from 35%, the creator from 10%). The demotion of a healthy verdict for a creator holding 20% is
+  kept through a `hard` flag on the fired entry (`HARD` no longer lists it). The operator asked whether
+  concentration is not a red flag: it is, for any day after the first, which the 24-hour records cannot see.
+  That is why it is shown and not rewarded. Expect scores to move both ways: the +15/+5 for spread supply
+  and the -10/-20/-30/-15 for concentration are gone.
+Open: a check of concentrated tokens at 3-7 days; the two-hour holder study (`holders_late.py` running).
+770 tests, plus a real-chain run of the whole scorer on a throwaway database.

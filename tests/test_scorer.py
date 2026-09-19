@@ -96,7 +96,7 @@ def test_gamed_token_is_not_healthy(db):
     pts = points(r)
     assert r["metrics"]["partial"] is False
     assert pts["creator_rugs"] == -50 and "creator_grads" not in pts
-    assert pts["deployer_hold"] == -30 and pts["buyers"] == 10 and pts["activity"] == 5
+    assert pts["deployer_hold"] == 0 and pts["buyers"] == 10 and pts["activity"] == 5     # concentration is shown, not scored
     assert r["verdict"] == "avoid" and r["score"] < 45
     assert r["metrics"]["creator_rugged"] == 2 and r["metrics"]["creator_trust"] < 50
 
@@ -109,9 +109,10 @@ def test_hard_warning_demotes_healthy_to_mixed(db):
     rpc.pool(GB, POOL_ID, TOKEN, C.USDG, DEP)
     for i in range(60):
         rpc.swap(LATEST - 100 + i, POOL_ID, 10**18, -10**6)
-    r = run(rpc, db, TOKEN, weights=lambda: {"deployer_hold": 0.5})   # the brain has talked the rule down
-    assert points(r)["deployer_hold"] == -30 and r["score"] >= 70
-    assert r["verdict"] == "mixed" and r["metrics"]["demoted"] is True
+    r = run(rpc, db, TOKEN)
+    held = [f for f in r["fired"] if f["rule"] == "deployer_hold"][0]
+    assert held["points"] == 0 and held["hard"] is True and "can be sold into everyone" in held["text"] and r["score"] >= 70
+    assert r["verdict"] == "mixed" and r["metrics"]["demoted"] is True        # no points, but never a healthy verdict
     assert any("demoted" in x for x in r["reasons"])
     assert db.one("SELECT verdict FROM scores WHERE token=?", (TOKEN,))["verdict"] == "mixed"
 
@@ -557,3 +558,85 @@ def test_the_crowd_read_stays_silent_until_enough_tokens_are_on_record(db):
     r = run(rpc, db, TOKEN)
     fired = [f for f in r["fired"] if f["rule"] == "losing_crowd"][0]
     assert fired["points"] == 0 and "needs" in fired["text"] and r["metrics"]["losing_pct"] == 60.0
+
+
+# ---- concentration is shown without points; linked wallets are read like a bubble map ---------------------------
+
+def test_concentration_is_said_out_loud_and_costs_nothing(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd(rpc, 40)
+    whale = addr(0x777)
+    rpc.transfer(TOKEN, GB, CURVE, whale, 6 * 10**22)            # one wallet holds 60% of what is in circulation
+    rpc.transfer(TOKEN, GB, CURVE, DEP, 15 * 10**21)             # the creator 15%: said, not scored, and no bar below 20%
+    r = run(rpc, db, TOKEN)
+    top = [f for f in r["fired"] if f["rule"] == "top10"][0]
+    dep = [f for f in r["fired"] if f["rule"] == "deployer_hold"][0]
+    assert top["points"] == 0 and "big holders can sell into everyone" in top["text"] and r["metrics"]["top10_pct"] >= 50
+    assert dep["points"] == 0 and "hard" not in dep and r["metrics"]["demoted"] is False
+
+
+def senders_on_record(db, n=200, services=()):
+    from wormhole import linked
+    linked.ensure_tables(db)
+    db.many("INSERT OR IGNORE INTO token_senders(wallet,token,ts) VALUES(?,?,?)",
+            [(addr(0xD000 + k), addr(0xE000 + k), NOW) for k in range(n)] + [(w, addr(0xE000 + k), NOW) for w in services for k in range(12)])
+
+
+def test_holders_who_passed_tokens_to_each_other_are_one_group(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd(rpc, 60)                                               # 60 wallets, 10**21 each
+    senders_on_record(db)
+    boss = addr(0x1000)
+    for i in range(1, 12):                                       # the first buyer tops up eleven of the others
+        rpc.transfer(TOKEN, GB - 50 + i, boss, addr(0x1000 + i), 5 * 10**19)
+    r = run(rpc, db, TOKEN)
+    m = r["metrics"]
+    said = [f for f in r["fired"] if f["rule"] == "linked_wallets"][0]
+    assert m["linked_group_wallets"] == 12 and m["linked_group_pct"] == 20.0 and said["points"] == 0
+    assert "one linked group of 12 wallets holds 20%" in said["text"]
+
+
+def test_a_service_or_a_contract_in_the_middle_links_nobody(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd(rpc, 60)
+    bot, vault = addr(0x5E1), addr(0x5E2)
+    senders_on_record(db, services=[bot])                        # the bot passed tokens on in twelve earlier tokens
+    rpc.code[vault] = "0x6080"                                   # the vault is a contract
+    for i in range(12):
+        rpc.transfer(TOKEN, GB - 80 + i, addr(0x1000 + i), bot, 10**19)
+        rpc.transfer(TOKEN, GB - 60 + i, addr(0x1000 + 20 + i), vault, 10**19)
+    r = run(rpc, db, TOKEN)
+    assert r["metrics"]["linked_group_pct"] == 0.0 and "no linked group" in [f["text"] for f in r["fired"] if f["rule"] == "linked_wallets"][0]
+    assert db.one("SELECT is_contract FROM code_cache WHERE address=?", (vault,))["is_contract"] == 1
+
+
+def test_a_delegating_wallet_is_still_a_person_and_a_failed_code_read_says_nothing(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd(rpc, 60)
+    senders_on_record(db)
+    boss = addr(0x1000)
+    rpc.code[boss] = "0xef0100" + "11" * 20                      # EIP-7702: an ordinary wallet that delegates
+    for i in range(1, 12):
+        rpc.transfer(TOKEN, GB - 50 + i, boss, addr(0x1000 + i), 5 * 10**19)
+    assert run(rpc, db, TOKEN)["metrics"]["linked_group_pct"] == 20.0
+    db.x("DELETE FROM code_cache")
+    rpc.fail_batch = True                                        # the chain cannot be asked: no line rather than a guess
+    r = run(rpc, db, TOKEN)
+    assert r["metrics"].get("linked_group_pct") is None and "linked_wallets" not in points(r)
+
+
+def test_the_linked_wallet_read_waits_for_history_and_remembers_this_tokens_senders_once(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd(rpc, 60)
+    rpc.transfer(TOKEN, GB - 5, addr(0x1000), addr(0x1001), 10**20)
+    r = run(rpc, db, TOKEN)
+    assert "needs 150 tokens on record" in [f["text"] for f in r["fired"] if f["rule"] == "linked_wallets"][0]
+    kept = db.q("SELECT wallet FROM token_senders WHERE token=?", (TOKEN,))
+    assert [x["wallet"] for x in kept] == [addr(0x1000)]         # the curve paying its buyers is not a sender
+    run(rpc, db, TOKEN)
+    assert len(db.q("SELECT wallet FROM token_senders WHERE token=?", (TOKEN,))) == 1
