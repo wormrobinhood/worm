@@ -223,3 +223,86 @@ body[data-view="overview"] .launch-clock{display:grid;grid-template-columns:minm
 .launch-steps [data-status="review"] .launch-step-number{color:#e5ce92;border-color:#9b8858}
 @media(max-width:700px){body[data-view="overview"] .launch-clock{grid-template-columns:minmax(0,1fr);gap:16px;padding:18px}.launch-clock-time{text-align:left}.launch-steps{grid-template-columns:minmax(0,1fr);gap:14px}.launch-steps li{align-items:center}#launch-clock-digits{font-size:clamp(18px,5vw,28px)}}
 @media(max-width:600px){.mast::before{left:0;right:0}}
+
+/* Once the token is launched its card belongs to the Treasury page; Live tells what the fees became instead. */
+body[data-view="overview"] .launch-clock[data-state="launched"]{display:none}
+body[data-view="treasury"] .launch-clock[data-state="launched"]{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 28px;margin:0 0 20px;padding:16px 22px;align-items:center}
+body[data-view="treasury"] .launch-clock[data-state="launched"] .launch-steps{display:none}
+body[data-view="treasury"] .launch-clock[data-state="launched"] h2{font-size:23px;margin:3px 0}
+body[data-view="treasury"] .launch-clock[data-state="launched"] #launch-clock-digits{font-size:18px}
+body[data-view="treasury"] .launch-clock[data-state="launched"] #launch-clock-token{font-size:13px;color:#a5dfb7;text-decoration:underline;text-underline-offset:4px}
+@media(max-width:700px){body[data-view="treasury"] .launch-clock[data-state="launched"]{grid-template-columns:minmax(0,1fr)}}
+
+/* Follow the money: one ledger line and four small specimens, kept low so the live panels stay in sight. */
+.story{display:none;position:relative;margin:18px 0 26px;padding:16px 22px 18px;border:1px solid #2c4a38;border-radius:10px;overflow:hidden;isolation:isolate;
+ background:radial-gradient(ellipse at 12% 0%,rgba(46,120,74,.20),transparent 55%),radial-gradient(ellipse at 100% 100%,rgba(190,160,80,.07),transparent 50%),rgba(7,13,9,.94)}
+body[data-view="overview"] .story:not([hidden]){display:block}
+.story::before{content:'';position:absolute;inset:0;z-index:-1;pointer-events:none;opacity:.5;background:repeating-linear-gradient(90deg,transparent 0 79px,rgba(120,245,166,.035) 79px 80px)}
+.story-head{display:flex;justify-content:space-between;align-items:baseline;gap:6px 20px;flex-wrap:wrap}
+.story-eyebrow,.story-kicker{display:block;font:10px/1.5 'IBM Plex Mono',monospace;letter-spacing:.18em;color:#8fb09b}
+.story h2{font:400 clamp(19px,1.65vw,25px)/1.25 'Instrument Serif',Georgia,serif;color:#e6f2e9;margin:3px 0 0;letter-spacing:0}
+.story h2 b{font:500 .84em 'IBM Plex Mono',monospace;color:#9ff0ba;letter-spacing:-.02em;font-variant-numeric:tabular-nums;white-space:nowrap}
+.story-link{font-size:12px;color:#a5dfb7;white-space:nowrap;text-underline-offset:4px}
+.story-flow{display:flex;gap:3px;height:8px;margin:12px 0 8px;border-radius:5px;overflow:hidden;background:#13241a}
+.story-flow span{display:block;width:0;min-width:0;transition:width 1.4s cubic-bezier(.2,.7,.2,1)}
+.story.is-seen .story-flow span{width:var(--w,0%)}
+.story-flow .creator,.story-legend .creator i{background:#b6e6c5}.story-flow .burn,.story-legend .burn i{background:#e0884f}.story-flow .gold,.story-legend .gold i{background:#d5bf6a}.story-flow .ops,.story-legend .ops i{background:#62a9a5}
+.story-flow .burn{transition-delay:.15s}.story-flow .gold{transition-delay:.3s}.story-flow .ops{transition-delay:.45s}
+.story-legend{display:flex;flex-wrap:wrap;gap:4px 22px;list-style:none;margin:0;padding:0;font-size:11.5px;color:#a3b8aa}
+.story-legend li{display:flex;align-items:center;gap:7px}.story-legend i{width:7px;height:7px;border-radius:2px;flex:none}
+.story-legend b{font:500 12px 'IBM Plex Mono',monospace;color:#dcebe0;font-variant-numeric:tabular-nums}
+.story-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:14px}
+.story-card{position:relative;min-width:0;display:grid;grid-template-columns:68px minmax(0,1fr);gap:14px;align-items:center;padding:12px 14px;border:1px solid #24382c;border-radius:8px;background:linear-gradient(180deg,rgba(16,29,21,.92),rgba(8,14,10,.92));transition:border-color .25s,transform .25s}
+.story-card:hover{border-color:#4a6f57;transform:translateY(-2px)}
+.story-card.burn{--tone:#ee9a5c}.story-card.gold{--tone:#dcc671}.story-card.brain{--tone:#79c7c2}.story-card.runway{--tone:#9ae3b1}
+.story-kicker{color:var(--tone)}
+.story-visual{position:relative;width:68px;height:68px;display:grid;place-items:center}
+.story-copy{min-width:0}
+.story-copy>strong{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font:400 clamp(21px,1.75vw,27px)/1.2 'IBM Plex Mono',monospace;color:#eef8f0;letter-spacing:-.03em;font-variant-numeric:tabular-nums;margin-top:2px}
+.story-copy>strong em{font:400 12px Inter,-apple-system,sans-serif;font-style:normal;color:#9db3a4;letter-spacing:0}
+.story-copy>p{font-size:11.5px;line-height:1.5;color:#a9bcaf;margin:3px 0 0}
+.story-copy>p span{color:#dcebe0;font-variant-numeric:tabular-nums}
+/* burn: a ring of the supply with the burned arc glowing */
+.story-ring{width:66px;height:66px;transform:rotate(-90deg);overflow:visible}
+.story-ring circle{fill:none;stroke-width:11}
+.story-ring-track{stroke:#1b2c22}
+.story-ring-arc{stroke:#ee9a5c;stroke-linecap:round;stroke-dasharray:0 327;filter:drop-shadow(0 0 5px rgba(238,154,92,.75));transition:stroke-dasharray 1.6s .2s cubic-bezier(.2,.7,.2,1)}
+.story.is-seen .story-ring-arc{stroke-dasharray:var(--arc,0) var(--gap,327);animation:story-ember 3.2s ease-in-out 2s infinite}
+.story-ring-label{position:absolute;inset:0;display:grid;place-content:center;text-align:center}
+.story-ring-label b{font:500 11px 'IBM Plex Mono',monospace;color:#ffd9bd;font-variant-numeric:tabular-nums}
+@keyframes story-ember{0%,100%{filter:drop-shadow(0 0 4px rgba(238,154,92,.6))}50%{filter:drop-shadow(0 0 11px rgba(255,190,120,.95))}}
+/* gold: three bars with a slow light passing over them */
+.story-ingots{position:relative;width:68px;height:40px}
+.story-ingots span{position:absolute;height:17px;width:36px;border-radius:2px;clip-path:polygon(10% 0,90% 0,100% 100%,0 100%);background:linear-gradient(105deg,#8d7631 0%,#d9c36c 38%,#fff1b0 50%,#d2b95c 62%,#806a2a 100%);background-size:260% 100%;background-position:100% 0}
+.story-ingots span:nth-child(1){left:0;bottom:0}.story-ingots span:nth-child(2){right:0;bottom:0}.story-ingots span:nth-child(3){left:16px;bottom:19px}
+.story.is-seen .story-ingots span{animation:story-shine 5.5s ease-in-out infinite}.story-ingots span:nth-child(2){animation-delay:.35s!important}.story-ingots span:nth-child(3){animation-delay:.7s!important}
+@keyframes story-shine{0%,55%{background-position:100% 0}85%,100%{background-position:0 0}}
+/* thinking: a heartbeat that keeps travelling */
+.story-pulse{width:68px;height:44px;overflow:visible}
+.story-pulse path{fill:none;stroke-linejoin:round;stroke-linecap:round}
+.story-pulse-base{stroke:#24433f;stroke-width:3}
+.story-pulse-beat{stroke:#8fe0da;stroke-width:4;stroke-dasharray:16 84;stroke-dashoffset:100;filter:drop-shadow(0 0 4px rgba(121,199,194,.9));animation:story-beat 2.4s linear infinite}
+@keyframes story-beat{to{stroke-dashoffset:0}}
+/* runway: one dot a month; the first dots are the reserve that is never spent */
+.story-months{display:grid;grid-template-columns:repeat(6,8px);gap:4px;list-style:none;margin:0;padding:0}
+.story-months i{width:8px;height:8px;border-radius:50%;background:#1a2c21;transition:background .35s,box-shadow .35s}
+.story.is-seen .story-months i.on{background:#9ae3b1;box-shadow:0 0 6px rgba(154,227,177,.55)}
+.story.is-seen .story-months i.on.reserve{background:#4f9a6b;box-shadow:none}
+.motion-off .story-ring-arc,.motion-off .story-ingots span,.motion-off .story-pulse-beat{animation:none!important}
+.motion-off .story-pulse-beat{stroke-dasharray:none;opacity:.55}
+@media(prefers-reduced-motion:reduce){.story *{animation:none!important;transition:none!important}.story-pulse-beat{stroke-dasharray:none;opacity:.55}}
+.story-dots{display:none}
+/* Below desktop width: one card at a time. It moves on by itself and follows the hand. */
+@media(max-width:1100px){
+ .story-grid{position:relative;display:flex;gap:12px;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x mandatory;scrollbar-width:none;-webkit-overflow-scrolling:touch;border-radius:8px}
+ .story-grid::-webkit-scrollbar{display:none}
+ .story-grid:focus-visible{outline:2px solid var(--g);outline-offset:3px}
+ .story-card{flex:0 0 100%;scroll-snap-align:start;scroll-snap-stop:always;padding:14px 16px}
+ .story-card:hover{transform:none}
+ .story-dots{display:flex;justify-content:center;gap:2px;margin-top:8px}
+ .story-dots button{position:relative;width:30px;height:26px;padding:0;border:0;background:transparent;cursor:pointer}
+ .story-dots button::before{content:'';position:absolute;left:50%;top:50%;width:6px;height:6px;border-radius:3px;background:#2f4a3a;transform:translate(-50%,-50%);transition:width .3s,background .3s}
+ .story-dots button[aria-current=true]::before{width:20px;background:#9ae3b1}
+ .story-dots button:focus-visible{outline:2px solid var(--g);outline-offset:-4px;border-radius:6px}
+}
+@media(max-width:600px){.story{padding:14px 14px 10px;margin:16px 0 20px}.story-legend{gap:4px 16px}}

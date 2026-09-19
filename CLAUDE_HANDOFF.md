@@ -407,3 +407,17 @@ Expect scores on bot-heavy curves to rise: two penalties no longer fire on a wha
 never there. Not covered: a custodial bot that keeps the tokens in its own contract (none seen among the
 large routers so far), and links between holders made by later transfers or ETH funding (the bubble-map
 idea proper): a separate check to be tested on history first. 752 tests.
+
+## Live page: follow the money (2026-09-19, late evening)
+
+Operator's request, previewed locally with live public data before it was pushed. The launch card ("WORM
+token launch · LAUNCHED") leaves the Live page once the token is launched and becomes a slim card at the top
+of Treasury (eyebrow "THE TOKEN", the date, "View token"); before a launch it still shows on Live exactly
+as before. In its place Live has `#story`, a low band (about 260 px on a laptop): fees claimed so far, one
+bar split into creator / WORM burns / gold reserve / kept to run itself, and four small cards: burned
+forever (ring of the supply), gold reserve, thinking costs (compute a day, prepaid credit), runway (one dot
+a month). Built once by `renderStory` in `web/design.js`; refreshes only move the numbers, which count up
+when the band first scrolls into view. Below 1100 px the cards are one swipeable row showing a card at a
+time that moves on every 4 s and waits while it is touched, out of sight, hidden or motion is paused.
+Presentation only: every figure is the server's (`treasury`, `runway`, `compute` in `/api/state`); the
+one-billion supply is the pons constant. Hidden before the first claim. No server change.
