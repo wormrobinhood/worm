@@ -40,6 +40,81 @@ function renderLaunchIdentity(s){
  document.querySelector('#stage').innerHTML=`<div class="identity-status"><span class="status-pill ${s.live?'is-on':''}">${mode}</span><span>Stage ${num((ch.stage??0)+1)} / ${num(ch.stages??7)} <b>${esc(ch.stage_name||'hatchling')}</b></span></div><div class="identity-growth"><span>${ch.demo?'Simulated character': 'Treasury value'} <b>${presentMoney(ch.usd)}</b></span><span>${ch.next_usd!=null?'Next stage at '+presentMoney(ch.next_usd):'Fully grown'}</span></div>`;
 }
 
+// Live: what the fees became, in the place the launch countdown used to hold. Built once; afterwards only the
+// numbers move, so a refresh never restarts an animation. Presentation only: every figure is the server's.
+const WORM_SUPPLY=1e9;   // every pons token is minted with a fixed supply of one billion
+const story={seen:false,values:null};
+function countTo(el,to,format){
+ const from=Number(el.dataset.value),start=Number.isFinite(from)?from:0;
+ el.dataset.value=to;cancelAnimationFrame(el._raf);
+ if(window.motionPaused||start===to){el.textContent=format(to);return}
+ const t0=performance.now(),dur=start===0?1500:800;
+ const step=now=>{const k=Math.min(1,(now-t0)/dur),ease=1-Math.pow(1-k,3);el.textContent=format(start+(to-start)*ease);if(k<1)el._raf=requestAnimationFrame(step)};
+ el._raf=requestAnimationFrame(step);
+}
+const storyFormats={usd:v=>presentMoney(v),usd0:v=>'$'+Math.round(v).toLocaleString('en-US'),days:v=>Math.round(v).toLocaleString('en-US'),
+ millions:v=>v>=1e6?(v/1e6).toFixed(2)+'M':Math.round(v).toLocaleString('en-US'),pct:v=>v.toFixed(2)+'%',gld:v=>v.toFixed(4)};
+function paintStory(){
+ const el=document.querySelector('#story'),v=story.values;if(!el||!v)return;
+ el.querySelectorAll('[data-story]').forEach(node=>{const value=v[node.dataset.story];if(value==null||!Number.isFinite(value)){node.textContent='—';return}
+  const format=storyFormats[node.dataset.format]||storyFormats.usd;if(story.seen)countTo(node,value,format);else node.textContent=format(0)});
+ el.querySelectorAll('[data-story-text]').forEach(node=>{node.textContent=v[node.dataset.storyText]??''});
+ el.querySelectorAll('[data-story-width]').forEach(node=>node.style.setProperty('--w',(v[node.dataset.storyWidth]||0).toFixed(2)+'%'));
+ const months=el.querySelector('.story-months');if(months){const lit=Math.min(18,Math.floor((v.runwayDays||0)/30)),reserve=Math.round((v.reserveDays||90)/30);if(months.dataset.lit!==lit+'/'+reserve){months.dataset.lit=lit+'/'+reserve;months.innerHTML=Array.from({length:18},(_,k)=>`<i class="${k<lit?'on':''}${k<reserve?' reserve':''}" style="transition-delay:${(k*70)}ms"></i>`).join('')}}
+ const ring=el.querySelector('.story-ring-arc');if(ring){const c=2*Math.PI*52,arc=Math.max(0,Math.min(1,(v.burnedPct||0)/100))*c;ring.style.setProperty('--arc',arc.toFixed(2));ring.style.setProperty('--gap',(c-arc).toFixed(2))}
+}
+// Below desktop width the four cards are one row that shows a card at a time: it moves on by itself, follows a
+// swipe, and waits while someone is touching it, while the band is out of sight, or while motion is paused.
+function storyCarousel(el){
+ const track=el.querySelector('.story-grid'),dots=el.querySelector('.story-dots'),cards=[...track.children];let holdUntil=0;
+ track.tabIndex=0;track.setAttribute('role','group');track.setAttribute('aria-roledescription','carousel');track.setAttribute('aria-label','What the fees became');
+ dots.innerHTML=cards.map((c,k)=>`<button type="button" data-k="${k}" aria-label="Show ${esc((c.querySelector('.story-kicker')?.textContent||'card '+(k+1)).toLowerCase())}"></button>`).join('');
+ const sliding=()=>getComputedStyle(track).display==='flex';
+ const current=()=>{let best=0,gap=Infinity;cards.forEach((c,k)=>{const d=Math.abs(c.offsetLeft-track.scrollLeft);if(d<gap){gap=d;best=k}});return best};
+ const go=k=>track.scrollTo({left:cards[k].offsetLeft,behavior:window.motionPaused?'auto':'smooth'});
+ const mark=()=>{const k=current();dots.querySelectorAll('button').forEach((b,j)=>b.setAttribute('aria-current',String(j===k)))};
+ const hold=()=>{holdUntil=Date.now()+8000};
+ track.addEventListener('scroll',()=>requestAnimationFrame(mark),{passive:true});
+ for(const name of ['pointerdown','touchstart','wheel','focusin'])track.addEventListener(name,hold,{passive:true});
+ track.addEventListener('keydown',e=>{if(!sliding()||!['ArrowLeft','ArrowRight'].includes(e.key))return;e.preventDefault();hold();go(Math.max(0,Math.min(cards.length-1,current()+(e.key==='ArrowRight'?1:-1))))});
+ dots.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;hold();go(Number(b.dataset.k))});
+ const inSight=()=>{const r=track.getBoundingClientRect();return r.height>0&&Math.min(r.bottom,innerHeight)-Math.max(r.top,0)>=r.height*.6};
+ setInterval(()=>{if(!sliding()||!inSight()||document.hidden||window.motionPaused||Date.now()<holdUntil)return;go((current()+1)%cards.length)},4000);
+ mark();
+}
+function renderStory(s){
+ const el=document.querySelector('#story');if(!el)return;
+ const tr=s.treasury||{},rw=s.runway||{},cp=s.compute||{};
+ if(!tr.token||!(Number(tr.claimed_total)>0)){el.hidden=true;return}      // before the first claim there is nothing to tell
+ const n=x=>Number.isFinite(Number(x))?Number(x):0;
+ const earned=n(tr.claimed_total),creator=n(tr.forwarded_total)+n(tr.owed_to_owner),burn=n(tr.burned_total)+n(tr.owed_to_burn),gold=n(tr.gold_total)+n(tr.owed_to_gold);
+ const ops=Math.max(0,earned-creator-burn-gold),perDay=n(rw.cost_parts?.compute),credit=cp.balance_usd==null?null:n(cp.balance_usd);
+ const days=rw.runway_days_no_income==null?null:n(rw.runway_days_no_income),scale=Math.max(400,(days||0)*1.1),reserveDays=n(rw.reserve_days)||90;
+ story.values={earned,creator,burn,gold,ops,burnedUsd:n(tr.burned_total),burnedQty:n(tr.burned_qty),burnedPct:100*n(tr.burned_qty)/WORM_SUPPLY,
+  burnOwed:n(tr.owed_to_burn),burnMin:n(tr.burn_min_usd)||5,burnNext:Math.min(100,100*n(tr.owed_to_burn)/(n(tr.burn_min_usd)||5)),
+  goldUsd:tr.gold_usd==null?null:n(tr.gold_usd),goldQty:n(tr.gold_held),goldCost:n(tr.gold_total),goldOwed:n(tr.owed_to_gold),goldNext:Math.min(100,100*n(tr.owed_to_gold)/(n(tr.gold_min_usd)||5)),
+  computeDay:perDay,credit,thinkDays:credit!=null&&perDay>0?credit/perDay:null,gasDay:n(rw.cost_parts?.gas),
+  runwayDays:days,runwayFill:days==null?0:Math.min(100,100*days/scale),reserveAt:Math.min(100,100*reserveDays/scale),yearAt:Math.min(100,100*365/scale),
+  reserveUsd:n(rw.reserve_needed_usd),surplus:n(rw.surplus_usd),reserveDays,
+  wCreator:earned?100*creator/earned:0,wBurn:earned?100*burn/earned:0,wGold:earned?100*gold/earned:0,wOps:earned?100*ops/earned:0,
+  reserveLabel:reserveDays+'-day reserve',pays:cp.pays_with||''};
+ if(!el.dataset.built){
+  el.dataset.built='1';
+  el.innerHTML=`<header class="story-head"><div><span class="story-eyebrow">FOLLOW THE MONEY</span><h2 id="story-title"><b data-story="earned" data-format="usd">$0</b> earned in fees so far. Here is what the worm did with it.</h2></div><a class="story-link" href="#treasury">Open the treasury <span aria-hidden="true">→</span></a></header>
+<div class="story-flow" role="img" aria-label="How the fees were split between the creator, WORM burns, the gold reserve and operations"><span class="creator" data-story-width="wCreator"></span><span class="burn" data-story-width="wBurn"></span><span class="gold" data-story-width="wGold"></span><span class="ops" data-story-width="wOps"></span></div>
+<ul class="story-legend"><li class="creator"><i></i>Creator <b data-story="creator">$0</b></li><li class="burn"><i></i>WORM burns <b data-story="burn">$0</b></li><li class="gold"><i></i>Gold reserve <b data-story="gold">$0</b></li><li class="ops"><i></i>Kept to run itself <b data-story="ops">$0</b></li></ul>
+<div class="story-grid">
+<article class="story-card burn"><div class="story-visual"><svg viewBox="0 0 120 120" class="story-ring" role="img" aria-label="Share of the WORM supply burned"><circle cx="60" cy="60" r="52" class="story-ring-track"/><circle cx="60" cy="60" r="52" class="story-ring-arc"/></svg><div class="story-ring-label"><b data-story="burnedPct" data-format="pct">0%</b></div></div><div class="story-copy"><span class="story-kicker">BURNED FOREVER</span><strong><span data-story="burnedQty" data-format="millions">0</span><em>WORM</em></strong><p><span data-story="burnedPct" data-format="pct">0%</span> of all WORM, bought back with <span data-story="burnedUsd">$0</span> and destroyed</p></div></article>
+<article class="story-card gold"><div class="story-visual"><div class="story-ingots" aria-hidden="true"><span></span><span></span><span></span></div></div><div class="story-copy"><span class="story-kicker">GOLD RESERVE</span><strong><span data-story="goldUsd">$0</span><em>in gold</em></strong><p><span data-story="goldQty" data-format="gld">0</span> GLD held, bought for <span data-story="goldCost">$0</span></p></div></article>
+<article class="story-card brain"><div class="story-visual"><svg viewBox="0 0 120 70" class="story-pulse" aria-hidden="true"><path class="story-pulse-base" d="M2 40H34l9-24 13 48 12-38 9 14h41"/><path class="story-pulse-beat" pathLength="100" d="M2 40H34l9-24 13 48 12-38 9 14h41"/></svg></div><div class="story-copy"><span class="story-kicker">THINKING COSTS</span><strong><span data-story="computeDay">$0</span><em>a day</em></strong><p><span data-story="credit">$0</span> of AI credit prepaid: about <span data-story="thinkDays" data-format="days">0</span> days of thinking</p></div></article>
+<article class="story-card runway"><div class="story-visual"><ul class="story-months" role="img" aria-label="Months of runway, one dot a month"></ul></div><div class="story-copy"><span class="story-kicker">RUNWAY</span><strong><span data-story="runwayDays" data-format="days">0</span><em>days</em></strong><p>it could keep working with no new income · <span data-story="surplus">$0</span> free above the reserve</p></div></article>
+</div><div class="story-dots" aria-label="Choose a card"></div>`;
+  storyCarousel(el);
+  new IntersectionObserver((entries,observer)=>{if(entries.some(e=>e.isIntersecting)){observer.disconnect();story.seen=true;el.classList.add('is-seen');paintStory()}},{threshold:.18}).observe(el);
+ }
+ el.hidden=false;paintStory();
+}
+
 // Presentation only: the server remains the authority for balances, policy and execution.
 function renderTreasuryPanels(s){
  const tr=s.treasury||{},rw=s.runway||{},cp=s.compute||{},td=s.trader||{},rd=s.readiness||{};
@@ -75,7 +150,7 @@ function renderTreasuryPanels(s){
  if(focused)document.querySelector(`[data-treasury-detail="${focused}"] summary`)?.focus({preventScroll:true});
 }
 function enhance(s){if(s.links&&s.links.x){xlink.href=s.links.x;xlink.hidden=false}if(s.stats?.last_block!=null&&s.stats.last_block!==window.observedBlock){window.observedBlock=s.stats.last_block;window.blockAdvancedAt=Date.now()}const st=s.stats||{},rw=s.runway||{},rd=s.readiness||{},sc=s.scout||{},ch=s.character||{};document.querySelector('#specimen-block').innerHTML='ROBINHOOD CHAIN<br><strong>BLOCK '+esc(st.last_block??'…')+'</strong>';document.querySelector('#mode-label').textContent=s.live?'Payments enabled':'Payments off';const metrics=[['Tokens screened',num(st.scored),'Across the indexed window'],['Warnings confirmed',sc.called??'…',`${sc.checked_warnings??0} assessed warnings checked`],['Actual treasury',presentMoney(ch.usd_real??rw.treasury_usd),ch.gold_usd!=null?`Wallet assets · gold reserve ${presentMoney(ch.gold_usd)}`:'Wallet assets excluding gold'],['Trading readiness',`${rd.score??0}<em> / 100</em>`,(s.trader&&s.trader.enabled===false)?`Trading off by policy · threshold ${rd.ready_at??80}`:rd.ready?'Evidence threshold met':`Evidence threshold: ${rd.ready_at??80}`]];document.querySelector('#overview-metrics').innerHTML=metrics.map(([l,v,d])=>`<div class="metric"><span>${l}</span><strong>${v}</strong><small>${d}</small></div>`).join('');document.querySelector('#grow').textContent='The worm grows with the treasury it holds.';
-renderLaunchIdentity(s);
+renderLaunchIdentity(s);renderStory(s);
 const titles={feed:'Recent token scans',wallet:'Treasury overview',trades:'Trading controls',runway:'Operating runway',brain:'Rule performance',lab:'Strategy comparisons',paper:'Paper portfolio',advisor:'Advisor',bad:'Creator signals',voice:'Field notes'};for(const [k,v] of Object.entries(titles)){const el=document.querySelector(`[data-panel="${k}"] .ttl`);if(el)el.textContent=v}
 // Make missing values distinct from measured zero where source data is available.
 const r=document.querySelector('#ready');if(r){r.setAttribute('aria-label',`Trading readiness ${rd.score??0} out of 100`)}
@@ -257,6 +332,7 @@ if(lastState)updateLaunchTape(lastState);
   const elapsed=(performance.now()-received)/1000,now=schedule.server_now+elapsed;
   const stale=elapsed>20||lastError;
   panel.dataset.state=schedule.state;
+  panel.querySelector('.launch-clock-eyebrow').textContent=schedule.state==='launched'?'THE TOKEN':'THE NEXT CHAPTER';
   progress(stale);
   date.textContent=schedule.at?new Date(schedule.at*1000).toLocaleString('en-GB',{dateStyle:'medium',timeStyle:'long',timeZone:'UTC'}):'';
   if(schedule.at)date.dateTime=new Date(schedule.at*1000).toISOString();else date.removeAttribute('datetime');
