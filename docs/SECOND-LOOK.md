@@ -68,7 +68,9 @@ trailing stop follows the peak: 15 percent below it, 20 percent once the peak pa
 Three variants (`lock_20_tight`, `lock_20_wide`, `lock_50`) run beside it in the lab, which
 now also takes every second-look entry as a case. Open paper positions are re-priced from
 the chain every 15 seconds; an exit that triggers is filled at a fresh pool quote with gas,
-never at the trigger level. The five-minute cycle still values every position from a bid.
+never at the trigger level. The five-minute cycle still values every position from a bid,
+and it too reads the price from the position's own pool: a price API can lag a thin pool by
+one trade, which reads as a fall from the peak and sells a position that never fell.
 
 Paper fills are booked at the pool's quote less 1 percent a side, plus estimated gas for the
 swap and its approvals. The earlier model booked every fill at the quote less 3 percent,

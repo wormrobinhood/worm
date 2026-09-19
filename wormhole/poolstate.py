@@ -63,3 +63,28 @@ def mids(rpc, pools, eth_usd):
         quote_usd = 1.0 if pk.get("quote") == C.USDG else eth_usd if pk.get("quote") == C.ZERO else None
         out[token] = token_price(pk, token, sqrt_price(raw), quote_usd)
     return out
+
+
+def position_mids(rpc, rows):
+    """(mids, own) for position rows ({token, pool_key as JSON}): `own` is every token whose row carries a
+    verified pool key, `mids` the chain's price for those the node answered. A position with its own pool is
+    only ever priced from that pool: a price API that lags a thin pool by one trade reads as a fall from the
+    peak and sells a position that never fell."""
+    import json
+    from . import trade_checks
+    from .prices import eth_usd_last
+    pools = {}
+    for row in rows:
+        try:
+            pk = json.loads(row.get("pool_key") or "null")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(pk, dict) and "fee" in pk and trade_checks.verified(pk, row["token"], trade_checks.PAPER_QUOTES):
+            pools[row["token"]] = pk
+    if not pools or rpc is None:
+        return {}, set(pools)
+    try:
+        found = mids(rpc, pools, eth_usd_last())
+    except Exception:
+        found = {}
+    return {t: m for t, m in found.items() if m}, set(pools)
