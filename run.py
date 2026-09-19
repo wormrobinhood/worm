@@ -24,7 +24,7 @@ from wormhole import launch as L
 from wormhole.budget import projection
 from wormhole import readiness, tx, launch_schedule
 from wormhole import watch as second_look
-from wormhole import crowd
+from wormhole import crowd, linked
 import os
 from wormhole.growth import treasury
 from wormhole import budget
@@ -226,6 +226,7 @@ def main():
                     prune_launches(db)
                     now_ = int(time.time())
                     db.x("DELETE FROM curve_buyers WHERE ts<?", (now_ - 3 * 86400,))          # the fleet window is a day
+                    linked.prune(db)
                     db.x("DELETE FROM events WHERE ts<? AND kind NOT IN ('lesson','launch')", (now_ - 60 * 86400,))
                     if hasattr(idx, "refetch_metadata"):
                         idx.refetch_metadata()

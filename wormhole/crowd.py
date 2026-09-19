@@ -72,7 +72,7 @@ def read(db, buyers):
     return out
 
 
-def _from_chain(rpc, L):
+def _from_chain(rpc, L, db=None):
     """The wallets that ended up with a token's curve buys, for a token scored before buys were followed."""
     from .pons import CURVE_BUY, TRANSFER
     from .scorer import BUYERS_KEPT, DUST_DIVISOR, real_buyers
@@ -80,8 +80,11 @@ def _from_chain(rpc, L):
     lb = int(L["block"]) if L["block"] else max(0, gb - 24 * C.BLOCKS_PER_HOUR)
     buys = [CURVE_BUY.decode(lg) for lg in rpc.get_logs(L["curve"], [[CURVE_BUY.topic]], lb, gb, 200_000, cap=20_000)]
     txs = {b["_tx"] for b in buys}
-    moves = [t for t in (TRANSFER.decode(lg) for lg in rpc.get_logs(L["token"], [TRANSFER.topic], lb, gb, 200_000,
-                                                                  cap=C.TRANSFER_LOG_CAP)) if t["_tx"] in txs]
+    sent = [TRANSFER.decode(lg) for lg in rpc.get_logs(L["token"], [TRANSFER.topic], lb, gb, 200_000, cap=C.TRANSFER_LOG_CAP)]
+    moves = [t for t in sent if t["_tx"] in txs]
+    if db is not None:                                # the same read teaches the linked-wallet check who is a service
+        from . import linked
+        linked.remember_senders(db, L["token"], [(t["from"], t["to"], t["value"]) for t in sent], L["curve"], L.get("grad_ts"))
     bought = collections.Counter()
     for parts in real_buyers(buys, moves, L["curve"], set(C.INFRA) | {L["curve"], L["token"]}):
         for wallet, tokens in parts:
@@ -95,7 +98,7 @@ def _from_chain(rpc, L):
 def tick(rpc, db, backfill=BACKFILL_PER_TICK):
     """Fold every newly resolved token into the records. Tokens whose buyers were remembered by recipient (before
     buys were followed through their transaction) are re-read from the chain, a few per cycle, newest first."""
-    rows = db.q("SELECT o.token, o.outcome, s.metrics, l.curve, l.block, l.grad_block, l.deployer FROM outcomes o"
+    rows = db.q("SELECT o.token, o.outcome, s.metrics, l.curve, l.block, l.grad_block, l.grad_ts, l.deployer FROM outcomes o"
                 " JOIN scores s ON s.token=o.token JOIN launches l ON l.token=o.token"
                 " WHERE o.resolved=1 AND o.token NOT IN (SELECT token FROM wallet_folded) ORDER BY o.scored_at DESC")
     folded = reread = 0
@@ -117,7 +120,7 @@ def tick(rpc, db, backfill=BACKFILL_PER_TICK):
             continue
         reread += 1
         try:
-            wallets = _from_chain(rpc, dict(r))
+            wallets = _from_chain(rpc, dict(r), db)
         except Exception as e:
             _failed[r["token"]] += 1
             log.info("crowd: re-read of %s failed (%s)", r["token"][:10], e)

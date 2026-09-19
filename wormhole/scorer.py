@@ -9,6 +9,7 @@ import time
 from . import config as C
 from . import advisor as ADV
 from . import crowd as CROWD
+from . import linked as LINKED
 from .pons import CURVE_BUY, CURVE_SELL, TRANSFER, POOL_REGISTERED, SWAP
 
 log = logging.getLogger("wormhole.scorer")
@@ -29,13 +30,14 @@ RULES = {
     "funding_cluster": "curve buyers funded by the same wallet just before they bought (one buyer wearing many wallets)",
     "bot_fleet": "share of curve buy volume from wallets that buy on many curves (fleets that sell at graduation)",
     "losing_crowd": "share of curve buy volume from wallets whose earlier picks all went bad",
-    "top10": "top-10 holders' share of circulating supply",
-    "deployer_hold": "creator's current share of circulating supply",
+    "top10": "top-10 holders' share of circulating supply (shown, no points: see the holders section)",
+    "deployer_hold": "creator's current share of circulating supply (shown, no points; 20% still bars a healthy verdict)",
+    "linked_wallets": "holders who passed tokens to each other before the verdict: one owner wearing many wallets (shown, no points yet)",
     "activity": "trades since graduation",
     "socials": "links attached to the token",
     "pace": "time from launch to graduation",
 }
-HARD = {("deployer_hold", -30), ("snipe", -15), ("funding_cluster", -20)}   # one of these (or creator_rugs) demotes healthy to mixed
+HARD = {("snipe", -15), ("funding_cluster", -20)}   # one of these, creator_rugs, or a rule fired with hard=True demotes healthy to mixed
 PARTIAL_CAP = 69                                   # a score on incomplete data can never read "looks healthy"
 PARTIAL_TEXT = "incomplete data: some chain reads failed, will re-check"
 SWAP_CAP = 10_000                                  # swaps read per window (the node's own cap per query)
@@ -209,8 +211,8 @@ class Scorer:
                    name=L.get("name"), symbol=L.get("symbol"), pair=L.get("pair_symbol"), grad_ts=L.get("grad_ts"),
                    deployer=L.get("deployer"), logo=L.get("logo"))
 
-        def rule(rid, points, text):
-            fired.append({"rule": rid, "points": points, "text": text})
+        def rule(rid, points, text, hard=False):
+            fired.append({"rule": rid, "points": points, "text": text, **({"hard": True} if hard else {})})
 
         # 1. the creator ------------------------------------------------------
         lb, gb = L.get("block"), L.get("grad_block")
@@ -276,13 +278,14 @@ class Scorer:
         bal = collections.Counter()
         n_logs = 0
         buy_txs = {b["_tx"] for b in buys}
-        handovers = []
+        handovers, moves = [], []
         try:
             for lg in self.rpc.get_logs(token, [TRANSFER.topic], lb, latest, 200_000, cap=C.TRANSFER_LOG_CAP):
                 t = TRANSFER.decode(lg)
                 bal[t["from"]] -= t["value"]
                 bal[t["to"]] += t["value"]
                 n_logs += 1
+                moves.append((t["from"], t["to"], t["value"]))
                 if t["_tx"] in buy_txs:
                     handovers.append(t)
         except Exception as e:
@@ -414,21 +417,37 @@ class Scorer:
         self._emit(token, "holders", f"{len(held)} holders, top-10 own {top10:.0f}%, creator holds {dep_hold:.0f}%",
                    holders=len(held), top10_pct=round(top10, 1), deployer_hold_pct=round(dep_hold, 1),
                    outside_pool_pct=m.get("outside_pool_pct"), bubbles=bubbles, partial=m["partial"])
+        # Concentration is shown and carries no points. On 1,389 resolved graduations it pointed the other way for the
+        # first day: top-10 at 50% or more turned out not bad 23% of the time against 13% below 35%, and tokens whose
+        # creator kept 10% or more did best of all (32%); widely spread supply is mostly bots that sell at once. The
+        # study cannot see past a day, and a big holder can sell into everyone on any day, so the card still says so
+        # and a creator holding 20% still bars a healthy verdict.
         if held and not m["partial"]:
-            if top10 < 20:
-                rule("top10", 15, f"top-10 holders own {top10:.0f}% of circulating supply")
-            elif top10 < 35:
-                rule("top10", 5, f"top-10 holders own {top10:.0f}%")
-            elif top10 < 50:
-                rule("top10", -10, f"top-10 holders own {top10:.0f}%")
-            else:
-                rule("top10", -20, f"top-10 holders own {top10:.0f}% of circulating supply")
+            rule("top10", 0, f"top-10 holders own {top10:.0f}% of circulating supply"
+                 + (": big holders can sell into everyone at any time" if top10 >= 35 else ""))
         elif held:
             rule("top10", 0, f"holder map is partial ({n_logs} transfers read); top-10 looks like {top10:.0f}%")
-        if dep_hold >= 20:
-            rule("deployer_hold", -30, f"creator still holds {dep_hold:.0f}% of circulating supply")
-        elif dep_hold >= 10:
-            rule("deployer_hold", -15, f"creator still holds {dep_hold:.0f}% of circulating supply")
+        if dep_hold >= 10:
+            rule("deployer_hold", 0, f"creator still holds {dep_hold:.0f}% of circulating supply: it can be sold into everyone at any time",
+                 hard=dep_hold >= 20)
+        # linked wallets (linked.py): shown without points until the records say what it is worth
+        if held and not m["partial"]:
+            try:
+                link = LINKED.read(self.rpc, self.db, token, L["curve"], moves, held, circ)
+                LINKED.remember_senders(self.db, token, moves, L["curve"], L.get("grad_ts"))
+            except Exception as e:
+                log.info("linked-wallet read failed for %s: %s", token[:10], e)
+                link = None
+            if link:
+                m.update(link)
+                pct_linked = link["linked_group_pct"]
+                if link["senders_on_record"] < LINKED.MIN_HISTORY:
+                    rule("linked_wallets", 0, f"linked-wallet check needs {LINKED.MIN_HISTORY} tokens on record, has {link['senders_on_record']}")
+                elif pct_linked is not None and pct_linked >= LINKED.GROUP_MIN_PCT:
+                    rule("linked_wallets", 0, f"one linked group of {link['linked_group_wallets']} wallets holds {pct_linked:.0f}% of circulating supply:"
+                                              f" they passed tokens to each other")
+                elif pct_linked is not None:
+                    rule("linked_wallets", 0, f"no linked group of wallets holds {LINKED.GROUP_MIN_PCT:.0f}% or more")
 
         # 4. after graduation ---------------------------------------------------
         pool = None
@@ -508,7 +527,7 @@ class Scorer:
         if m["partial"]:
             score = min(score, PARTIAL_CAP)
         verdict = verdict_for(score)
-        demoted = verdict == "looks healthy" and any((f["rule"], f["points"]) in HARD or f["rule"] == "creator_rugs" for f in fired)
+        demoted = verdict == "looks healthy" and any(f.get("hard") or (f["rule"], f["points"]) in HARD or f["rule"] == "creator_rugs" for f in fired)
         if demoted:
             verdict = "mixed"
         m["demoted"] = bool(demoted)
