@@ -563,3 +563,28 @@ def test_state_retains_sixty_recent_scans_and_events(db, monkeypatch):
     assert len(data["events"]) == 60
     assert data["events"][0]["text"] == "Assessment 64"
     assert data["events"][-1]["text"] == "Assessment 5"
+
+
+# ---- receipts: the newest warnings that came true -----------------------------------------------------------------
+
+def test_receipts_are_the_newest_warnings_that_came_true_with_their_loudest_reason(db):
+    now = int(time.time())
+
+    def outcome(i, verdict, result, fired, checks="{}", resolved=1):
+        t = "0x" + format(0xC000 + i, "040x")
+        db.x("INSERT INTO launches(token,symbol,name,graduated) VALUES(?,?,?,1)", (t, f"T{i}", f"Token {i}"))
+        db.x("INSERT INTO outcomes(token,score,verdict,scored_at,outcome,change_pct,resolved,fired,checks) VALUES(?,?,?,?,?,?,?,?,?)",
+             (t, 20, verdict, now - 1000 + i, result, -95.0, resolved, fired, checks))
+        return t
+    loud = ('[{"rule":"snipe","points":-15,"applied":-12.7,"text":"34% of the curve was bought in the first 3s"},'
+            '{"rule":"pace","points":-8,"applied":-7.8,"text":"graduated 1 minutes after launch"},'
+            '{"rule":"creator_tax","points":5,"applied":3.9,"text":"no creator tax"}]')
+    caught = outcome(1, "avoid", "rugged", loud, checks='{"rug_seen": {"ts": %d, "price": 1e-9, "change_pct": -93.0}}' % (now - 1000 + 1 + 840))
+    outcome(2, "avoid", "grew", loud)                    # a warning that was wrong is counted by the scout, never shown as a catch
+    outcome(3, "mixed", "rugged", loud)                  # no warning was given
+    outcome(4, "avoid", "rugged", loud, resolved=0)      # not resolved yet
+    quiet = outcome(5, "avoid", "dumped", "not json")
+    got = server._receipts(db)
+    assert [r["token"] for r in got] == [quiet, caught]
+    assert got[1]["reason"] == "34% of the curve was bought in the first 3s" and got[1]["after_s"] == 840 and got[1]["symbol"] == "T1"
+    assert got[0]["reason"] is None and got[0]["after_s"] is None

@@ -115,6 +115,22 @@ function renderStory(s){
  el.hidden=false;paintStory();
 }
 
+// Live: the newest warnings that came true, under the count of every warning, right and wrong. Each one carries a
+// line ready to copy to X. Rebuilt only when the list changes, so a refresh never moves the row under a thumb.
+function receiptAfter(sec){if(sec==null)return 'within a day';if(sec<3600)return Math.max(1,Math.round(sec/60))+' min later';return (sec/3600).toFixed(sec<36000?1:0).replace(/\.0$/,'')+' h later'}
+function renderReceipts(s){
+ const el=document.querySelector('#receipts');if(!el)return;
+ const list=(s.receipts||[]).filter(r=>r&&r.symbol),sc=s.scout||{};
+ if(!list.length){el.hidden=true;return}
+ const key=list.map(r=>r.token+':'+Math.round(r.change_pct||0)).join('|')+'|'+sc.called+'|'+sc.checked_warnings+'|'+sc.missed;
+ el.hidden=false;if(el.dataset.key===key)return;el.dataset.key=key;
+ const tally=sc.checked_warnings?`<b>${num(sc.called).toLocaleString('en-US')}</b> of <b>${num(sc.checked_warnings).toLocaleString('en-US')}</b> warnings came true within a day${sc.warn_precision!=null?' ('+esc(sc.warn_precision)+'%)':''}${sc.missed?` · ${esc(sc.missed)} healthy calls went wrong`:''}`:'';
+ const cards=list.map(r=>{const fall=r.change_pct==null?'':Math.round(r.change_pct)+'%',when=receiptAfter(r.after_s),why=(r.reason||'').replace(/\s+/g,' ').trim();
+  const post=`Called it: $${r.symbol}. WORM said avoid (${r.score}/100) when it graduated${why?`: "${why}"`:''}. ${when==='within a day'?'Within a day':when.replace(' later',' later')}: ${fall||r.outcome}. wormdig.io`;
+  return `<article class="receipt" data-token="${esc(r.token)}"><header><b>$${esc(r.symbol)}</b><strong>${esc(fall||r.outcome)}</strong></header><p class="receipt-call">avoid · ${esc(r.score)}/100 <span>${esc(r.outcome)} ${esc(when)}</span></p>${why?`<p class="receipt-why">“${esc(why)}”</p>`:''}<button class="copy" type="button" data-text="${esc(post)}">copy for X</button></article>`}).join('');
+ el.innerHTML=`<header class="receipts-head"><div><span class="story-eyebrow">CALLED IT</span><h2 id="receipts-title">${tally||'Warnings that came true'}</h2></div><a class="story-link" href="#learning">Every call, right and wrong <span aria-hidden="true">→</span></a></header><div class="receipts-row" tabindex="0" role="group" aria-label="The newest warnings that came true">${cards}</div>`;
+}
+
 // Presentation only: the server remains the authority for balances, policy and execution.
 function renderTreasuryPanels(s){
  const tr=s.treasury||{},rw=s.runway||{},cp=s.compute||{},td=s.trader||{},rd=s.readiness||{};
@@ -150,7 +166,7 @@ function renderTreasuryPanels(s){
  if(focused)document.querySelector(`[data-treasury-detail="${focused}"] summary`)?.focus({preventScroll:true});
 }
 function enhance(s){if(s.links&&s.links.x){xlink.href=s.links.x;xlink.hidden=false}if(s.stats?.last_block!=null&&s.stats.last_block!==window.observedBlock){window.observedBlock=s.stats.last_block;window.blockAdvancedAt=Date.now()}const st=s.stats||{},rw=s.runway||{},rd=s.readiness||{},sc=s.scout||{},ch=s.character||{};document.querySelector('#specimen-block').innerHTML='ROBINHOOD CHAIN<br><strong>BLOCK '+esc(st.last_block??'…')+'</strong>';document.querySelector('#mode-label').textContent=s.live?'Payments enabled':'Payments off';const metrics=[['Tokens screened',num(st.scored),'Across the indexed window'],['Warnings confirmed',sc.called??'…',`${sc.checked_warnings??0} assessed warnings checked`],['Actual treasury',presentMoney(ch.usd_real??rw.treasury_usd),ch.gold_usd!=null?`Wallet assets · gold reserve ${presentMoney(ch.gold_usd)}`:'Wallet assets excluding gold'],['Trading readiness',`${rd.score??0}<em> / 100</em>`,(s.trader&&s.trader.enabled===false)?`Trading off by policy · threshold ${rd.ready_at??80}`:rd.ready?'Evidence threshold met':`Evidence threshold: ${rd.ready_at??80}`]];document.querySelector('#overview-metrics').innerHTML=metrics.map(([l,v,d])=>`<div class="metric"><span>${l}</span><strong>${v}</strong><small>${d}</small></div>`).join('');document.querySelector('#grow').textContent='The worm grows with the treasury it holds.';
-renderLaunchIdentity(s);renderStory(s);
+renderLaunchIdentity(s);renderStory(s);renderReceipts(s);
 const titles={feed:'Recent token scans',wallet:'Treasury overview',trades:'Trading controls',runway:'Operating runway',brain:'Rule performance',lab:'Strategy comparisons',paper:'Paper portfolio',advisor:'Advisor',bad:'Creator signals',voice:'Field notes'};for(const [k,v] of Object.entries(titles)){const el=document.querySelector(`[data-panel="${k}"] .ttl`);if(el)el.textContent=v}
 // Make missing values distinct from measured zero where source data is available.
 const r=document.querySelector('#ready');if(r){r.setAttribute('aria-label',`Trading readiness ${rd.score??0} out of 100`)}

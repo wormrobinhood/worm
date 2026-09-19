@@ -452,3 +452,14 @@ Built, with the operator's go-ahead:
   next k of the shared budget; the two running cohorts are untouched (their frozen specs did not change).
 Expect: the rule starts counting a few hours after deploy (150 tokens at 48 an hour), the full history
 in a bit over a day. 763 tests.
+
+## Live page: called it (2026-09-20)
+
+Step four of the plan the operator approved: make the scout's catches visible. `server._receipts` lists
+the newest resolved `avoid` verdicts that went bad (rugged or dumped), each with the loudest warning the
+card gave (the fired rule with the most negative applied points) and how long after the verdict the rug
+was seen (`checks.rug_seen`); the snapshot carries it as `receipts`. On Live, under the money band, a low
+swipeable row shows them beneath the full count from `scout` (warnings that came true, of all warnings
+checked, and the healthy calls that went wrong), so the row of wins is never shown without the tally of
+everything. Each card has a "copy for X" line built in the browser; nothing is posted by the worm itself
+(posting stays manual). Hidden while there is nothing to show. 764 tests.
