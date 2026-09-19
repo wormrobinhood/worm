@@ -361,3 +361,16 @@ shares the treasury's sender and journal); the funded exit rehearsal behind `LIV
 ops route for the one remaining `REVIEW` case (a confirmed receipt whose transfers do not match);
 hiding live positions until they close; and the next study.
 The most promising untested idea is following wallets that were early in earlier winners.
+
+
+## One price source per position: 2026-09-19, the morning after PR #15
+
+First night in production: healthy, treasury untouched, 5 second-look entries from ~50 complete
+verdicts, 3 closed. Two of the closes exposed a defect. The fast mark (every 15 s) prices a position
+from its pool; the five-minute mark still asked the price API. On a thin pool the API lags the chain by
+a trade: $ZA spiked on the chain to 1.38x (trail armed), the slow mark then read the API's older 0.99x,
+called it a 28% fall from the peak and sold a position whose pool quote was still 26% above entry
+(same minute, same cause: $HOODCASH). The fills were honest (quoted at the pool), the trigger was not.
+Fix: `poolstate.position_mids`; `paper._mark` and `trader._mark` price a position with a verified pool
+key from that pool on every cycle and never from the API (no answer from the node: the position waits).
+Rows from before pools were stored keep the API. 742 tests.

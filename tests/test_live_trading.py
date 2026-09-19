@@ -139,7 +139,7 @@ def test_exit_works_with_entry_policy_off_and_loss_pause(setup, monkeypatch):
     settle_buy(s)
     monkeypatch.setattr(C, 'TRADING', False)
     s.db.meta_set('loss_pause_until_live', int(time.time()) + 86400)
-    monkeypatch.setattr(trader, 'token_prices', lambda tokens: {s.token: {'price_usd': .02}})
+    monkeypatch.setattr(trader.poolstate, 'position_mids', lambda rpc, rows: ({s.token: .02}, {s.token}))   # its own pool prices it
     def quote(rpc, pk, token, amount, **kw):
         return {**s.quote, 'amount_raw': amount, 'minimum_raw': 12_000_000, 'direction': pk['c0'] == token}
     monkeypatch.setattr(L.execution, 'exit_quote', quote)
@@ -184,7 +184,7 @@ def test_net_transfer_ignores_self_and_accounts_for_outgoing():
 def test_full_stop_sells_only_tracked_tokens_and_closes_on_receipt(setup, monkeypatch):
     s = setup
     buy(s); settle_buy(s)
-    monkeypatch.setattr(trader, 'token_prices', lambda tokens: {s.token: {'price_usd': .003}})
+    monkeypatch.setattr(trader.poolstate, 'position_mids', lambda rpc, rows: ({s.token: .003}, {s.token}))   # its own pool prices it
     monkeypatch.setattr(L.execution, 'exit_quote', lambda rpc, pk, token, amount, **kw: {**s.quote, 'amount_raw': amount, 'minimum_raw': 2_000_000})
     s.rpc.receipts.clear()
     trader.mark(s.rpc, s.db, True, s.acct)
@@ -369,7 +369,7 @@ def test_a_reverted_sell_is_retried_soon_with_more_room(setup, monkeypatch):
     s = setup
     buy(s); settle_buy(s)
     s.rpc.receipts.clear()
-    monkeypatch.setattr(trader, 'token_prices', lambda tokens: {s.token: {'price_usd': .003}})
+    monkeypatch.setattr(trader.poolstate, 'position_mids', lambda rpc, rows: ({s.token: .003}, {s.token}))   # its own pool prices it
     seen = []
     def quote(rpc, pk, token, amount, tolerance=None, **kw):
         seen.append(tolerance)

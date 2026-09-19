@@ -8,7 +8,7 @@ import threading
 import time
 
 from . import config as C
-from . import lab
+from . import lab, poolstate
 from . import trade_checks as execution, trade_risk
 from .prices import token_prices, usable_price
 
@@ -135,10 +135,17 @@ class Paper:
         opens = self.db.q("SELECT * FROM paper WHERE status='open'")
         if not opens:
             return
-        prices = token_prices([p["token"] for p in opens]) if mids is None else {}
+        # One price source per position. A position with its own pool is marked from that pool on the slow
+        # cycle too; the price API only ever marks rows from before pools were stored.
+        own = set()
+        if mids is None:
+            mids, own = poolstate.position_mids(self.rpc, opens)
+            prices = token_prices([p["token"] for p in opens if p["token"] not in own])
+        else:
+            prices, own = {}, set(mids)
         now = int(time.time())
         for p in opens:
-            px = usable_price(prices.get(p["token"])) if mids is None else mids.get(p["token"])
+            px = mids.get(p["token"]) if p["token"] in own else usable_price(prices.get(p["token"]))
             if not px or not p["entry_usd"] or not p["qty"]:
                 continue
             cost = p["cost"] if p.get("cost") is not None else COST

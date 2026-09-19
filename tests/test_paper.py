@@ -26,7 +26,7 @@ def feed(monkeypatch, db):
         return {'price': price, 'pool': {'cost': cost}, 'minimum_raw': int(qty * 1e18), 'gas_usd': 0,
                 'liquidation_usd': qty * price * (1 - cost)}
     def exit_quote(rpc, pool, token, amount, quotes=None):
-        return {'minimum_usd': amount / 1e18 * prices[token] * (1 - pool['cost']), 'gas_usd': 0}
+        return {'minimum_usd': amount / 1e18 * prices[token] * (1 - pool.get('cost', 0.04)), 'gas_usd': 0}
     monkeypatch.setattr(P.execution, 'entry', entry)
     monkeypatch.setattr(P.execution, 'exit_quote', exit_quote)
     return prices
@@ -259,3 +259,44 @@ def test_the_fast_mark_does_not_ask_for_a_valuation_quote(db, feed, monkeypatch)
     assert asked == [] and db.one("SELECT last_usd, liquidation_usd FROM paper")["last_usd"] == 1.05
     pb.mark()                                                        # the slow mark values the position from a bid
     assert len(asked) == 1
+
+
+# ---- one price source per position ----------------------------------------------------------------
+
+def real_pool(token):
+    c0, c1 = sorted([token, C.USDG], key=lambda a: int(a, 16))
+    return {"token": token, "c0": c0, "c1": c1, "fee": 0, "tick_spacing": 200, "hooks": C.HOOK, "quote": C.USDG}
+
+
+def test_a_position_with_its_own_pool_is_never_marked_by_the_price_api(db, feed, monkeypatch):
+    """Production, 2026-09-19: a thin pool spiked on the chain (peak 1.38x, trail armed), the five-minute mark
+    then read the price API's older 0.99x and sold a position that was still 26% up."""
+    import json
+    pb = enter(db, feed)
+    db.x("UPDATE paper SET pool_key=?", (json.dumps(real_pool(TOKEN)),))
+    chain = {TOKEN: 1.38}
+    monkeypatch.setattr(P.poolstate, "position_mids", lambda rpc, rows: ({t: chain[t] for t in chain if chain[t]}, {TOKEN}))
+    feed[TOKEN] = 1.38
+    pb.mark(prices={TOKEN: 1.38}, value=False)                       # the fast mark sees the spike and arms the trail
+    monkeypatch.setattr(P, "token_prices", lambda addrs: {a: {"price_usd": 0.99} for a in addrs})   # the API lags by one trade
+    chain[TOKEN] = 1.30
+    feed[TOKEN] = 1.30
+    pb.mark()                                                        # the slow mark reads the pool, not the API
+    row = db.one("SELECT status, last_usd, peak_usd FROM paper")
+    assert row["status"] == "open" and row["last_usd"] == 1.30 and row["peak_usd"] == 1.38
+    chain[TOKEN] = None                                              # the node does not answer: the position waits, the API is still not asked
+    pb.mark()
+    assert db.one("SELECT status, last_usd FROM paper") == {"status": "open", "last_usd": 1.30}
+    chain[TOKEN] = 1.10
+    feed[TOKEN] = 1.10
+    pb.mark()                                                        # a real fall of 20% from the peak does sell
+    assert db.one("SELECT status, reason FROM paper") == {"status": "closed", "reason": "trailing stop 15% below the peak"}
+
+
+def test_rows_from_before_pools_were_stored_are_still_marked_by_the_price_api(db, feed, monkeypatch):
+    monkeypatch.setattr(lab, "pick_arm", lambda db: "costout_1.5x@0m")
+    pb = book(db)
+    pb.consider(TOKEN, {"score": 80, "verdict": "looks healthy", "metrics": {}})
+    feed[TOKEN] = 0.5
+    pb.mark()
+    assert db.one("SELECT status FROM paper")["status"] == "closed"

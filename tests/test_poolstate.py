@@ -83,3 +83,23 @@ def test_mids_reads_every_pool_in_one_batch():
 def test_mids_without_pools_makes_no_call():
     rpc = BatchRpc([])
     assert poolstate.mids(rpc, {}, 2000.0) == {} and rpc.calls == []
+
+
+def test_position_mids_covers_only_rows_with_a_verified_pool(monkeypatch):
+    import json
+    from wormhole import prices
+    monkeypatch.setattr(prices, "eth_usd_last", lambda: 2000.0)
+    other = "0x" + "e1" * 20
+    rows = [{"token": TOKEN_LOW, "pool_key": json.dumps(WORM_POOL)},
+            {"token": other, "pool_key": json.dumps({"cost": 0.02})},                     # a row from before pools were stored
+            {"token": TOKEN_HIGH, "pool_key": json.dumps({**WORM_POOL, "hooks": "0x" + "99" * 20})},   # not a Pons pool
+            {"token": "0x" + "e2" * 20, "pool_key": None}]
+    rpc = BatchRpc([word(sqrt_for(3.33e-18))])
+    mids, own = poolstate.position_mids(rpc, rows)
+    assert own == {TOKEN_LOW} and abs(mids[TOKEN_LOW] / 3.33e-6 - 1) < 1e-6 and len(rpc.calls[0]) == 1
+    assert poolstate.position_mids(None, rows) == ({}, {TOKEN_LOW})                        # no node: owned, unpriced, never handed to the API
+
+    class Down:
+        def batch(self, calls):
+            raise RuntimeError("429")
+    assert poolstate.position_mids(Down(), rows) == ({}, {TOKEN_LOW})

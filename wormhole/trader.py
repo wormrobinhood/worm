@@ -18,7 +18,7 @@ from eth_utils import keccak
 from . import finality
 from . import config as C
 from .chain import addr_from_topic, selector
-from . import lab, live_trading, trade_checks, trade_risk
+from . import lab, live_trading, poolstate, trade_checks, trade_risk
 from . import readiness as RD
 from .pons import POOL_REGISTERED, TRANSFER
 from .prices import eth_usd, token_prices, usable_price
@@ -344,10 +344,15 @@ def _mark(rpc, db, live, acct, mids):
     opens = db.q("SELECT * FROM positions WHERE status='open'")
     if not opens:
         return
-    prices = token_prices([p["token"] for p in opens]) if mids is None else {}
+    own = set()
+    if mids is None:                               # one price source per position: its own pool when it has one
+        mids, own = poolstate.position_mids(rpc, opens)
+        prices = token_prices([p["token"] for p in opens if p["token"] not in own])
+    else:
+        prices, own = {}, set(mids)
     now = int(time.time())
     for p in opens:
-        px = usable_price(prices.get(p["token"])) if mids is None else mids.get(p["token"])
+        px = mids.get(p["token"]) if p["token"] in own else usable_price(prices.get(p["token"]))
         if not px or not p["entry_usd"] or not p["qty"]:
             continue
         policy = json.loads(p['policy_spec']) if p.get('policy_spec') else lab.parse_arm(p["policy"] or lab.DEFAULT)[0]
