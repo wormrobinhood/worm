@@ -8,6 +8,7 @@ import time
 
 from . import config as C
 from . import advisor as ADV
+from . import crowd as CROWD
 from .pons import CURVE_BUY, CURVE_SELL, TRANSFER, POOL_REGISTERED, SWAP
 
 log = logging.getLogger("wormhole.scorer")
@@ -27,6 +28,7 @@ RULES = {
     "fresh_buyers": "share of curve buy volume from throwaway wallets with no other history",
     "funding_cluster": "curve buyers funded by the same wallet just before they bought (one buyer wearing many wallets)",
     "bot_fleet": "share of curve buy volume from wallets that buy on many curves (fleets that sell at graduation)",
+    "losing_crowd": "share of curve buy volume from wallets whose earlier picks all went bad",
     "top10": "top-10 holders' share of circulating supply",
     "deployer_hold": "creator's current share of circulating supply",
     "activity": "trades since graduation",
@@ -358,6 +360,22 @@ class Scorer:
                 rule("bot_fleet", -8, f"{fleet_pct:.0f}% of the buy volume came from wallets that buy on many curves")
             else:
                 rule("bot_fleet", 0, f"{fleet_pct:.0f}% of the buy volume came from fleet wallets")
+            # what the buyers' earlier picks became: good records predict nothing, losing records do (crowd.py)
+            seen = CROWD.read(self.db, {a: v for a, v in humans.items() if a != L["deployer"]})
+            m.update(seen)
+            losing = seen["losing_pct"]
+            if losing is not None:
+                said = f"{losing:.0f}% of the buy volume came from {seen['losing_buyers']} wallets whose earlier picks all went bad"
+                if seen["crowd_history"] < CROWD.MIN_HISTORY:
+                    rule("losing_crowd", 0, f"crowd check needs {CROWD.MIN_HISTORY} resolved tokens on record, has {seen['crowd_history']}")
+                elif losing >= 30:
+                    rule("losing_crowd", -12, said)
+                elif losing >= 15:
+                    rule("losing_crowd", -6, said)
+                elif losing < 5:
+                    rule("losing_crowd", 3, f"hardly any of the buy volume ({losing:.0f}%) came from wallets with a losing record")
+                else:
+                    rule("losing_crowd", 0, said)
             fresh_pct, funders = self._buyer_provenance(token, L, humans, lb, gb, m)
             if fresh_pct is not None:
                 m["fresh_buyers_pct"] = round(fresh_pct, 1)

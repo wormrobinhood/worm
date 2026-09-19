@@ -365,7 +365,7 @@ function armText(p){p=p||{};const tp=(p.tp||[]).map(t=>`${t[0]}x sell ${Math.rou
 function specText(x){const sp=x.spec||{};if(x.kind==='rule'){const c=(sp.conditions||[]).map(c=>`${c.metric} ${c.op} ${c.value}`).join(' and ');return `${c||'?'} → ${sp.points>0?'+':''}${num(sp.points)}`}return `${sp.name||'?'}: ${armText(sp)}`}
 function card(t,isNew){
   const m=t.metrics||{},v=t.verdict,cls=vcls(v),open=expanded.has(t.token);
-  const allChips=[['holders',m.holders],['top10',m.top10_pct!=null?m.top10_pct+'%':null,m.top10_pct>=50,m.top10_pct<20],['outside pool',m.outside_pool_pct!=null?m.outside_pool_pct+'%':null],['buyers',m.unique_buyers],['via bots',m.routed_pct!=null?m.routed_pct+'%':null],
+  const allChips=[['holders',m.holders],['top10',m.top10_pct!=null?m.top10_pct+'%':null,m.top10_pct>=50,m.top10_pct<20],['outside pool',m.outside_pool_pct!=null?m.outside_pool_pct+'%':null],['buyers',m.unique_buyers],['via bots',m.routed_pct!=null?m.routed_pct+'%':null],['losing wallets',m.losing_pct!=null&&m.crowd_history>=150?m.losing_pct+'%':null,m.losing_pct>=30,m.losing_pct<5],
     ['sniped',m.snipe_pct!=null?m.snipe_pct+'%':null,m.snipe_pct>=30],['creator bought',m.deployer_buy_pct?m.deployer_buy_pct+'%':null,m.deployer_buy_pct>=20],
     ['creator holds',m.deployer_hold_pct?m.deployer_hold_pct+'%':null,m.deployer_hold_pct>=10],['tax',t.creator_tax_bps==null?'?':(t.creator_tax_bps/100)+'%',(t.creator_tax_bps||0)>500],
     ['creator launches',m.creator_prev_launches,(m.creator_prev_launches||0)>10],['creator trust',t.trust,t.trust<35,t.trust>=65],['trades 1h',m.swaps_1h],['fdv at scan',usd(m.fdv0_usd)],['fdv now',usd(m.fdv_usd)],['vol 24h',usd(m.volume_24h_usd)]];

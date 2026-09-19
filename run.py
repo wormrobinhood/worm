@@ -24,6 +24,7 @@ from wormhole import launch as L
 from wormhole.budget import projection
 from wormhole import readiness, tx, launch_schedule
 from wormhole import watch as second_look
+from wormhole import crowd
 import os
 from wormhole.growth import treasury
 from wormhole import budget
@@ -240,6 +241,7 @@ def main():
                       ("prices", lambda: refresh_scored(db)), ("lab", lambda: lab.tick(db)),
                       ("strategy_validation", lambda: strategy_validation.tick(db, rpc)),
                       ("paper", paper.retry_pending), ("paper mark", paper.mark), ("brain", brain.check),
+                      ("crowd", lambda: crowd.tick(rpc, db)),
                       ("shadow", lambda: advisor.shadow.evaluate(db)),
                       ("advisor", lambda: advisor.due(db)[0] and advisor.run(db, brain.summary(), lab.summary(db))),
                       ("exits", lambda: trader.mark(rpc, db, C.LIVE, acct)), ("treasury", lambda: T.cycle(rpc, db, acct)),

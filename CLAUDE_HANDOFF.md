@@ -421,3 +421,34 @@ when the band first scrolls into view. Below 1100 px the cards are one swipeable
 time that moves on every 4 s and waits while it is touched, out of sight, hidden or motion is paused.
 Presentation only: every figure is the server's (`treasury`, `runway`, `compute` in `/api/state`); the
 one-billion supply is the pons constant. Hidden before the first claim. No server change.
+
+## The crowd's record: a warning rule and a third paper rule (2026-09-20)
+
+The operator asked to test "follow the wallets that were early in winners" as an additional entry rule.
+Tested on 1,451 graduations with all 93,216 router buys among the early curve buys traced to the wallet
+behind them (40,420 wallets), records built walk-forward. Verdict: a good record predicts nothing (13.1%
+not bad against 14.5% for all, p = 0.93; -11 to -18% a trade with the profit lock at every entry time), so
+copying was not built. The opposite is a small real signal: the share of the curve bought by wallets
+whose earlier picks (three or more) all went bad. 30% or more: 6% not bad, none grew; under 5%: 18%. As a
+filter, 7-12 points a trade in the first hour, nothing after the second, never a profit by itself.
+Numbers in docs/SECOND-LOOK.md; scripts and data with the operator's research folder.
+
+Built, with the operator's go-ahead:
+- `wormhole/crowd.py` + tables `wallet_records`, `wallet_folded`. When an outcome is resolved the token's
+  remembered buyers (`curve_buyers`, real wallets since PR #17, the creator left out) each get one more
+  pick, once per token. Tokens scored before PR #17 were remembered by recipient, so they are re-read from
+  the chain (curve buys + the token's transfers up to graduation, `scorer.real_buyers`), four per
+  five-minute cycle, newest first; a read that fails three times is skipped. Stage `crowd` in `run.py`,
+  after `brain`. The snapshot has `crowd` (tokens on record, wallets judged).
+- Scorer rule `losing_crowd` from `crowd.read`: silent (0 points, says what it is waiting for) until 150
+  resolved tokens are on record; then -12 at 30% or more of the buy volume, -6 at 15%, +3 under 5%.
+  Metrics `losing_pct`, `losing_buyers`, `known_buyers_pct`, `crowd_history`; `losing_pct` and
+  `known_buyers_pct` are open to the advisor; the card shows "bought by losing wallets" once the read counts.
+  A token's own buyers are folded a day later, so a read never sees its own outcome.
+- Entry rule `clean-crowd-v1` (30-minute look): cheap, `losing_pct` <= 5 with `crowd_history` >= 150, the
+  price moved in the last 15 minutes, `sample_bucket` >= 34 so it never takes a token the quiet rule
+  would. The only rule inside the first hour (the guard in tests/test_watch.py names the exception and
+  why). Backtest about -4% a trade, median -9%: expected to fail like the others. A new rule takes the
+  next k of the shared budget; the two running cohorts are untouched (their frozen specs did not change).
+Expect: the rule starts counting a few hours after deploy (150 tokens at 48 an hour), the full history
+in a bit over a day. 763 tests.

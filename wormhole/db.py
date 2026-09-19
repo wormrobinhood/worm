@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS curve_buyers(token TEXT, wallet TEXT, tokens_out REAL, ts INTEGER, PRIMARY KEY(token, wallet));
 CREATE INDEX IF NOT EXISTS curve_buyers_wallet ON curve_buyers(wallet, ts);
 CREATE INDEX IF NOT EXISTS curve_buyers_ts ON curve_buyers(ts);
+CREATE TABLE IF NOT EXISTS wallet_records(wallet TEXT PRIMARY KEY, picks INTEGER, good INTEGER, grew INTEGER, updated INTEGER);
+CREATE TABLE IF NOT EXISTS wallet_folded(token TEXT PRIMARY KEY, ts INTEGER, buyers INTEGER, source TEXT);
 CREATE INDEX IF NOT EXISTS events_text ON events(text);
 """
 

@@ -286,9 +286,13 @@ def test_rule_names_are_unique_and_every_feature_is_one_the_watcher_measures(rul
     assert len(rules) == len(W.STRATEGIES) and all(name.endswith(("-v1", "-v2", "-v3")) for name in rules)
     measured = {"ret_p0", "dd_peak", "rebound", "moves_15m", "ret_60m", "ret_15m", "ret_5m", "age_min", "fdv_usd",
                 "sample_bucket", "swaps_15m", "vol_15m_usd", "buy_share_15m", "vol_ratio", "creator_tax_bps", "creator_prev_launches",
-                "creator_rugged", "top10_pct", "holders", "snipe_pct", "fleet_pct", "launch_to_grad_s", "score"}
+                "creator_rugged", "top10_pct", "holders", "snipe_pct", "fleet_pct", "launch_to_grad_s", "score",
+                "losing_pct", "crowd_history"}
     for rule in W.STRATEGIES:
-        assert rule["looks"] == sorted(rule["looks"]) and min(rule["looks"]) >= 60      # the first hour loses: no rule looks that early
+        # the first hour loses: no rule looks that early. One exception, by measurement: what the crowd's record says
+        # is worth 7-12 points in the first hour and nothing after the second, so that rule has to look early or not at all
+        early_ok = rule["name"].startswith("clean-crowd") and min(rule["looks"]) >= 30
+        assert rule["looks"] == sorted(rule["looks"]) and (min(rule["looks"]) >= 60 or early_ok)
         assert {c["feature"] for c in rule["conditions"]} <= measured and all(c["op"] in W.OPS for c in rule["conditions"])
 
 
@@ -358,3 +362,20 @@ def test_a_look_whose_flow_could_not_be_read_waits_instead_of_being_spent(db, ch
     w = W.Watcher(Down([]), db, P.Paper(db))
     walk(w, chain, TOKEN, [1.0 + 0.002 * (i % 7) for i in range(42)])                 # past the retry window: the look is spent
     assert json.loads(db.one("SELECT looks_done FROM watch")["looks_done"]) == [30] and not db.q("SELECT 1 FROM paper")
+
+
+def test_clean_crowd_wants_a_cheap_token_whose_buyers_have_no_losing_record(rules):
+    rule = rules["clean-crowd-v1"]
+    clean = {**ALIVE, "losing_pct": 2.0, "crowd_history": 400, "moves_15m": 3, "sample_bucket": 70}
+    assert rule["looks"] == [30] and W.passes(rule, clean) == (True, "")
+    for change, why in (({"losing_pct": 12.0}, "losing_pct"), ({"losing_pct": None}, "losing_pct"), ({"crowd_history": 40}, "crowd_history"),
+                        ({"moves_15m": 0}, "moves_15m"), ({"creator_tax_bps": 300}, "creator_tax_bps"),
+                        ({"sample_bucket": 20}, "sample_bucket")):          # the third of tokens the quiet rule takes is left to it
+        ok, said = W.passes(rule, {**clean, **change})
+        assert not ok and said.startswith(why)
+
+
+def test_the_crowd_read_travels_from_the_verdict_to_the_look(db):
+    W.add(db, TOKEN, {"score": 50, "verdict": "mixed", "metrics": {"creator_tax_bps": 0, "losing_pct": 3.5, "crowd_history": 220}}, symbol="T", now=1000)
+    kept = json.loads(db.one("SELECT metrics FROM watch WHERE token=?", (TOKEN,))["metrics"])
+    assert kept["losing_pct"] == 3.5 and kept["crowd_history"] == 220

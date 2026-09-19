@@ -519,3 +519,41 @@ def test_tokens_the_recipient_already_held_are_not_the_buy():
     assert S.real_buyers(buys, moves, CURVE) == [[(ROUTER, 500)]]
     assert S.real_buyers(buys, [], CURVE) == [[(ROUTER, 500)]]                             # and with nothing read
     assert S.real_buyers(buys, [move("0xe", 1, ROUTER, other, 500)], CURVE) == [[(ROUTER, 500)]]   # another transaction
+
+
+# ---- the crowd's record: wallets whose earlier picks all went bad ------------------------------------------------
+
+def losing_records(db, wallets, picks=3, good=0, tokens_on_record=200):
+    db.many("INSERT OR REPLACE INTO wallet_records(wallet,picks,good,grew,updated) VALUES(?,?,?,0,?)", [(w, picks, good, NOW) for w in wallets])
+    db.many("INSERT OR IGNORE INTO wallet_folded(token,ts,buyers,source) VALUES(?,?,1,'remembered')", [(addr(0xB000 + k), NOW) for k in range(tokens_on_record)])
+
+
+def test_a_crowd_of_wallets_with_a_losing_record_is_a_warning(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd(rpc, 100)
+    losing_records(db, [addr(0x1000 + i) for i in range(40)])
+    r = run(rpc, db, TOKEN)
+    m, pts = r["metrics"], points(r)
+    assert m["losing_pct"] == 40.0 and m["losing_buyers"] == 40 and m["crowd_history"] == 200 and pts["losing_crowd"] == -12
+    assert "wallets whose earlier picks all went bad" in [f["text"] for f in r["fired"] if f["rule"] == "losing_crowd"][0]
+
+
+def test_a_clean_crowd_earns_a_little_and_a_good_record_earns_nothing_more(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd(rpc, 100)
+    losing_records(db, [addr(0x1000 + i) for i in range(2)])
+    losing_records(db, [addr(0x1000 + i) for i in range(50, 90)], picks=5, good=4)      # proven winners: measured to predict nothing
+    r = run(rpc, db, TOKEN)
+    assert r["metrics"]["losing_pct"] == 2.0 and r["metrics"]["known_buyers_pct"] == 42.0 and points(r)["losing_crowd"] == 3
+
+
+def test_the_crowd_read_stays_silent_until_enough_tokens_are_on_record(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd(rpc, 100)
+    losing_records(db, [addr(0x1000 + i) for i in range(60)], tokens_on_record=20)
+    r = run(rpc, db, TOKEN)
+    fired = [f for f in r["fired"] if f["rule"] == "losing_crowd"][0]
+    assert fired["points"] == 0 and "needs" in fired["text"] and r["metrics"]["losing_pct"] == 60.0

@@ -39,7 +39,9 @@ for the evidence, remaining operational gaps and deployment requirements.
   launch-to-graduation pace, throwaway buyer wallets, buyers funded by one wallet just before launch, and
   bot fleets that buy on every curve and sell at graduation (the patterns behind a fake crowd). A buy made
   through a trading bot's router is followed to the wallet that received the tokens in the same transaction,
-  so the people behind a bot are counted as people and the bot is never a whale or a fleet. Every point is explained on the card. Three hard signals demote a healthy
+  so the people behind a bot are counted as people and the bot is never a whale or a fleet. Every buyer's earlier picks are
+  kept on record once their outcomes are known: a curve bought by wallets whose picks all went bad is a warning (a good record
+  was tested and predicts nothing). Every point is explained on the card. Three hard signals demote a healthy
   verdict to mixed; a verdict on incomplete chain reads can never be healthy and is re-checked.
 - **Learns from outcomes.** Each verdict is checked at 1h, 6h and 24h (a rug needs two readings 5 minutes
   apart at -80%, or the 24h check; grew is +100%). Rules are re-weighted against the base rate: a rule that
@@ -47,7 +49,7 @@ for the evidence, remaining operational gaps and deployment requirements.
   between 0.5x and 1.5x, and each rule shows its lift.
 - **Trust value per creator**, shown on cards and in the bad-actors table.
 - **Paper book**: nothing is bought at the verdict. Every complete verdict is watched on-chain (the pool's
-  mid once a minute, its swap flow at each look) and judged again two and four hours later by named entry
+  mid once a minute, its swap flow at each look) and judged again half an hour, two hours and four hours later by named entry
   rules; a pass buys $10 on paper at the pool's own quote (USDG and ETH pools, gas and liquidity checks
   included). Open positions are re-priced from the chain every 15 seconds. The rules are hypotheses under
   test, not a proven strategy: see [second look](docs/SECOND-LOOK.md) for the study behind them.

@@ -75,6 +75,8 @@ METRICS = {
     "fresh_buyers_pct": ("share of curve buy volume from throwaway wallets, percent", 0, 100),
     "fleet_pct": ("share of curve buy volume from fleet wallets, percent", 0, 100),
     "routed_pct": ("share of curve buy volume bought through a router or bot and handed on in the same transaction, percent", 0, 100),
+    "losing_pct": ("share of curve buy volume from wallets whose earlier picks all went bad, percent", 0, 100),
+    "known_buyers_pct": ("share of curve buy volume from wallets with at least three resolved picks on record, percent", 0, 100),
     "top_funder_pct": ("share of buyers funded by one wallet before launch, percent", 0, 100),
     "transfers": ("token transfers read for the holder map", 0, 1e7),
 }
