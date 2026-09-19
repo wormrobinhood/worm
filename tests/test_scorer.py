@@ -386,3 +386,136 @@ def test_buyers_are_remembered_for_later_tokens(db):
     crowd(rpc, 40)
     run(rpc, db, TOKEN)
     assert db.one("SELECT COUNT(*) n FROM curve_buyers WHERE token=?", (TOKEN,))["n"] == 40
+
+
+# ---- routers: a trading bot buys in its own name and hands the tokens on in the same transaction ------------
+
+ROUTER = addr(0x9000)
+
+
+def routed_crowd(rpc, n=60, first_block=LB + 40, tokens=10**21, router=ROUTER):
+    """n people buying through one router: the curve pays the router, the router pays the user, one transaction each."""
+    users = [addr(0xA000 + i) for i in range(n)]
+    for i, u in enumerate(users):
+        tx = "0x" + format(0xF000 + i, "064x")
+        rpc.transfer(TOKEN, first_block + i, CURVE, router, tokens, tx=tx)
+        rpc.curve_buy(CURVE, first_block + i, router, router, tokens, tx=tx)
+        rpc.transfer(TOKEN, first_block + i, router, u, tokens, tx=tx)
+    return users
+
+
+def buy(tx, recipient, tokens, index=0):
+    return {"_tx": tx, "_index": index, "recipient": recipient, "tokensOut": tokens}
+
+
+def move(tx, index, frm, to, value):
+    return {"_tx": tx, "_index": index, "from": frm, "to": to, "value": value}
+
+
+def test_router_buys_are_followed_to_the_people_behind_them(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    users = routed_crowd(rpc, 60)
+    r = run(rpc, db, TOKEN)
+    m, pts = r["metrics"], points(r)
+    assert m["unique_buyers"] == 60 and m["top_buyer"] in users and m["top_buyer_pct"] == round(100 / 60, 1)
+    assert "top_buyer" not in pts                       # read by recipient, the router "bought 100% of the curve"
+    assert m["routed_pct"] == 100.0 and m["buyers_by"] == "holder" and m["partial"] is False
+    kept = {x["wallet"] for x in db.q("SELECT wallet FROM curve_buyers WHERE token=?", (TOKEN,))}
+    assert kept == set(users)                           # later fleet reads compare people, never the router
+
+
+def test_a_router_seen_on_every_curve_is_not_a_fleet(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    other_curves(db, [ROUTER])                          # remembered by recipient before the buyers were followed
+    routed_crowd(rpc, 60)
+    r = run(rpc, db, TOKEN)
+    m, pts = r["metrics"], points(r)
+    assert m["fleet_known_curves"] == 25 and m["fleet_buyers"] == 0 and m["fleet_pct"] == 0.0 and pts["bot_fleet"] == 0
+    assert m["organic_buyers"] == 60
+
+
+def test_a_fleet_behind_a_router_is_still_a_fleet(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    users = routed_crowd(rpc, 60)
+    other_curves(db, users[:45])                        # 45 of the 60 people buy every curve through the same bot
+    r = run(rpc, db, TOKEN)
+    m, pts = r["metrics"], points(r)
+    assert m["fleet_buyers"] == 45 and m["fleet_pct"] == 75.0 and pts["bot_fleet"] == -15 and m["organic_buyers"] == 15
+
+
+def test_history_and_funding_are_read_for_the_people_not_the_router(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    users = routed_crowd(rpc, 60)
+    funder = addr(0xFEED)
+    for u in users:
+        rpc.nonces[u] = 1
+        rpc.transfer(C.USDG, LB - 500, funder, u, 5 * 10**6)
+    r = run(rpc, db, TOKEN)
+    m, pts = r["metrics"], points(r)
+    assert pts["fresh_buyers"] == -12 and m["fresh_buyers_pct"] == 100.0
+    assert pts["funding_cluster"] == -20 and m["top_funder"] == funder and m["top_funder_pct"] == 100.0
+
+
+def test_the_creator_buying_through_a_router_is_still_the_creator(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    tx = "0x" + format(0xD00D, "064x")
+    rpc.transfer(TOKEN, LB, CURVE, ROUTER, 4 * 10**21, tx=tx)
+    rpc.curve_buy(CURVE, LB, ROUTER, ROUTER, 4 * 10**21, tx=tx)
+    rpc.transfer(TOKEN, LB, ROUTER, DEP, 4 * 10**21, tx=tx)
+    for i in range(30):
+        b = addr(0x4000 + i)
+        rpc.curve_buy(CURVE, LB + 100 + i, b, b, 2 * 10**20)
+    r = run(rpc, db, TOKEN)
+    pts, m = points(r), r["metrics"]
+    assert pts["deployer_buy"] == -20 and m["deployer_buy_pct"] == 40.0
+    assert pts["snipe"] == 5 and m["snipe_pct"] == 0.0 and "top_buyer" not in pts
+
+
+def test_without_the_transfers_a_buy_stays_with_its_recipient_and_the_score_is_partial(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    routed_crowd(rpc, 60)
+    rpc.fail_addr.add(TOKEN)
+    r = run(rpc, db, TOKEN)
+    m = r["metrics"]
+    assert m["partial"] is True and r["retry"] is True and m["unique_buyers"] == 1 and m["routed_pct"] == 0.0
+
+
+def test_one_transaction_buying_for_many_wallets_is_handed_on_in_order():
+    u1, u2 = addr(1), addr(2)
+    buys = [buy("0xa", ROUTER, 100), buy("0xa", ROUTER, 250)]
+    moves = [move("0xa", 1, CURVE, ROUTER, 100), move("0xa", 2, ROUTER, u1, 100),
+             move("0xa", 3, CURVE, ROUTER, 250), move("0xa", 4, ROUTER, u2, 250)]
+    assert S.real_buyers(buys, moves, CURVE) == [[(u1, 100)], [(u2, 250)]]
+    bought_first = [moves[0], moves[2], moves[1], moves[3]]      # both buys first, then both hand-overs
+    for k, t in enumerate(bought_first):
+        t["_index"] = k + 1
+    assert S.real_buyers(buys, bought_first, CURVE) == [[(u1, 100)], [(u2, 250)]]
+
+
+def test_a_hand_over_through_two_contracts_and_a_fee_cut():
+    hop, user, fee = addr(3), addr(4), addr(5)
+    buys = [buy("0xb", ROUTER, 1000)]
+    moves = [move("0xb", 1, CURVE, ROUTER, 1000), move("0xb", 2, ROUTER, fee, 10),
+             move("0xb", 3, ROUTER, hop, 990), move("0xb", 4, hop, user, 990)]
+    assert sorted(S.real_buyers(buys, moves, CURVE)[0]) == sorted([(fee, 10), (user, 990)])
+
+
+def test_selling_back_or_feeding_the_pool_is_not_a_hand_over():
+    buys = [buy("0xc", ROUTER, 1000)]
+    moves = [move("0xc", 1, CURVE, ROUTER, 1000), move("0xc", 2, ROUTER, CURVE, 400), move("0xc", 3, ROUTER, C.POOL_MANAGER, 600)]
+    assert S.real_buyers(buys, moves, CURVE, set(C.INFRA) | {CURVE}) == [[(ROUTER, 1000)]]
+
+
+def test_tokens_the_recipient_already_held_are_not_the_buy():
+    other = addr(6)
+    buys = [buy("0xd", ROUTER, 500)]
+    moves = [move("0xd", 1, ROUTER, other, 500), move("0xd", 2, CURVE, ROUTER, 500)]      # sent before the curve paid
+    assert S.real_buyers(buys, moves, CURVE) == [[(ROUTER, 500)]]
+    assert S.real_buyers(buys, [], CURVE) == [[(ROUTER, 500)]]                             # and with nothing read
+    assert S.real_buyers(buys, [move("0xe", 1, ROUTER, other, 500)], CURVE) == [[(ROUTER, 500)]]   # another transaction

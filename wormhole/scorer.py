@@ -55,6 +55,53 @@ def _pct(a, b):
     return (100.0 * a / b) if b else 0.0
 
 
+def real_buyers(buys, transfers, curve, stop=()):
+    """Who ended up with the tokens of each curve buy: [[(wallet, tokens), ...], ...] in the order of `buys`.
+
+    A trading bot's router buys in its own name and hands the tokens to its user inside the same transaction.
+    Read by recipient, thousands of people are one wallet that buys a third of every curve: a whale and a bot
+    fleet that do not exist, and a crowd that cannot be counted. The token's own Transfer logs show the
+    hand-over, so every buy is followed through its transaction, in log order, to whoever holds the tokens when
+    the transaction ends. A transfer into `stop` (the curve, the pool, a burn) is not a hand-over: the tokens
+    stay with the wallet that sent them. A buy whose transfers were not read stays with its recipient."""
+    moves_by_tx = collections.defaultdict(list)
+    for t in transfers:
+        moves_by_tx[t["_tx"]].append(t)
+    buys_by_tx = collections.defaultdict(list)
+    for k, b in enumerate(buys):
+        buys_by_tx[b["_tx"]].append(k)
+    out = [[] for _ in buys]
+    for tx, ks in buys_by_tx.items():
+        moves = sorted(moves_by_tx.get(tx, ()), key=lambda t: t["_index"])
+        minted = [t for t in moves if t["from"] == curve]
+        lots = []                                  # [holder, tokens, buy, log index the holder got them at]
+        for k in ks:
+            b, born = buys[k], -1
+            for t in minted:                       # the curve's own transfer dates the buy inside the transaction
+                if t["to"] == b["recipient"] and t["value"] == b["tokensOut"]:
+                    born = t["_index"]
+                    minted.remove(t)
+                    break
+            lots.append([b["recipient"], b["tokensOut"], k, born])
+        for t in moves:
+            if t["from"] == curve or t["to"] in stop:
+                continue
+            left = t["value"]
+            for lot in list(lots):                 # first in, first out: a bot hands on in the order it bought
+                if left <= 0:
+                    break
+                if lot[0] != t["from"] or lot[1] <= 0 or lot[3] >= t["_index"]:
+                    continue
+                take = min(left, lot[1])
+                lot[1] -= take
+                left -= take
+                lots.append([t["to"], take, lot[2], t["_index"]])
+        for holder, tokens, k, _ in lots:
+            if tokens > 0:
+                out[k].append((holder, tokens))
+    return [parts or [(b["recipient"], b["tokensOut"])] for parts, b in zip(out, buys)]
+
+
 def final_score(total):
     """0-100 from the weighted sum: float noise cleared first, then half-up, so the verdict does not depend
     on the order the rules were added in or on banker's rounding at .5."""
@@ -222,10 +269,32 @@ class Scorer:
                 m["launch_block_derived"] = True
             else:
                 m["partial"] = True                      # no launch block and nothing to derive it from
+        # the token's transfers, read once: the holder map of section 3, and before it the hand-overs inside
+        # the buy transactions, which say who really bought
+        bal = collections.Counter()
+        n_logs = 0
+        buy_txs = {b["_tx"] for b in buys}
+        handovers = []
+        try:
+            for lg in self.rpc.get_logs(token, [TRANSFER.topic], lb, latest, 200_000, cap=C.TRANSFER_LOG_CAP):
+                t = TRANSFER.decode(lg)
+                bal[t["from"]] -= t["value"]
+                bal[t["to"]] += t["value"]
+                n_logs += 1
+                if t["_tx"] in buy_txs:
+                    handovers.append(t)
+        except Exception as e:
+            log.info("transfer logs failed for %s: %s", token[:10], e)
+            m["partial"] = True
+        if n_logs >= C.TRANSFER_LOG_CAP:
+            m["partial"] = True
         total_out = sum(b["tokensOut"] for b in buys)
-        by_rec = collections.Counter()
-        for b in buys:
-            by_rec[b["recipient"]] += b["tokensOut"]
+        bought = real_buyers(buys, handovers, L["curve"], set(C.INFRA) | {L["curve"], token})
+        by_rec = collections.Counter()               # tokens bought per wallet that ended up with them
+        for parts in bought:
+            for a, v in parts:
+                by_rec[a] += v
+        routed = sum(v for b, parts in zip(buys, bought) for a, v in parts if a != b["recipient"])
         dust = total_out // DUST_DIVISOR
         humans = {a: v for a, v in by_rec.items() if a not in C.INFRA and v > 0 and v >= dust}
         uniq = len(humans)
@@ -233,7 +302,8 @@ class Scorer:
         organic = uniq - len(fleet)
         window = int(C.SNIPE_WINDOW_S / C.BLOCK_TIME)
         # the creator's own launch-block buy is charged by deployer_buy, not counted as a snipe
-        snipe_out = sum(b["tokensOut"] for b in buys if b["_block"] <= lb + window and b["recipient"] != L["deployer"])
+        snipe_out = sum(v for b, parts in zip(buys, bought) if b["_block"] <= lb + window
+                        for a, v in parts if a != L["deployer"])
         snipe_pct = _pct(snipe_out, total_out)
         top_addr, top_val = (max(humans.items(), key=lambda kv: kv[1]) if humans else (None, 0))
         top_pct = _pct(top_val, total_out)
@@ -242,7 +312,8 @@ class Scorer:
                  fleet_buyers=len(fleet), fleet_pct=round(fleet_pct, 1), fleet_known_curves=fleet_known,
                  dust_buyers=sum(1 for a, v in by_rec.items() if a not in C.INFRA and not (v > 0 and v >= dust)),
                  snipe_pct=round(snipe_pct, 1), top_buyer_pct=round(top_pct, 1), top_buyer=top_addr,
-                 deployer_buy_pct=round(dep_pct, 1), launch_block_known=lb_known)
+                 deployer_buy_pct=round(dep_pct, 1), launch_block_known=lb_known,
+                 routed_pct=round(_pct(routed, total_out), 1), buyers_by="holder")
         # timeline of curve buys for the live view: 30 buckets from launch to graduation, share of tokens bought
         span = max(1, gb - lb)
         buckets = [0.0] * 30
@@ -311,20 +382,7 @@ class Scorer:
             else:
                 m["funding_visible"] = False
 
-        # 3. holders now --------------------------------------------------------
-        bal = collections.Counter()
-        n_logs = 0
-        try:
-            for lg in self.rpc.get_logs(token, [TRANSFER.topic], lb, latest, 200_000, cap=C.TRANSFER_LOG_CAP):
-                t = TRANSFER.decode(lg)
-                bal[t["from"]] -= t["value"]
-                bal[t["to"]] += t["value"]
-                n_logs += 1
-        except Exception as e:
-            log.info("transfer logs failed for %s: %s", token[:10], e)
-            m["partial"] = True
-        if n_logs >= C.TRANSFER_LOG_CAP:
-            m["partial"] = True
+        # 3. holders now (from the transfers read above) ---------------------------
         held = {a: v for a, v in bal.items() if v > 0 and a not in C.INFRA and a not in (L["curve"], token)}
         circ = sum(held.values())
         total = sum(v for v in bal.values() if v > 0)
@@ -472,12 +530,16 @@ def backfill_curve_buyers(rpc, db, hours=24, limit=150):
         lb = int(L["block"]) if L["block"] else max(0, gb - 24 * C.BLOCKS_PER_HOUR)
         by_rec = collections.Counter()
         try:
-            for lg in rpc.get_logs(L["curve"], [[CURVE_BUY.topic]], lb, gb, 200_000, cap=20_000):
-                b = CURVE_BUY.decode(lg)
-                by_rec[b["recipient"]] += b["tokensOut"]
+            buys = [CURVE_BUY.decode(lg) for lg in rpc.get_logs(L["curve"], [[CURVE_BUY.topic]], lb, gb, 200_000, cap=20_000)]
+            txs = {b["_tx"] for b in buys}
+            moves = [t for t in (TRANSFER.decode(lg) for lg in rpc.get_logs(L["token"], [TRANSFER.topic], lb, gb, 200_000,
+                                                                          cap=C.TRANSFER_LOG_CAP)) if t["_tx"] in txs]
         except Exception as e:
             log.info("buyer backfill failed for %s: %s", L["token"][:10], e)
             continue
+        for parts in real_buyers(buys, moves, L["curve"], set(C.INFRA) | {L["curve"], L["token"]}):
+            for a, v in parts:
+                by_rec[a] += v
         total = sum(by_rec.values())
         dust = total // DUST_DIVISOR
         humans = sorted(((a, v) for a, v in by_rec.items() if a not in C.INFRA and v > 0 and v >= dust), key=lambda kv: -kv[1])[:BUYERS_KEPT]

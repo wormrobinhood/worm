@@ -374,3 +374,36 @@ called it a 28% fall from the peak and sold a position whose pool quote was stil
 Fix: `poolstate.position_mids`; `paper._mark` and `trader._mark` price a position with a verified pool
 key from that pool on every cycle and never from the API (no answer from the node: the position waits).
 Rows from before pools were stored keep the API. 742 tests.
+
+## Real buyers behind routers: 2026-09-19 (evening)
+
+Found while answering the operator's question about a third-party bubble map of $RAM. Two things. The
+map's giant "#1 holder" was the token's own bonding curve (`launches.curve`): those sites do not know Pons
+and draw the curve as a whale that paid every buyer. And the worm's own card was wrong in a way that
+matters: it said "one wallet bought 47% of the curve supply" and "54% of the buy volume came from 10
+wallets that buy on many curves". That wallet was a trading bot's router,
+`0x65050a9b7e5075a2ba5ced7b1b64ee66262c40dc`: it buys in its own name (`CurveBuy.buyer` and `.recipient`
+are both the router) and hands the tokens to its user inside the same transaction. 80 different people
+stood behind it on $RAM; the largest had 3.2%. The scorer built its buyer list from recipients and only
+left out `C.INFRA`, so this one contract was a whale, a fleet wallet (it is on every curve) and a single
+"buyer" on most cards. The router takes about a third of all curve buys on Pons; on the 12 most recent
+verdicts the median share of the curve bought through bots was 59%, the median buyer count went from 43
+to 114 once people were counted, and "one wallet bought >= 25%" was true on 9 cards by recipient and on 1
+by real buyer (that one is real: 98%).
+
+Fix: `scorer.real_buyers`. The token's Transfer logs were already read for the holder map; they are now
+read once, before the curve is judged, and every buy is followed through its own transaction, in log
+order, to whoever holds the tokens when the transaction ends (first in, first out for a transaction that
+buys for several wallets; a transfer into the curve, the pool or a burn is not a hand-over; tokens the
+recipient held before the curve paid are not the buy). No new chain reads. `buyers`, `top_buyer`,
+`deployer_buy`, the snipe exclusion of the creator, `fresh_buyers`, `funding_cluster`, `bot_fleet` and
+the remembered `curve_buyers` all use those wallets. New metrics: `routed_pct` (share of the curve bought
+that way; also a measure the advisor may test) and `buyers_by="holder"` (older assessments lack it: they
+were read by recipient). If the transfer read fails the buys stay with their recipients and the score is
+partial, as before. The engine version stays `evidence-v2`: the rules and the scale are unchanged, a
+handful of inputs became true, and a new version would have thrown away the accuracy record. For a day
+the fleet read compares real wallets with rows remembered by recipient; it heals as the window rolls.
+Expect scores on bot-heavy curves to rise: two penalties no longer fire on a whale and a fleet that were
+never there. Not covered: a custodial bot that keeps the tokens in its own contract (none seen among the
+large routers so far), and links between holders made by later transfers or ETH funding (the bubble-map
+idea proper): a separate check to be tested on history first. 752 tests.

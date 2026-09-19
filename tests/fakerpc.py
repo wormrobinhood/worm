@@ -58,7 +58,7 @@ class FakeRpc(Rpc):
                 raise RpcError("eth_getLogs failed after 4 tries: connection reset")
             want = f["topics"]
             out = []
-            for lg in self.logs:
+            for n, lg in enumerate(self.logs):
                 if lg["address"].lower() != address or not (a <= lg["blockNumber"] <= b):
                     continue
                 ok = True
@@ -71,16 +71,18 @@ class FakeRpc(Rpc):
                     elif lg["topics"][i] != t:
                         ok = False
                 if ok:
-                    out.append(lg)
+                    out.append((n, lg))
             if self.node_cap and len(out) > self.node_cap:
                 raise RpcError(f"eth_getLogs: query exceeds limit of {self.node_cap} logs")
+            # every log is its own transaction unless the test names one; the log index is the order of insertion,
+            # so a curve buy and the transfers of the same transaction keep their order across queries
             return [{"address": lg["address"], "topics": lg["topics"], "blockNumber": hex(lg["blockNumber"]),
-                     "transactionHash": "0x" + "ab" * 32, "logIndex": hex(i), "data": lg["data"]}
-                    for i, lg in enumerate(out)]
+                     "transactionHash": lg.get("tx") or "0x" + format(n + 1, "064x"), "logIndex": hex(n), "data": lg["data"]}
+                    for n, lg in out]
         raise RpcError("unsupported " + method)
 
-    def curve_buy(self, curve, block, buyer, recipient, tokens_out, quote_in=1):
-        self.logs.append({"address": curve, "blockNumber": block,
+    def curve_buy(self, curve, block, buyer, recipient, tokens_out, quote_in=1, tx=None):
+        self.logs.append({"address": curve, "blockNumber": block, "tx": tx,
                           "topics": [CURVE_BUY.topic, pad_addr(buyer), pad_addr(recipient)],
                           "data": "0x" + encode(["uint256"] * 4, [quote_in, tokens_out, 0, 0]).hex()})
 
@@ -89,8 +91,8 @@ class FakeRpc(Rpc):
                           "topics": [CURVE_SELL.topic, pad_addr(seller), pad_addr(recipient)],
                           "data": "0x" + encode(["uint256"] * 4, [tokens_in, quote_out, 0, 0]).hex()})
 
-    def transfer(self, token, block, frm, to, value):
-        self.logs.append({"address": token, "blockNumber": block,
+    def transfer(self, token, block, frm, to, value, tx=None):
+        self.logs.append({"address": token, "blockNumber": block, "tx": tx,
                           "topics": [TRANSFER.topic, pad_addr(frm), pad_addr(to)],
                           "data": "0x" + encode(["uint256"], [value]).hex()})
 
