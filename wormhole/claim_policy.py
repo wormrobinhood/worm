@@ -64,11 +64,20 @@ def batching(db, amount, now=None, runway_days=None, balance_key="claim_balance_
             db.meta_set('claim_funded_since', str(since))
         last = db.one("SELECT MAX(ts) ts FROM ledger WHERE kind='claim'")['ts']
         anchor = int(last) if last is not None else since
-        due = now - anchor >= 86400 and amount >= minimum
-        return {'threshold_usdg': minimum, 'balance_since': first or None, 'max_wait_hours': 24,
+        # Funded, there is no hurry: once a day. A large balance is the exception, so it does not
+        # sit in escrow for a day and its burn and gold purchases arrive as smaller swaps.
+        large = setting('WH_CLAIM_LARGE_USD', '100', minimum, 1000000)
+        spacing = setting('WH_CLAIM_LARGE_EVERY_HOURS', '2', 1, 24) * 3600
+        waited = now - anchor
+        early = amount >= large and spacing <= waited < 86400
+        due = amount >= minimum and (waited >= 86400 or early)
+        holding = amount >= large and waited < spacing
+        return {'threshold_usdg': minimum, 'large_usdg': large, 'balance_since': first or None, 'max_wait_hours': 24,
                 'mode': 'funded_daily', 'funded_runway_days': round(runway_days, 1),
-                'next_claim_after': anchor + 86400, 'due': due,
-                'reason': 'daily claim due' if due else 'daily interval: 90 days funded' if now-anchor < 86400 else 'accumulating daily minimum'}
+                'next_claim_after': anchor + (spacing if amount >= large else 86400), 'due': due,
+                'reason': 'large balance claim due' if early else 'daily claim due' if due
+                          else 'large balance: spacing claims %g hours apart' % (spacing / 3600) if holding
+                          else 'daily interval: 90 days funded' if waited < 86400 else 'accumulating daily minimum'}
     db.meta_set('claim_funded_since', '')
     timed_out = bool(first and now - first >= interval and amount >= floor)
     return {'mode': 'adaptive', 'threshold_usdg': round(threshold, 6), 'balance_since': first or None,
