@@ -506,3 +506,20 @@ Entry rule `holders-v1` at the 120 and 240 minute looks: cheap + kept >= 80 + th
 minutes. It is listed last, so a token the quiet or runner rule takes at the same look stays theirs; their
 frozen specs are untouched. Expect about two entries a day: the cohort of 50 will take weeks. 774 tests and a
 read-only balanceOf check on the chain.
+
+## Large fee balances are claimed within hours, not a day (2026-09-20)
+
+The operator asked for fees to be checked every two hours and claimed when $100 or more is waiting. The
+treasury stage already reads the escrow balance on every five-minute tick; what made a funded treasury wait
+was the 24-hour interval in `claim_policy.batching`. A large sum arriving just after the daily claim sat in
+escrow for a day ($1,233 on 2026-09-20), and its burn and gold purchases then went out as single big swaps.
+
+Funded mode now claims when 24 hours have passed since the last claim (as before, $5 minimum), or when the
+balance is at least `WH_CLAIM_LARGE_USD` (100) and `WH_CLAIM_LARGE_EVERY_HOURS` (2) have passed since the
+last claim. The curve sweep asks the same function, so it follows. Everything after the decision is
+untouched: the 2% gas limit, the ETH reserve, the sender's repeat of both checks, the per-transaction and
+24-hour ETH fee caps, the 50/20/10/20 allocation and its $5 burn and gold minimums. A claim reserved
+0.0000072 ETH on 2026-09-19, so twelve rounds a day stay far below the 0.01 ETH daily cap. Adaptive mode
+(under 90 funded days) is unchanged: it already caps its target at $100. The status keeps `mode:
+funded_daily` and gains `large_usdg`; `next_claim_after` follows whichever rule applies to the balance.
+A large-balance bar set below the ordinary minimum is rejected like any other invalid claim setting.

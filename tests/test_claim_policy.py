@@ -76,13 +76,36 @@ def test_direct_claim_cannot_bypass_reserve(db,rpc,acct,live,monkeypatch):
     assert not rpc.raw
 
 
-def test_funded_daily_waits_even_for_large_balance(db):
+def test_funded_claims_daily_or_sooner_for_a_large_balance(db):
     setup(db)
     assert not P.batching(db,1000,now=100000,runway_days=90)['due']
-    assert P.batching(db,1000,now=186400,runway_days=90)['due']
+    held=P.batching(db,1000,now=107199,runway_days=90)
+    assert not held['due'] and held['reason']=='large balance: spacing claims 2 hours apart' and held['next_claim_after']==107200
+    early=P.batching(db,1000,now=107200,runway_days=90)
+    assert early['due'] and early['reason']=='large balance claim due'
+    small=P.batching(db,99.99,now=107200,runway_days=90)
+    assert not small['due'] and small['reason']=='daily interval: 90 days funded' and small['next_claim_after']==186400
+    assert P.batching(db,99.99,now=186400,runway_days=90)['reason']=='daily claim due'
+    assert P.batching(db,1000,now=186400,runway_days=90)['reason']=='daily claim due'
     db.x("INSERT INTO ledger(ts,kind,asset,amount) VALUES(186400,'claim','USDG',1000)")
     assert not P.batching(db,1000,now=186401,runway_days=90)['due']
+    assert P.batching(db,1000,now=186400+7200,runway_days=90)['due']
     assert P.batching(db,1000,now=186401,runway_days=89)['due']
+
+
+def test_large_balance_settings(db,rpc,monkeypatch):
+    setup(db)
+    monkeypatch.setenv('WH_CLAIM_LARGE_USD','500')
+    monkeypatch.setenv('WH_CLAIM_LARGE_EVERY_HOURS','6')
+    P.batching(db,400,now=100000,runway_days=90)
+    assert not P.batching(db,400,now=100000+6*3600,runway_days=90)['due']
+    assert not P.batching(db,500,now=100000+6*3600-1,runway_days=90)['due']
+    assert P.batching(db,500,now=100000+6*3600,runway_days=90)['due']
+    # a large-balance bar below the ordinary minimum is a mistake: no claim at all until it is fixed
+    fake_chain(monkeypatch,db,rpc)
+    monkeypatch.setattr(P,'funded_runway',lambda *args:100)
+    monkeypatch.setenv('WH_CLAIM_LARGE_USD','1')
+    assert P.evaluate(rpc,db,1000,now=300000)=={'allowed':False,'reason':'claim policy or gas data unavailable'}
 
 
 def test_daily_needs_minimum_and_does_not_count_future_income(db):
