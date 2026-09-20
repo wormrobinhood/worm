@@ -430,6 +430,16 @@ class Scorer:
         if dep_hold >= 10:
             rule("deployer_hold", 0, f"creator still holds {dep_hold:.0f}% of circulating supply: it can be sold into everyone at any time",
                  hard=dep_hold >= 20)
+        # the ten biggest holders that are people, kept for the second look (watch.py, holders-v1): do they still hold?
+        if held and not m["partial"]:
+            biggest = sorted(held.items(), key=lambda kv: -kv[1])[:15]
+            try:
+                code = LINKED.contracts_among(self.rpc, self.db, [a for a, _ in biggest])
+            except Exception as e:
+                log.info("holder code read failed for %s: %s", token[:10], e)
+                code = None
+            if code is not None:
+                m["top_holders"] = [[a, str(v)] for a, v in biggest if a not in code][:10]
         # linked wallets (linked.py): shown without points until the records say what it is worth
         if held and not m["partial"]:
             try:

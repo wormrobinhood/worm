@@ -287,7 +287,7 @@ def test_rule_names_are_unique_and_every_feature_is_one_the_watcher_measures(rul
     measured = {"ret_p0", "dd_peak", "rebound", "moves_15m", "ret_60m", "ret_15m", "ret_5m", "age_min", "fdv_usd",
                 "sample_bucket", "swaps_15m", "vol_15m_usd", "buy_share_15m", "vol_ratio", "creator_tax_bps", "creator_prev_launches",
                 "creator_rugged", "top10_pct", "holders", "snipe_pct", "fleet_pct", "launch_to_grad_s", "score",
-                "losing_pct", "crowd_history"}
+                "losing_pct", "crowd_history", "holders_kept_pct"}
     for rule in W.STRATEGIES:
         # the first hour loses: no rule looks that early. One exception, by measurement: what the crowd's record says
         # is worth 7-12 points in the first hour and nothing after the second, so that rule has to look early or not at all
@@ -379,3 +379,59 @@ def test_the_crowd_read_travels_from_the_verdict_to_the_look(db):
     W.add(db, TOKEN, {"score": 50, "verdict": "mixed", "metrics": {"creator_tax_bps": 0, "losing_pct": 3.5, "crowd_history": 220}}, symbol="T", now=1000)
     kept = json.loads(db.one("SELECT metrics FROM watch WHERE token=?", (TOKEN,))["metrics"])
     assert kept["losing_pct"] == 3.5 and kept["crowd_history"] == 220
+
+
+# ---- holders-v1: do the verdict's biggest holders still hold? ------------------------------------------------------
+
+class BalanceRpc:
+    """Answers balanceOf from a dict; None for a wallet it cannot read."""
+    def __init__(self, balances):
+        self.balances, self.asked = balances, []
+
+    def batch(self, calls, chunk=25):
+        out = []
+        for method, params in calls:
+            wallet = "0x" + params[0]["data"][-40:]
+            self.asked.append((params[0]["to"], wallet))
+            v = self.balances.get((params[0]["to"], wallet), self.balances.get(wallet))
+            out.append(None if v is None else hex(v))
+        return out
+
+
+HOLDERS = [["0x" + format(0x500 + i, "040x"), str(10**21)] for i in range(10)]
+
+
+def test_holders_kept_is_what_is_left_in_the_same_wallets():
+    rpc = BalanceRpc({w: 10**21 for w, _ in HOLDERS})
+    assert W.holders_kept(rpc, TOKEN, HOLDERS) == 100.0 and rpc.asked[0] == (TOKEN, HOLDERS[0][0])
+    rpc.balances.update({HOLDERS[0][0]: 0, HOLDERS[1][0]: 0, HOLDERS[2][0]: 5 * 10**20})
+    assert W.holders_kept(rpc, TOKEN, HOLDERS) == 75.0
+    rpc.balances[HOLDERS[3][0]] = None                                   # one wallet unread: no number rather than a guess
+    assert W.holders_kept(rpc, TOKEN, HOLDERS) is None
+    assert W.holders_kept(rpc, TOKEN, []) is None and W.holders_kept(rpc, TOKEN, None) is None
+
+
+def test_holders_rule_wants_a_cheap_token_whose_big_holders_stayed(rules):
+    rule = rules["holders-v1"]
+    stayed = {**ALIVE, "holders_kept_pct": 93.0, "moves_15m": 2}
+    assert rule["looks"] == [120, 240] and W.passes(rule, stayed) == (True, "")
+    for change, why in (({"holders_kept_pct": 42.0}, "holders_kept_pct"), ({"holders_kept_pct": None}, "holders_kept_pct"),
+                        ({"moves_15m": 0}, "moves_15m"), ({"creator_tax_bps": 300}, "creator_tax_bps"), ({"creator_prev_launches": 9}, "creator_prev_launches")):
+        ok, said = W.passes(rule, {**stayed, **change})
+        assert not ok and said.startswith(why)
+
+
+def test_a_look_reads_the_holders_and_buys_when_they_stayed(db, chain, monkeypatch):
+    rule = {"name": "stay-test", "looks": [30], "conditions": [{"feature": "holders_kept_pct", "op": ">=", "value": 80}]}
+    monkeypatch.setattr(W, "STRATEGIES", [rule])
+    rpc = BalanceRpc({w: 10**21 for w, _ in HOLDERS})
+    rpc.balances.update({(OTHER, w_): 10**20 for w_, _ in HOLDERS})      # the other token's holders sold nine tenths
+    W.add(db, TOKEN, verdict(top_holders=HOLDERS), "AAA", now=T0)
+    W.add(db, OTHER, verdict(top_holders=HOLDERS), "BBB", now=T0)
+    w = W.Watcher(rpc, db, P.Paper(db, rpc))
+    chain[OTHER] = 1.0
+    walk(w, chain, TOKEN, [1.0] * 32)
+    assert db.one("SELECT status FROM watch WHERE token=?", (TOKEN,))["status"] == "entered"
+    assert json.loads(db.one("SELECT features FROM paper WHERE token=?", (TOKEN,))["features"])["holders_kept_pct"] == 100.0
+    row = db.one("SELECT status, note FROM watch WHERE token=?", (OTHER,))
+    assert row["status"] != "entered" and "holders_kept_pct 10.0 is not >= 80" in row["note"]
