@@ -485,3 +485,24 @@ the operator's research folder):
   and the -10/-20/-30/-15 for concentration are gone.
 Open: a check of concentrated tokens at 3-7 days; the two-hour holder study (`holders_late.py` running).
 770 tests, plus a real-chain run of the whole scorer on a throwaway database.
+
+## holders-v1: do the verdict's big holders stay? (2026-09-20)
+
+The operator asked for a "bubble map strategy". At the verdict the linked-wallet read is a rare red flag and
+no entry signal (PR #21). The two-hour version was then studied: `holders_late.py` read every transfer sent
+or received by the 120 biggest verdict-time holders of 1,426 graduations for two hours after graduation
+(reading every transfer of a busy pool is beyond the public node; topic filters on the holders are not).
+Wallets handing tokens to other wallets in those two hours said nothing reliable about a trade entered then.
+What the big holders KEPT did: the share of winning trades rises step by step with it, 16% to 46%, and where
+the ten biggest still held 80% the trades came out about break-even to positive (one per token: +1.8% on 42,
+cheap tokens +11.4% on 18) against -10 to -15% for the rest. First half of the period positive, second half
+negative, very few trades: the best region found, not proven. Numbers in docs/SECOND-LOOK.md.
+
+Built: the scorer stores `top_holders`, the ten biggest holders that are not contracts (code asked for the
+top 15, cached, `linked.contracts_among`; no list when the code read fails) with their balances as strings.
+`watch.holders_kept` reads `balanceOf` for them in one batch at a look and gives `holders_kept_pct`; an
+unanswered read makes the look wait like a flow outage, and a wallet that cannot be read gives no number.
+Entry rule `holders-v1` at the 120 and 240 minute looks: cheap + kept >= 80 + the price moved in the last 15
+minutes. It is listed last, so a token the quiet or runner rule takes at the same look stays theirs; their
+frozen specs are untouched. Expect about two entries a day: the cohort of 50 will take weeks. 774 tests and a
+read-only balanceOf check on the chain.

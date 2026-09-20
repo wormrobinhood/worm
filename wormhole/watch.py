@@ -45,6 +45,13 @@ FLOW_CAP = 10_000                 # the node's cap per log query; a busier windo
 # record loses like everything else, but a curve bought by wallets with a LOSING record does clearly worse, and
 # one nearly free of them did 7-12 points better at the early entries. Cheap and clean at 30 minutes measured
 # about -4% a trade (median -9%): the least bad early entry found, still expected to fail.
+# A fourth came from following the biggest holders for two hours after graduation (docs/SECOND-LOOK.md): nearly
+# always they are flippers (the ten biggest at the verdict keep a median 0.6% of their tokens for two hours), and
+# the trades entered then lose like everything else. In the rare token where they kept 80% or more, the win rate
+# rose from under 20% to about 45% and the trades came out around break-even to positive (cheap tokens: +11% a trade,
+# one per token, n = 18, the two halves of the period disagreeing). The best region found, on very few trades.
+#   holders   two or four hours old, cheap to trade, the verdict's ten biggest holders still hold 80% or more of
+#            what they held, the pool still moving.
 #   clean-crowd   half an hour old, cheap to trade, hardly any of the curve bought by wallets whose earlier picks
 #            all went bad, the pool still moving. Only the two thirds of tokens the quiet rule never takes.
 CHEAP = [{"feature": "creator_prev_launches", "op": "<=", "value": 4},
@@ -62,6 +69,9 @@ STRATEGIES = [
                             {"feature": "losing_pct", "op": "<=", "value": 5},
                             {"feature": "moves_15m", "op": ">=", "value": 1},
                             {"feature": "sample_bucket", "op": ">=", "value": 34}]},
+    {"name": "holders-v1", "looks": [120, 240],
+     "conditions": CHEAP + [{"feature": "holders_kept_pct", "op": ">=", "value": 80},
+                            {"feature": "moves_15m", "op": ">=", "value": 1}]},
 ]
 STRATEGY = STRATEGIES[0]           # the rule the summaries name first
 SUPPLY = 1_000_000_000             # every Pons token: fully diluted value = price * supply
@@ -84,7 +94,7 @@ def add(db, token, result, symbol=None, now=None):
     ensure_tables(db)
     keep = {k: metrics.get(k) for k in ("creator_tax_bps", "creator_prev_launches", "creator_rugged", "top10_pct",
                                         "holders", "snipe_pct", "fleet_pct", "launch_to_grad_s",
-                                        "losing_pct", "crowd_history")}
+                                        "losing_pct", "crowd_history", "top_holders")}
     keep["score"], keep["verdict"] = result.get("score"), result.get("verdict")
     launch = db.one("SELECT symbol, creator_tax_bps FROM launches WHERE token=?", (token,)) or {}
     if keep["creator_tax_bps"] is None:
@@ -216,6 +226,29 @@ def features(db, row, now, mid, recent=None, first=None):
 
 
 FLOW_FEATURES = ("swaps_15m", "vol_15m_usd", "buy_share_15m", "vol_ratio")
+BALANCE_OF = "0x70a08231"          # balanceOf(address)
+
+
+def holders_kept(rpc, token, holders):
+    """Percent of what the verdict's biggest holders held that is in those wallets now (above 100 when they added).
+    holders: [[wallet, balance at the verdict as a string]]. None when there is nothing to compare or the node did
+    not answer for every wallet: a rule that reads it then fails rather than guess."""
+    try:
+        then = sum(int(b) for _, b in holders or [])
+    except (TypeError, ValueError):
+        return None
+    if then <= 0:
+        return None
+    try:
+        res = rpc.batch([("eth_call", [{"to": token, "data": BALANCE_OF + w[2:].lower().rjust(64, "0")}, "latest"]) for w, _ in holders], chunk=10)
+        now = sum(int(x, 16) for x in res)
+    except Exception:
+        return None
+    return round(100.0 * now / then, 1)
+
+
+def _needs_holders(strategy):
+    return any(c["feature"] == "holders_kept_pct" for c in strategy["conditions"])
 
 
 def _needs_flow(strategy):
@@ -271,7 +304,18 @@ def _sample(rpc, db, paper, now, on_entry=None):
                 recent, first = _flows(rpc, db, r, pools[r["token"]], want_first)
                 if recent is None and now < r["t0"] + look * 60 + FLOW_RETRY_S:
                     continue                       # the node did not answer: the look waits a minute, it is not spent
+            kept = None
+            if any(_needs_holders(rule) for rule in rules):
+                try:
+                    held_then = json.loads(r["metrics"] or "{}").get("top_holders")
+                except ValueError:
+                    held_then = None
+                kept = holders_kept(rpc, r["token"], held_then) if held_then else None
+                if held_then and kept is None and now < r["t0"] + look * 60 + FLOW_RETRY_S:
+                    continue                       # the node did not answer: the look waits, it is not spent
             f = features(db, r, now, mid, recent, first)
+            if f is not None and kept is not None:
+                f["holders_kept_pct"] = kept
             entered, why = False, "price path too thin"
             for rule in rules if f else []:
                 ok, why = passes(rule, f)

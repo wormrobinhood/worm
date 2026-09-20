@@ -640,3 +640,18 @@ def test_the_linked_wallet_read_waits_for_history_and_remembers_this_tokens_send
     assert [x["wallet"] for x in kept] == [addr(0x1000)]         # the curve paying its buyers is not a sender
     run(rpc, db, TOKEN)
     assert len(db.q("SELECT wallet FROM token_senders WHERE token=?", (TOKEN,))) == 1
+
+
+def test_the_biggest_holders_that_are_people_are_kept_for_the_second_look(db):
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd(rpc, 30)
+    whale, vault = addr(0x777), addr(0x888)
+    rpc.transfer(TOKEN, GB, CURVE, whale, 5 * 10**21)
+    rpc.transfer(TOKEN, GB, CURVE, vault, 9 * 10**21)
+    rpc.code[vault] = "0x6080"                                   # a contract among the big holders is not a holder who can stay or leave
+    kept = run(rpc, db, TOKEN)["metrics"]["top_holders"]
+    assert len(kept) == 10 and kept[0] == [whale, str(5 * 10**21)] and vault not in [w for w, _ in kept]
+    rpc.fail_batch = True
+    db.x("DELETE FROM code_cache")
+    assert "top_holders" not in run(rpc, db, TOKEN)["metrics"]    # unreadable: no list, and the rule that needs it cannot fire

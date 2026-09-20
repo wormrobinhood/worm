@@ -56,6 +56,7 @@ expected to fail their cohorts; they are there to be proven wrong or right in th
 | `quiet-v1` | 2 hours | creator tax at most 1 percent, creator not a serial launcher, between 1 and 19 swaps in the last 15 minutes (still traded, no longer churned by bots); a fixed third of such tokens, chosen by token address, so the book is not flooded |
 | `runner-v1` | 4 hours | creator tax at most 1 percent, not a serial launcher, worth at least 100,000 dollars fully diluted (about twice its value at graduation), still traded |
 | `clean-crowd-v1` | 30 minutes | creator tax at most 1 percent, not a serial launcher, at most 5 percent of the curve bought by wallets whose earlier picks all went bad (and at least 150 resolved tokens on record to say so), the pool's price still moving; only the two thirds of tokens the quiet rule never takes. The one rule that looks inside the first hour: what the crowd's record says is worth something early and nothing after the second hour |
+| `holders-v1` | 2 and 4 hours | creator tax at most 1 percent, not a serial launcher, the ten biggest holders at the verdict (contracts left out) still hold 80 percent or more of what they held then, read from the chain at the look, the pool's price still moving |
 
 What each look measured is stored on the paper row. Evidence is only ever pooled per rule
 name; changing a rule means renaming it.
@@ -102,6 +103,26 @@ own group kept 10 percent or more did best of all (32 percent not bad, 9 percent
 supply at graduation is mostly bots that sell at once. `top10` and `deployer_hold` therefore carry no points
 any more. They are still said on the card, with the plain warning that big holders can sell into everyone at
 any time, because the records cannot see past a day; a creator holding 20 percent still bars a healthy verdict.
+
+## Do the big holders stay? (the two-hour holder study)
+
+For 1,426 graduations, every transfer sent or received by the 120 biggest holders at the verdict was read for the
+two hours after graduation. Almost always they are flippers: the ten biggest keep a median 0.6 percent of their
+tokens for two hours, and the big holders as a group sell more than they held (they keep buying and selling).
+Trades entered at the two-hour mark were then compared by how much the ten biggest had kept. The 24-hour label is
+no use for this (a rug in the first hour is in both the feature and the label); what counts is the trade entered
+at the look, with the profit lock and all costs.
+
+The more they kept, the better the trade did, step by step: the share of winning trades rose from 16 percent
+(kept under 5 percent) through 19, 22, 22 and 28 percent to 46 percent when the ten biggest still held 80 percent
+or more, and at the four-hour look the average went the same way (-13, -17, -8, -3, +5, +4 percent). That top
+group is rare (about 4 percent of tokens). One trade per token, entered at the first look where the ten biggest
+still held 80 percent: +1.8 percent a trade on 42 tokens (43 percent won), and on cheap tokens +11.4 percent on
+18 (56 percent won), against -10 to -15 percent and 18 percent winners for everything else. 59 percent of those
+tokens ended their first day not bad, against 15 percent of all. It is the best region any of the studies found,
+and it is not proven: the first half of the period carried it (+13 and +32 percent) and the second half lost
+(-9 and -10 percent), on very few trades. `holders-v1` tests it forward on paper. Wallets passing tokens to
+other wallets during those two hours (the bubble-map picture at two hours) said nothing reliable about the trade.
 
 ## The profit lock
 
