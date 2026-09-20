@@ -6,6 +6,6 @@ eth-account==0.13.7
 eth-hash[pycryptodome]==0.8.0
 eth-utils==6.0.0
 fastapi==0.141.1
-playwright==1.62.0
+playwright==1.63.0
 requests==2.34.2
 uvicorn[standard]==0.52.4
