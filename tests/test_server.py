@@ -469,8 +469,7 @@ def test_pending_keeps_messages_and_drops_old_frames():
     assert hub.pending.qsize() == server.PENDING_HARD_MAX
 
 
-def test_healthz_is_ok_while_the_first_backfill_runs(site):
-    """Railway's deploy health check must not fail during the catch-up backfill."""
+def test_healthz_requires_progress_even_while_the_first_backfill_runs(site):
     import threading
     client, hub, _ = site
 
@@ -480,9 +479,13 @@ def test_healthz_is_ok_while_the_first_backfill_runs(site):
 
     hub.indexer = Idx()
     r = client.get("/healthz")
-    assert r.status_code == 200 and r.json()["catching_up"] is True
+    assert r.status_code == 503 and r.json()["catching_up"] is True
+    Idx.last_ok = time.time()
+    assert client.get('/healthz').status_code == 200
+    Idx.last_ok = time.time() - 3600
     Idx.ready.set()
     assert client.get("/healthz").status_code == 503
+    assert client.get('/livez').status_code == 200
 
 
 def test_the_last_dig_survives_a_restart(db):

@@ -211,3 +211,31 @@ def test_backup_preserves_database_and_outbox(tmp_path):
         with sqlite3.connect(dest/name) as conn:
             assert conn.execute('SELECT value FROM evidence').fetchone()[0] == 'retained'
         assert (dest/name).stat().st_mode & 0o077 == 0
+
+
+def test_transferred_backup_verifies_and_tampering_is_rejected(tmp_path):
+    import shutil
+    import sqlite3
+    import subprocess
+    import sys
+    from pathlib import Path
+    scripts = Path(__file__).resolve().parents[1] / 'scripts'
+    source = tmp_path / 'state'
+    source.mkdir()
+    with sqlite3.connect(source / 'wormhole.db') as conn:
+        conn.execute('CREATE TABLE evidence(value TEXT)')
+        conn.execute("INSERT INTO evidence VALUES('recover me')")
+    backup = tmp_path / 'backup'
+    result = subprocess.run([sys.executable, str(scripts / 'backup-state.py'), str(source), str(backup), '--service-stopped'], capture_output=True)
+    assert result.returncode == 0
+    restored = tmp_path / 'transferred'
+    shutil.copytree(backup, restored)
+    command = [sys.executable, str(scripts / 'verify-backup.py'), str(restored)]
+    assert subprocess.run(command, capture_output=True).returncode == 0
+    with sqlite3.connect(restored / 'wormhole.db') as conn:
+        assert conn.execute('SELECT value FROM evidence').fetchone()[0] == 'recover me'
+        conn.execute("UPDATE evidence SET value='tampered'")
+    assert subprocess.run(command, capture_output=True).returncode != 0
+    assert subprocess.run([command[0], '-O', *command[1:]], capture_output=True).returncode != 0
+    unsafe = subprocess.run([sys.executable, str(scripts / 'backup-state.py'), str(source), str(source / 'backups'), '--service-stopped'], capture_output=True)
+    assert unsafe.returncode != 0 and not (source / 'backups').exists()

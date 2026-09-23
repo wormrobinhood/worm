@@ -33,7 +33,8 @@ class Paper:
         for col in ("qty_left REAL", "recovered_usd REAL DEFAULT 0", "peak_usd REAL", "realized_usd REAL DEFAULT 0",
                     "policy TEXT", "tp_done TEXT", "trail_on INTEGER DEFAULT 0", "cost REAL",
                     "execution_model TEXT", "pool_key TEXT", "policy_spec TEXT", "gas_usd REAL DEFAULT 0",
-                    "liquidation_usd REAL", "marked_ts INTEGER", "strategy TEXT", "features TEXT"):
+                    "liquidation_usd REAL", "marked_ts INTEGER", "strategy TEXT", "features TEXT",
+                    "execution_spec TEXT"):
             try:
                 db.x(f"ALTER TABLE paper ADD COLUMN {col}")
             except Exception:
@@ -95,17 +96,18 @@ class Paper:
             # No fabricated fill when the pool, reference price, liquidity or gas cannot be checked.
             self.db.add_event("paper", f"paper entry for ${sym} deferred: execution checks unavailable or outside limits", token)
             return False
-        price = quote['price']
         cost = lab.token_cost(self.db, token)
         qty = quote.get('paper_fill_raw', quote['minimum_raw']) / 1e18
+        price = execution.entry_basis(C.PAPER_SIZE_USD, qty)
         with self.db.transaction():
             if self.db.one("SELECT 1 FROM paper WHERE token=?", (token,)):
                 return False
-            self.db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,last_usd,qty_left,peak_usd,realized_usd,policy,tp_done,trail_on,cost,execution_model,pool_key,policy_spec,gas_usd,liquidation_usd,marked_ts,strategy)"
-                      " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                      (token, sym, int(time.time()), price, C.PAPER_SIZE_USD, qty, "open", price, qty, price,
+            self.db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,last_usd,qty_left,peak_usd,realized_usd,policy,tp_done,trail_on,cost,execution_model,pool_key,policy_spec,gas_usd,liquidation_usd,marked_ts,strategy,execution_spec)"
+                      " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                      (token, sym, int(time.time()), price, C.PAPER_SIZE_USD, qty, "open", quote['price'], qty, price,
                        -quote['gas_usd'], arm, '[]', 0, cost, execution.MODEL, json.dumps(quote['pool']),
-                       json.dumps(policy), quote['gas_usd'], quote['liquidation_usd'], int(time.time()), strategy))
+                       json.dumps(policy), quote['gas_usd'], quote['liquidation_usd'], int(time.time()), strategy,
+                       json.dumps(execution.evidence_spec(), sort_keys=True)))
         self.db.add_event("paper", f"paper buy: ${C.PAPER_SIZE_USD:.0f} of ${sym} at ${price:.6g} ({why}, arm {arm}, cost {cost * 100:.1f}%/side research estimate; paper fill uses conservative pool quotes and gas)", token)
         return True
 
@@ -158,7 +160,7 @@ class Paper:
             realized = p["realized_usd"] or 0.0
             last_why = None
             gas_usd = p.get('gas_usd') or 0
-            quoted = p.get('execution_model') == execution.MODEL
+            quoted = bool(p.get('execution_model'))  # older quoted rows keep quoted exits, never synthetic fills
             liquidation, marked = p.get('liquidation_usd'), p.get('marked_ts')
             # A current bid is needed to value a quoted position, even when no exit is triggered.
             if quoted and value:
@@ -214,9 +216,9 @@ class Paper:
         for p in opens:
             qty_left = p["qty_left"] if p["qty_left"] is not None else p["qty"]
             cost = p["cost"] if p.get("cost") is not None else COST
-            value = (p.get('liquidation_usd') if p.get('execution_model') == execution.MODEL
+            value = (p.get('liquidation_usd') if p.get('execution_model')
                      else qty_left * (p["last_usd"] or p["entry_usd"]) * (1 - cost))
-            p['valuation_stale'] = p.get('execution_model') == execution.MODEL and (not p.get('marked_ts') or time.time() - p['marked_ts'] > 600)
+            p['valuation_stale'] = bool(p.get('execution_model')) and (not p.get('marked_ts') or time.time() - p['marked_ts'] > 600)
             p['valuation_stale'] = p['valuation_stale'] or value is None
             p["hedged"] = bool(json.loads(p["tp_done"] or "[]"))
             p["bag_pct"] = round(100 * qty_left / p["qty"]) if p["qty"] else 0
@@ -227,10 +229,12 @@ class Paper:
             p["change_pct"] = ((p["exit_usd"] / p["entry_usd"]) - 1) * 100 if p.get("exit_usd") else 0.0
         tot = self.db.one("SELECT COALESCE(SUM(pnl_usd),0) s, COALESCE(SUM(pnl_usd>0),0) w, COUNT(*) n FROM paper WHERE status='closed'")
         cur, why = lab.current_policy(self.db)
-        return {"open": opens, "closed": closed, "realized_usd": round(tot["s"], 2), "unrealized_usd": round(unreal, 2),
+        unpriced = sum(p['valuation_stale'] for p in opens)
+        return {"open": opens, "closed": closed, "realized_usd": round(tot["s"], 2),
+                "unrealized_usd": None if unpriced else round(unreal, 2), "priced_unrealized_usd": round(unreal, 2),
                 "closed_count": tot["n"], "win_rate": round(100.0 * tot["w"] / tot["n"]) if tot["n"] else None,
                 "size_usd": C.PAPER_SIZE_USD, "min_score": execution.MIN_SCORE,
-                "unpriced_count": sum(p["valuation_stale"] for p in opens),
+                "unpriced_count": unpriced,
                 "risk": trade_risk.check(self.db, 'paper', latch=False), "execution_model": execution.MODEL,
                 "entry": entry_text(),
                 "rules": f"exits by the strategy lab, in use: {cur} ({why}); fills need the token's own Pons pool (USDG or ETH) and a round-trip quote, and are booked at the quote less {execution.PAPER_FILL * 100:.0f}% a side plus gas; open positions are re-priced from the chain every few seconds; legacy rows retain their original cost model"}

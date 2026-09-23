@@ -13,6 +13,10 @@ def check(rpc, db, hub, now=None):
     alerts = []
     def add(code, message):
         alerts.append({'code':code, 'message':message})
+    from . import runtime_health
+    for code in runtime_health.status(db, hub, now)['codes']:
+        if code != 'indexer_stale':  # the detailed check below already reports this
+            add(code, 'Local storage or a service worker needs attention. Inspect operational health.')
     try:
         T.ensure_tables(db); fee_sweep.ensure(db); gas_refill.ensure(db)
         from .launch_allocation import saved as allocation_saved

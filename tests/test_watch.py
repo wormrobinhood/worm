@@ -90,13 +90,13 @@ def test_nothing_is_bought_before_the_first_look(db, chain):
     assert db.one("SELECT status, p0 FROM watch") == {"status": "watching", "p0": 1.0}
 
 
-def test_a_token_that_held_up_is_bought_once_at_the_pool_mid(db, chain):
+def test_a_token_that_held_up_is_bought_once_with_quoted_acquisition_cost(db, chain):
     W.add(db, TOKEN, verdict(), "AAA", now=T0)
     w = W.Watcher(None, db, P.Paper(db))
     prices = [1.0 + 0.002 * (i % 7) for i in range(31)]               # alive: the mid keeps moving, no collapse
     now = walk(w, chain, TOKEN, prices)
     row = db.one("SELECT * FROM paper")
-    assert row["status"] == "open" and row["strategy"] == W.STRATEGY["name"] and row["entry_usd"] == prices[-1]
+    assert row["status"] == "open" and row["strategy"] == W.STRATEGY["name"] and row["entry_usd"] == pytest.approx(prices[-1] * 1.02)
     assert row["policy"] == lab.DEFAULT
     assert db.one("SELECT status FROM watch")["status"] == "entered"
     assert db.one("SELECT t0, p0 FROM lab_cases WHERE token=?", (TOKEN,)) == {"t0": now - 60, "p0": prices[-1]}

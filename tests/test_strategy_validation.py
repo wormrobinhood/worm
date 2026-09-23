@@ -1,10 +1,11 @@
 """Paper cohorts: what counts as a member, that a cohort is judged once on realised paper results, that a
 failure raises the next bar, that a pass is renewed or expires, and that editing the strategy voids it."""
 import json
+import time
 
 import pytest
 
-from wormhole import lab, strategy_validation as V, watch
+from wormhole import lab, strategy_validation as V, watch, trade_checks as execution, config as C
 from test_trader import tok
 
 RULE = {"name": "rule-a", "looks": [30], "conditions": [{"feature": "ret_p0", "op": ">=", "value": -0.2}]}
@@ -28,8 +29,12 @@ def position(db, i, ret=None, rule="rule-a", creator=None, spec=None, opened=Non
     db.x("INSERT OR IGNORE INTO launches(token,deployer,symbol) VALUES(?,?,?)", (token, creator or tok(i + 5000), "T"))
     db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,pnl_usd,policy,policy_spec,strategy,cost,gas_usd)"
          " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-         (token, "T", opened or 1000 + i, 1.0, 10.0, 10.0, "open" if ret is None else "closed",
+         (token, "T", opened or int(time.time()), 1.0, 10.0, 10.0, "open" if ret is None else "closed",
           None if ret is None else ret * 10.0, lab.DEFAULT, spec or exit_spec(), rule, .02, .01))
+    db.x('UPDATE paper SET execution_model=?,execution_spec=?,pool_key=? WHERE token=?',
+         (execution.MODEL, json.dumps(execution.evidence_spec(), sort_keys=True), json.dumps({'quote': C.USDG}), token))
+    if ret is not None:
+        db.x('UPDATE paper SET closed_ts=? WHERE token=?', (int(time.time()), token))
     return token
 
 
@@ -71,7 +76,7 @@ def test_no_verdict_before_every_member_has_closed(db):
     open_one = position(db, 900)                             # the fiftieth member is still open
     cohort(db, [.9] * 5, start=1000)                         # later winners cannot take its place
     assert V.summary(db)["status"] == "collecting" and V.summary(db)["enrolled"] == V.COHORT_N
-    db.x("UPDATE paper SET status='closed', pnl_usd=-3.0 WHERE token=?", (open_one,))
+    db.x("UPDATE paper SET status='closed', pnl_usd=-3.0, closed_ts=? WHERE token=?", (int(time.time()), open_one))
     V.tick(db)
     s = V.summary(db)
     assert s["passed"] and s["passed_rules"] == ["rule-a"] and s["rules"][0]["last"]["n"] == V.COHORT_N
@@ -108,6 +113,7 @@ def test_a_failure_raises_the_next_bar_and_a_pass_does_not(db):
     assert first_pass["attempt"] == 2 and first_pass["z"] > 2.0
     assert db.q("SELECT status,k FROM strategy_trials WHERE rule='rule-a' ORDER BY id")[-1] == {"status": "collecting", "k": 2}   # a renewal keeps its bar
     cohort(db, [-.2] * V.COHORT_N, start=4000)                       # the renewal fails: the retry is a new attempt
+    assert not V.summary(db)['passed']  # a previously passed cohort cannot hide the failed renewal
     assert db.q("SELECT status,k FROM strategy_trials WHERE rule='rule-a' ORDER BY id")[-1] == {"status": "collecting", "k": 3}
 
 
@@ -153,3 +159,42 @@ def test_gas_cost_applies_to_every_cash_leg():
     normal = lab.simulate("costout_1.5x@0m", path, 0)
     withgas = lab.simulate("costout_1.5x@0m", path, 0, policy=spec, delay=delay, gas_per_side=.01)
     assert normal - withgas == pytest.approx(.03)  # buy, take profit, trailing exit
+
+
+def test_eth_and_legacy_execution_cannot_qualify_usdg_trading(db):
+    V.tick(db)
+    for i in range(1, 5):
+        position(db, i, .5)
+    db.x('UPDATE paper SET pool_key=? WHERE token=?', (json.dumps({'quote': C.ZERO}), tok(2)))
+    db.x("UPDATE paper SET execution_model='quoted-usdg-v1' WHERE token=?", (tok(3),))
+    db.x("UPDATE paper SET execution_spec=NULL WHERE token=?", (tok(4),))
+    V.tick(db)
+    assert [m['token'] for m in db.q('SELECT token FROM strategy_members')] == [tok(1)]
+
+
+def test_execution_cost_change_revokes_existing_pass(db, monkeypatch):
+    V.tick(db)
+    cohort(db, [.3 + .001 * i for i in range(V.COHORT_N)])
+    assert V.summary(db)['passed']
+    monkeypatch.setattr(execution, 'PAPER_FILL', .02)
+    assert not V.summary(db)['passed']
+    V.tick(db)
+    assert db.one("SELECT COUNT(*) n FROM strategy_trials WHERE status='voided'")['n'] == 2
+
+
+def test_overdue_position_invalidates_evidence_without_inventing_a_sale(db):
+    V.tick(db)
+    cohort(db, [.4] * (V.COHORT_N - 1))
+    token = position(db, 900, opened=int(time.time()) - 14 * 3600)
+    V.tick(db)
+    assert V.summary(db)['rules'][0]['last']['status'] == 'failed'
+    assert db.one('SELECT status,pnl_usd FROM paper WHERE token=?', (token,)) == {'status': 'open', 'pnl_usd': None}
+
+
+def test_profitable_late_recovery_cannot_qualify_a_strategy(db):
+    V.tick(db)
+    cohort(db, [.4] * (V.COHORT_N - 1))
+    token = position(db, 900, .4, opened=int(time.time()) - 14 * 3600)
+    V.tick(db)
+    assert V.summary(db)['rules'][0]['last']['status'] == 'failed'
+    assert db.one('SELECT status,pnl_usd FROM paper WHERE token=?', (token,)) == {'status': 'closed', 'pnl_usd': 4.0}

@@ -1,4 +1,5 @@
 """Pons V2 and Uniswap v4 event definitions, plus token metadata reads."""
+import time
 from . import config as C
 from .chain import Event, batch_calls
 
@@ -35,7 +36,7 @@ def pair_symbols(rpc, addrs):
     address prefix and asked again next time; the fallback is never cached."""
     need = [a for a in set(addrs) if a not in _SYMBOL_CACHE]
     if need:
-        res = batch_calls(rpc, [(a, "symbol()", ("string",), (), ()) for a in need])
+        res = batch_calls(rpc, [(a, "symbol()", ("string",), (), ()) for a in need], deadline=time.monotonic() + 10)
         for a, s in zip(need, res):
             if isinstance(s, str) and s:
                 _SYMBOL_CACHE[a] = s[:24]
@@ -45,13 +46,14 @@ def pair_symbols(rpc, addrs):
 def token_metadata(rpc, tokens, with_curve=None):
     """name, symbol, logo, description, socials for each token; creator tax and fee bps from its curve.
     A read that failed is None, never '' or 0: the caller keeps what it had and can ask again."""
+    deadline = time.monotonic() + 15
     tokens = list(tokens)
     items = []
     for t in tokens:
         items += [(t, "name()", ("string",), (), ()), (t, "symbol()", ("string",), (), ()),
                   (t, "logo()", ("string",), (), ()), (t, "description()", ("string",), (), ()),
                   (t, "socials()", ("string", "string", "string", "string", "string"), (), ())]
-    res = batch_calls(rpc, items)
+    res = batch_calls(rpc, items, deadline=deadline)
     out = {}
     for i, t in enumerate(tokens):
         name, symbol, logo, desc, soc = res[i * 5:(i + 1) * 5]
@@ -65,7 +67,7 @@ def token_metadata(rpc, tokens, with_curve=None):
         for c in curves:
             citems += [(c, "creatorTaxBps()", ("uint256",), (), ()), (c, "feeBps()", ("uint256",), (), ()),
                        (c, "buybackEnabled()", ("bool",), (), ())]
-        cres = batch_calls(rpc, citems)
+        cres = batch_calls(rpc, citems, deadline=deadline)
         for i, t in enumerate(tokens):
             tax, fee, bb = cres[i * 3:(i + 1) * 3]
             out[t].update({"creator_tax_bps": None if tax is None else int(tax),

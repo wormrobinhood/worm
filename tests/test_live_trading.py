@@ -401,3 +401,48 @@ def test_the_watcher_buys_on_the_markers_last_gate_reading_only_while_it_is_fres
     trader.remember_gate(RUNWAY, {'ready': True})
     trader.decide_now(s.rpc, s.db, True, s.acct)
     assert len(s.calls) == 1
+
+
+def test_allocated_burn_profit_cannot_refill_spent_principal(setup, monkeypatch):
+    from wormhole import treasury as T
+    s = setup
+    monkeypatch.setenv('WH_TRADING_BUDGET_USD', '10')
+    s.db.x("INSERT INTO positions(token,size_usd,realized_usd,status,mode) VALUES('win',10,30,'closed','live')")
+    assert T.sweep_trading_profit(s.db) == 20
+    s.db.x("INSERT INTO positions(token,size_usd,realized_usd,status,mode) VALUES('loss',10,0,'closed','live')")
+    assert L.budget(s.db)['room'] == 0
+    assert L.budget(s.db)['lost'] == 10
+    # Settling the burn does not debit trading principal twice.
+    s.db.x("INSERT INTO ledger(kind,amount) VALUES('burn',20)")
+    assert L.budget(s.db)['lost'] == 10
+    assert T.sweep_trading_profit(s.db) == 0
+    # The guard survives reconstructing the database object after a restart.
+    from wormhole.db import DB
+    reopened = DB(s.db.path)
+    assert L.budget(reopened)['room'] == 0
+    reopened.c.close()
+
+
+def test_paper_and_receipt_settlement_share_the_same_exit_basis(setup, monkeypatch):
+    from wormhole.paper import Paper
+    s = setup
+    s.db.x('DELETE FROM paper')
+    q = {**s.quote, 'paper_fill_raw': 970 * 10**18, 'liquidation_usd': 9.0}
+    monkeypatch.setattr(L.execution, 'entry', lambda *a, **kw: dict(q))
+    pb = Paper(s.db)
+    assert pb.enter(s.token, 'T1', .01, 'rule-a', 'parity test')
+    buy(s)
+    settle_buy(s)
+    paper = s.db.one('SELECT * FROM paper')
+    live = s.db.one('SELECT * FROM positions')
+    assert paper['entry_usd'] == live['entry_usd'] == pytest.approx(10 / 970)
+    assert paper['last_usd'] == .01  # pool mid is separate from acquisition cost
+    policy, _ = lab.parse_arm(lab.DEFAULT)
+    decisions = []
+    for row in (paper, live):
+        state = {'entry': row['entry_usd'], 'entry_ts': 0, 'qty_left': 1,
+                 'tp_done': [], 'peak': row['peak_usd'], 'trail_on': False}
+        decisions.append([lab.exit_step(policy, state, px, ts) for ts, px in [(1, .0121), (2, .0102), (3, .013), (4, .0109)]])
+    assert decisions[0] == decisions[1]
+    assert decisions[0][1][0] == 0  # the old mid-price reference would have sold here
+    assert decisions[0][-1][0] == 1

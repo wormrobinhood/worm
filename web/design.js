@@ -31,7 +31,22 @@ const mobileMotion=motion.cloneNode(true);mobileMotion.id='mobile-motion';mobile
 const digBadge=document.createElement('span');digBadge.id='dig-badge';digBadge.hidden=true;document.querySelector('.topline>div').prepend(digBadge);
 setInterval(()=>{const src=document.querySelector('#sb-dig');digBadge.hidden=src.hidden;digBadge.textContent=src.textContent},1000);
 const ms=document.createElement('style');ms.textContent='#mobile-motion{border:1px solid var(--line);background:transparent;color:var(--dim);border-radius:4px;padding:5px 8px;font-size:12px;display:none}@media(max-width:950px){#mobile-motion{display:block}}@media(max-width:420px){.topline>span{display:none}.topline>div{width:100%;justify-content:space-between}}';document.head.append(ms);
-window.updateFreshness=()=>{const el=document.querySelector('#freshness');const age=window.lastReceived?(Date.now()-window.lastReceived)/1000:Infinity;const chainStalled=window.blockAdvancedAt&&Date.now()-window.blockAdvancedAt>180000;const stale=window.loadFailed||age>45||chainStalled;el.classList.toggle('error',stale);el.textContent=age===Infinity?'Connecting to data…':chainStalled?'Chain progress delayed':stale?`Updates delayed · ${Math.floor(age)}s ago`:`Updated ${Math.floor(age)}s ago`;};setInterval(window.updateFreshness,1000);
+window.updateFreshness=()=>{
+ const el=document.querySelector('#freshness'),age=window.lastReceived?(Date.now()-window.lastReceived)/1000:Infinity;
+ const health=window.operationalHealth,healthOld=window.healthCheckedAt&&Date.now()-window.healthCheckedAt>90000;
+ const chainStalled=window.blockAdvancedAt&&Date.now()-window.blockAdvancedAt>180000;
+ const unhealthy=healthOld||health&&health.ok===false,stale=window.loadFailed||age>45||chainStalled||unhealthy;
+ el.classList.toggle('error',Boolean(stale));
+ el.textContent=unhealthy?'Data collection delayed':age===Infinity?'Connecting to data…':chainStalled?'Chain progress delayed':health&&health.catching_up?'Catching up with the chain':stale?`Updates delayed · ${Math.floor(age)}s ago`:`Updated ${Math.floor(age)}s ago`;
+};
+setInterval(window.updateFreshness,1000);
+async function checkOperationalHealth(){
+ const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),5000);
+ try{const response=await fetch('/healthz',{cache:'no-store',signal:controller.signal});const status=await response.json();
+  window.operationalHealth={ok:response.ok&&status.ok===true,catching_up:status.catching_up===true};
+ }catch(_){window.operationalHealth={ok:false}}finally{clearTimeout(timeout);window.healthCheckedAt=Date.now();window.updateFreshness()}
+}
+checkOperationalHealth();setInterval(checkOperationalHealth,30000);
 for(const [id,key] of [['token-search','scanQuery'],['verdict-filter','scanFilter'],['scan-sort','scanSort']]){document.getElementById(id).addEventListener(id==='token-search'?'input':'change',e=>{window[key]=e.target.value;renderFeed(lastFeed,true)})}
 function presentMoney(v){return v==null?'…':Number(v).toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2})}
 function renderLaunchIdentity(s){

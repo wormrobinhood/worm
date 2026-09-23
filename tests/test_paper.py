@@ -127,7 +127,7 @@ def test_paper_summary_open_value_uses_the_cost(db, feed):
     pb.mark()
     s = pb.summary()
     row = s["open"][0]
-    assert row["hedged"] is False and abs(row["change_pct"] - 20) < 1e-9
+    assert row["hedged"] is False and row["change_pct"] == pytest.approx((1.2 / 1.04 - 1) * 100)
     assert abs(row["pnl_usd"] - (row["qty"] * 1.2 * 0.96 - 10.0)) < 1e-6
 
 
@@ -195,8 +195,8 @@ def test_the_default_exit_is_the_profit_lock(db, feed):
     row = db.one("SELECT policy, strategy, policy_spec FROM paper")
     assert row["policy"] == lab.DEFAULT == "lock_20@0m" and row["strategy"] == "rule-a"
     assert lab.parse_arm(lab.DEFAULT)[0]["stop"] == -0.30 and lab.parse_arm(lab.DEFAULT)[0]["arm_at"] == 1.2
-    feed[TOKEN] = 0.72
-    pb.mark(prices={TOKEN: 0.72}, value=False)                       # -28%: inside the stop
+    feed[TOKEN] = 0.75
+    pb.mark(prices={TOKEN: 0.75}, value=False)                       # above 70% of the acquisition cost: inside the stop
     assert db.one("SELECT status FROM paper")["status"] == "open"
     feed[TOKEN] = 0.69                                               # the pool's bid at that moment fills the exit
     pb.mark(prices={TOKEN: 0.69}, value=False)
@@ -222,7 +222,7 @@ def test_the_lock_sells_nothing_on_the_way_up_and_everything_on_the_trail(db, fe
 
 def test_a_big_pump_gets_a_wider_trail(db, feed):
     pb = enter(db, feed)
-    for price in (2.0, 4.0, 3.1):                                    # peak 4x trails 25% (3.0): 3.1 holds
+    for price in (2.1, 4.2, 3.2):                                    # peak >4x acquisition cost trails 25%: 3.2 holds
         feed[TOKEN] = price
         pb.mark(prices={TOKEN: price}, value=False)
     assert db.one("SELECT status FROM paper")["status"] == "open"
@@ -300,3 +300,15 @@ def test_rows_from_before_pools_were_stored_are_still_marked_by_the_price_api(db
     feed[TOKEN] = 0.5
     pb.mark()
     assert db.one("SELECT status FROM paper")["status"] == "closed"
+
+
+def test_legacy_quoted_positions_never_fall_back_to_fabricated_fills(db, feed, monkeypatch):
+    pb = enter(db, feed)
+    db.x("UPDATE paper SET execution_model='quoted-usdg-v1',marked_ts=1")
+    s = pb.summary()
+    assert s['unpriced_count'] == 1 and s['unrealized_usd'] is None
+    def no_quote(*args, **kwargs):
+        raise RuntimeError('quote unavailable')
+    monkeypatch.setattr(P.execution, 'exit_quote', no_quote)
+    pb.mark(prices={TOKEN: .1}, value=False)
+    assert db.one('SELECT status FROM paper')['status'] == 'open'

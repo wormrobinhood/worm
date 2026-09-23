@@ -22,7 +22,7 @@ from wormhole import treasury as T
 from wormhole import voice, trader, compute, lab, advisor
 from wormhole import launch as L
 from wormhole.budget import projection
-from wormhole import readiness, tx, launch_schedule
+from wormhole import readiness, tx, launch_schedule, runtime_health
 from wormhole import watch as second_look
 from wormhole import crowd, linked
 import os
@@ -146,7 +146,10 @@ def main():
                 break
             except Exception as e:
                 log.exception("backfill failed, retry in 30s: %s", e)
-                db.add_event("error", "backfill unavailable; retrying")
+                try:
+                    db.add_event("error", "backfill unavailable; retrying")
+                except Exception:
+                    log.error('backfill alert could not be persisted; retry loop remains active')
                 time.sleep(30)
         if C.SCORE_HOURS > 0:                     # by default the worm does not dig old graduations: it starts from now
             cutoff = int(time.time()) - int(C.SCORE_HOURS * 3600)
@@ -174,11 +177,10 @@ def main():
                 time.sleep(3)
 
     def watchdog():
-        """If the indexer has not advanced for 15 minutes, exit so the host restarts the process."""
+        """Recover a stalled indexer, including backfill; storage failures need intervention."""
         while True:
             time.sleep(60)
-            last_ok = getattr(idx, "last_ok", None)
-            if idx.ready.is_set() and last_ok and time.time() - last_ok > 900:
+            if runtime_health.should_restart(db, hub):
                 log.error("indexer stalled for 15 min, exiting for a restart")
                 os._exit(3)
 
@@ -216,6 +218,8 @@ def main():
                              budget_per_day=rw.get("compute_budget_per_day_usd"), rpc=rpc)
 
             def entries():
+                if not runtime_health.trading_ready(db, hub):
+                    return
                 tre, rw = box["tre"], box["rw"]
                 rd = readiness.compute(brain.summary(), lab.summary(db), rw, trader.MAX_POSITION_USD)
                 trader.remember_gate(rw, rd)          # the watcher sees a paper entry first and may act on this reading
@@ -237,15 +241,19 @@ def main():
             except Exception as e:
                 payments_ready = False
                 log.error('payments paused: %s', e)
-                T._say_hourly(db, 'error', 'payments paused: transaction journal needs reconciliation')
-            stages = [("own", lambda: L.announce(db)),
+                try:
+                    T._say_hourly(db, 'error', 'payments paused: transaction journal needs reconciliation')
+                except Exception:
+                    log.error('payment recovery alert could not be persisted; operations loop remains active')
+            stages = [("exits", lambda: trader.mark(rpc, db, C.LIVE, acct)),
+                      ("own", lambda: L.announce(db)),
                       ("prices", lambda: refresh_scored(db)), ("lab", lambda: lab.tick(db)),
                       ("strategy_validation", lambda: strategy_validation.tick(db, rpc)),
                       ("paper", paper.retry_pending), ("paper mark", paper.mark), ("brain", brain.check),
                       ("crowd", lambda: crowd.tick(rpc, db)),
                       ("shadow", lambda: advisor.shadow.evaluate(db)),
                       ("advisor", lambda: advisor.due(db)[0] and advisor.run(db, brain.summary(), lab.summary(db))),
-                      ("exits", lambda: trader.mark(rpc, db, C.LIVE, acct)), ("treasury", lambda: T.cycle(rpc, db, acct)),
+                      ("treasury", lambda: T.cycle(rpc, db, acct)),
                       ("books", books), ("compute", compute_stage), ("entries", entries),
                       ("voice", lambda: voice.cycle(db, extra={"stage": box["tre"].get("stage_name"), "treasury_usd": box["tre"].get("usd_real")})),
                       ("housekeeping", housekeeping)]
@@ -265,6 +273,7 @@ def main():
             except Exception:
                 log.error('operational health reporting failed; inspect private state')
             hub.notify("mark")
+            hub.worker_heartbeats['operations'] = time.time()
             time.sleep(C.MARK_EVERY_S)
 
     def launch_clock():
@@ -280,16 +289,35 @@ def main():
         the trader (a fresh entry, fresh prices) passes through the trader's own gates, all closed by default."""
         time.sleep(60)
         look = second_look.Watcher(rpc, db, paper,
-                                   on_entry=lambda: trader.decide_now(rpc, db, C.LIVE, acct),
-                                   on_prices=lambda mids: trader.mark(rpc, db, C.LIVE, acct, prices=mids))
+                                   on_entry=lambda: runtime_health.trading_ready(db, hub) and
+                                   trader.decide_now(rpc, db, C.LIVE, acct))
         while True:
             try:
-                look.step()
+                look.step(mark=False)
+                hub.worker_heartbeats['watcher'] = time.time()
             except Exception as e:
                 log.warning("watcher step failed: %s", e)
             time.sleep(second_look.FAST_EVERY_S)
 
-    for fn in (pipeline, worker, marker, watchdog, launch_clock, watcher):
+    def position_monitor():
+        look = second_look.Watcher(rpc, db, paper,
+                                   on_prices=lambda mids: trader.mark(rpc, db, C.LIVE, acct, prices=mids))
+        time.sleep(15)
+        while True:
+            try:
+                look.mark_positions()
+                hub.worker_heartbeats['positions'] = time.time()
+            except Exception:
+                log.exception('position monitoring failed; new entries require fresh worker health')
+            time.sleep(second_look.FAST_EVERY_S)
+
+    def health_monitor():
+        runtime_health.monitor(db, hub)
+
+    hub.worker_limits = {'operations': max(900, C.MARK_EVERY_S * 3), 'watcher': 180, 'positions': 180}
+    hub.worker_heartbeats = {}
+    hub.database_probe = {'ok': False, 'at': time.time()}
+    for fn in (pipeline, worker, marker, watchdog, launch_clock, watcher, position_monitor, health_monitor):
         threading.Thread(target=fn, daemon=True, name=fn.__name__).start()
     if screen:
         screen.start()

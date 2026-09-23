@@ -31,6 +31,7 @@ class Indexer:
         self.stop = threading.Event()
         self.ready = threading.Event()
         self.last_ok = time.time()      # when last_block last advanced; a health check reads it
+        self.last_indexed_block = int(self.db.meta_get('last_block') or 0)
         self.fail_range, self.fails = None, 0
 
     # -- time -------------------------------------------------------------
@@ -173,6 +174,7 @@ class Indexer:
                 for l in recent:
                     self.on_launch(l["token"])
         self.db.meta_set("last_block", b)
+        self.last_indexed_block = b
         self.last_ok = time.time()
         if new_launches or new_grads:
             log.info("blocks %s..%s: %d launches, %d graduations (%.1fs)", a, b, len(new_launches), len(new_grads),
