@@ -56,6 +56,7 @@ ADDED_COLUMNS = {"launches": [("buyback", "INTEGER")],
 
 class DB:
     def __init__(self, path=C.DB_PATH):
+        self.path = path.resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         self.c = sqlite3.connect(str(path), check_same_thread=False, timeout=30)
         self.c.row_factory = sqlite3.Row
@@ -92,12 +93,19 @@ class DB:
             self._depth += 1
             try:
                 yield
+                self.c.execute(f"RELEASE SAVEPOINT {name}")
             except BaseException:
-                self.c.execute(f"ROLLBACK TO SAVEPOINT {name}")
+                # SQLITE_FULL can roll back the entire transaction itself. Do not mask that
+                # original error with "no such savepoint", or leave a failed commit pending.
+                try:
+                    if self.c.in_transaction:
+                        self.c.execute(f"ROLLBACK TO SAVEPOINT {name}")
+                        self.c.execute(f"RELEASE SAVEPOINT {name}")
+                except sqlite3.Error:
+                    self.c.rollback()
                 raise
             finally:
                 self._depth -= 1
-                self.c.execute(f"RELEASE SAVEPOINT {name}")
 
     def x(self, sql, args=()):
         with self.lock:

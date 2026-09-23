@@ -3,6 +3,9 @@
 Quotes are observations, not guaranteed fills. No function in this module signs or sends.
 """
 import json
+import hashlib
+from functools import lru_cache
+from pathlib import Path
 import math
 import os
 import time
@@ -22,7 +25,31 @@ PAPER_FILL = 0.01              # a paper fill is the quote less this, a side: wh
                                # plausibly loses. The 3% tolerance is a live order's revert bound, not an expected fill.
 EXIT_TOLERANCE = 0.03          # a sell's minimum is the quote less this
 EXIT_TOLERANCE_RETRY = 0.10    # after a sell reverted: give up more to get out
-MODEL = 'quoted-usdg-v1'
+MODEL = 'quoted-pool-v2'
+
+
+@lru_cache(maxsize=1)
+def implementation_digest():
+    """Conservatively invalidate evidence when price, feature or execution semantics change."""
+    root = Path(__file__).parent
+    return hashlib.sha256(b''.join((root / name).read_bytes() for name in
+        ('watch.py', 'poolstate.py', 'prices.py', 'paper.py', 'lab.py', 'trade_checks.py',
+         'chain.py', 'pons.py', 'indexer.py', 'live_trading.py', 'strategy_validation.py'))).hexdigest()
+
+
+def evidence_spec():
+    return {'model': MODEL, 'entry_basis': 'acquisition_cost_per_token',
+            'implementation': implementation_digest(), 'paper_size_usd': C.PAPER_SIZE_USD,
+            'paper_fill': PAPER_FILL, 'slippage': SLIPPAGE, 'exit_tolerance': EXIT_TOLERANCE,
+            'max_roundtrip_loss': MAX_ROUNDTRIP_LOSS, 'max_price_impact': MAX_PRICE_IMPACT,
+            'max_gas_fraction': MAX_GAS_FRACTION, 'live_quotes': list(LIVE_QUOTES)}
+
+
+def entry_basis(dollars, quantity):
+    """The shared paper/live exit reference. Gas is accounted for separately in cashflows."""
+    if not math.isfinite(dollars) or not math.isfinite(quantity) or dollars <= 0 or quantity <= 0:
+        raise ValueError('invalid acquisition cost or quantity')
+    return dollars / quantity
 
 
 def eligible(token, result):

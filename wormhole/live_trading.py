@@ -39,12 +39,17 @@ def budget_usd():
 
 def budget(db):
     """{budget, at_risk, lost, room}. at_risk: what open positions and unsettled buys cost. lost: the lifetime
-    net loss of closed positions plus gas burnt on failed attempts, never below zero. Profits do not refill
-    the budget: they are swept to the burn (treasury.sweep_trading_profit)."""
+    net loss of closed positions after profit distributions plus gas burnt on failed attempts, never below
+    zero. Profits allocated to the burn cannot replenish principal; room never exceeds the original budget."""
     at_risk = db.one("SELECT COALESCE(SUM(size_usd),0) n FROM positions WHERE mode='live' AND status='open'")['n']
     at_risk += db.one("SELECT COALESCE(SUM(usd),0) n FROM trades WHERE mode='live' AND side='buy' AND note IN ('PENDING','REVIEW')")['n']
     total = budget_usd()
-    lost = max(0.0, -realized_pnl(db))
+    # Allocated profits are no longer trading capital, even before their burn settles.
+    # Count the original obligation exactly once, not both the obligation and its payment.
+    distributed = 0.0
+    if db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ledger'"):
+        distributed = db.one("SELECT COALESCE(SUM(amount),0) n FROM ledger WHERE kind='trade_profit'")['n']
+    lost = max(0.0, float(distributed) - realized_pnl(db))
     return {'budget': total, 'at_risk': round(at_risk, 4), 'lost': round(lost, 4), 'room': round(max(0.0, total - at_risk - lost), 4)}
 
 
@@ -322,7 +327,7 @@ def reconcile(rpc, db, acct=None):
                     if token_net < minimum or quote_net != -amount or db.one('SELECT 1 FROM positions WHERE token=?', (t['token'],)):
                         raise ValueError('buy settlement does not match intent')
                     qty, dollars = token_net / 1e18, -quote_net / 1e6
-                    px = dollars / qty
+                    px = execution.entry_basis(dollars, qty)
                     db.x('INSERT INTO positions(token,symbol,opened_ts,entry_usd,size_usd,qty,qty_left,peak_usd,status,mode,quote,pool_key,policy,tp_done,policy_spec,qty_raw,qty_left_raw,realized_usd)'
                          " VALUES(?,?,?,?,?,?,?,?,'open','live','USDG',?,?,'[]',?,?,?,?)",
                          (t['token'], t['symbol'], t['ts'], px, dollars, qty, qty, px, json.dumps(snapshot['pool']),

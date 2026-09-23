@@ -374,19 +374,23 @@ class Watcher:
                 pools[p["token"]] = pk
         return pools
 
-    def step(self, now=None):
-        now = int(now or time.time())
-        book = self._pools(self.db.q("SELECT token, pool_key FROM paper WHERE status='open' AND execution_model=? AND pool_key IS NOT NULL",
-                                     (execution.MODEL,)))
+    def mark_positions(self):
+        """Exit work can run independently of slow discovery and feature sampling."""
+        book = self._pools(self.db.q("SELECT token, pool_key FROM paper WHERE status='open' AND execution_model IS NOT NULL AND pool_key IS NOT NULL"))
         held = {}
         if self.on_prices and self.db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='positions'"):
             held = self._pools(self.db.q("SELECT token, pool_key FROM positions WHERE status='open' AND pool_key IS NOT NULL"))
         if book or held:
             mids = {t: m for t, m in poolstate.mids(self.rpc, {**held, **book}, _eth()).items() if m}
-            if book and any(t in mids for t in book):
-                self.paper.mark(prices={t: mids[t] for t in book if t in mids}, value=False)
             if held and any(t in mids for t in held):
                 self.on_prices({t: mids[t] for t in held if t in mids})
+            if book and any(t in mids for t in book):
+                self.paper.mark(prices={t: mids[t] for t in book if t in mids}, value=False)
+
+    def step(self, now=None, *, mark=True):
+        now = int(now or time.time())
+        if mark:
+            self.mark_positions()
         if now - self.sampled >= SAMPLE_EVERY_S:
             self.sampled = now
             _resolve_pools(self.rpc, self.db)

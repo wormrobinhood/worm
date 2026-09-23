@@ -64,6 +64,35 @@ def make_rpc(*replies):
     return r
 
 
+def test_optional_metadata_deadline_preserves_partial_answers_and_stops(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(chain.time, 'monotonic', lambda: clock[0])
+    rpc = make_rpc()
+    observed = []
+    def post(url, json, timeout):
+        observed.append(timeout)
+        clock[0] = 16.0
+        return Resp([{'id': 2, 'result': '0x22'}, {'id': 1, 'result': '0x11'}])
+    rpc.s.post = post
+    calls = [('eth_call', [])] * 3
+    assert rpc.batch_with_deadline(calls, 15, chunk=2) == ['0x11', '0x22', None]
+    assert observed == [5]
+
+
+@pytest.mark.parametrize('reply', [Resp({}, 429), requests.Timeout(), Resp({'error': 'unavailable'})])
+def test_optional_metadata_failure_does_not_retry_or_invent_values(reply):
+    rpc = make_rpc(reply)
+    assert rpc.batch_with_deadline([('eth_call', [])] * 30, chain.time.monotonic() + 15) == [None] * 30
+    assert len(rpc.s.posts) == 1
+
+
+def test_metadata_deadline_never_accepts_transaction_methods():
+    rpc = make_rpc()
+    with pytest.raises(ValueError, match='only allow eth_call'):
+        rpc.batch_with_deadline([('eth_sendRawTransaction', [])], chain.time.monotonic() + 15)
+    assert rpc.s.posts == []
+
+
 @pytest.fixture
 def sleeps(monkeypatch):
     out = []

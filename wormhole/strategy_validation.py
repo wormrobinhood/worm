@@ -15,10 +15,11 @@ import math
 from statistics import NormalDist, mean, stdev
 import time
 
-from . import lab
+from . import lab, trade_checks as execution
 
 COHORT_N = 50
 VALID_FOR = 21 * 86400
+SETTLEMENT_GRACE_S = 3600
 TOTAL_ALPHA = .10               # one-sided; the k-th attempt may use 1/(k(k+1)) of it
 LEGACY = 'superseded'           # trials of the sampled-path design this module replaced
 
@@ -39,7 +40,8 @@ def ensure_tables(db):
 def frozen(rule):
     """The strategy as one canonical string: the entry rule and the exit policy new positions get."""
     policy, _ = lab.parse_arm(lab.DEFAULT)
-    return json.dumps({'entry': rule, 'exit': policy, 'arm': lab.DEFAULT}, sort_keys=True)
+    return json.dumps({'entry': rule, 'exit': policy, 'arm': lab.DEFAULT,
+                       'execution': execution.evidence_spec()}, sort_keys=True)
 
 
 def rules():
@@ -91,7 +93,7 @@ def admit(db, trial):
         return                                       # the paper book adds its columns when it starts
     exit_spec = json.dumps(json.loads(trial['spec'])['exit'], sort_keys=True)
     have = db.one('SELECT COUNT(*) n FROM strategy_members WHERE trial=?', (trial['id'],))['n']
-    rows = db.q("SELECT p.id,p.token,p.opened_ts,p.policy_spec,p.gas_usd,p.cost,l.deployer FROM paper p LEFT JOIN launches l ON l.token=p.token"
+    rows = db.q("SELECT p.id,p.token,p.opened_ts,p.policy_spec,p.gas_usd,p.cost,p.execution_model,p.execution_spec,p.pool_key,l.deployer FROM paper p LEFT JOIN launches l ON l.token=p.token"
                 " WHERE p.id>? AND p.strategy=? AND p.token NOT IN (SELECT token FROM strategy_members WHERE trial=?) ORDER BY p.id",
                 (trial['cutoff'], trial['rule'], trial['id']))
     for r in rows:
@@ -99,9 +101,14 @@ def admit(db, trial):
             return
         try:
             same_exit = json.dumps(json.loads(r['policy_spec'] or 'null'), sort_keys=True) == exit_spec
-        except ValueError:
+            spec = json.loads(trial['spec'])['execution']
+            same_execution = (r['execution_model'] == spec['model'] and
+                              json.loads(r['execution_spec'] or 'null') == spec and
+                              json.loads(r['pool_key'] or '{}').get('quote') in spec['live_quotes'])
+        except (ValueError, KeyError, TypeError, AttributeError):
             same_exit = False
-        if not same_exit:
+            same_execution = False
+        if not same_exit or not same_execution:
             continue
         creator = (r['deployer'] or r['token']).lower()          # an unknown creator can only ever count once per token
         have += db.xc('INSERT OR IGNORE INTO strategy_members(trial,token,creator,t0,cost,gas) VALUES(?,?,?,?,?,?)',
@@ -109,11 +116,21 @@ def admit(db, trial):
 
 
 def settle(db, trial):
+    policy = json.loads(trial['spec'])['exit']
+    deadline = (policy.get('max_age') or 48 * 3600) + SETTLEMENT_GRACE_S
     for m in db.q('SELECT token FROM strategy_members WHERE trial=? AND result IS NULL', (trial['id'],)):
-        p = db.one("SELECT status,pnl_usd,size_usd FROM paper WHERE token=?", (m['token'],))
+        p = db.one("SELECT status,pnl_usd,size_usd,opened_ts,closed_ts FROM paper WHERE token=?", (m['token'],))
         if not p or p['status'] != 'closed':
+            if p and time.time() - p['opened_ts'] <= deadline:
+                continue
+            # The position stays open for recovery. The evidence is invalid, never a fabricated fill.
+            db.x('UPDATE strategy_members SET result=? WHERE trial=? AND token=? AND result IS NULL',
+                 (json.dumps({'valid': False, 'reason': 'missing or overdue position'}), trial['id'], m['token']))
             continue
-        ok = p['pnl_usd'] is not None and p['size_usd'] and math.isfinite(p['pnl_usd'] / p['size_usd'])
+        # Recovery may close overdue trades before this evaluator runs. A late close remains
+        # part of the actual book, but cannot establish timely execution of the frozen policy.
+        timely = p['closed_ts'] is not None and 0 <= p['closed_ts'] - p['opened_ts'] <= deadline
+        ok = timely and p['pnl_usd'] is not None and p['size_usd'] and math.isfinite(p['pnl_usd'] / p['size_usd'])
         result = {'valid': True, 'ret': p['pnl_usd'] / p['size_usd']} if ok else {'valid': False}
         db.x('UPDATE strategy_members SET result=? WHERE trial=? AND token=? AND result IS NULL',
              (json.dumps(result), trial['id'], m['token']))
@@ -172,7 +189,9 @@ def summary(db):
         rows = [_view(db, r, rule) for r in db.q('SELECT * FROM strategy_trials WHERE rule=? ORDER BY id DESC', (rule['name'],))]
         if not rows:
             continue
-        standing = next((v for v in rows if v['passed']), None)
+        # A failed renewal revokes the earlier pass immediately; it cannot linger for 21 days.
+        finished = next((v for v in rows if v['status'] in ('passed', 'failed', 'expired')), None)
+        standing = finished if finished and finished['passed'] else None
         views.append({'rule': rule['name'], 'passed': bool(standing), 'standing_pass': standing,
                       'last': next((v for v in rows if v['status'] not in ('collecting', 'voided')), None),
                       'collecting': next((v for v in rows if v['status'] == 'collecting'), None)})

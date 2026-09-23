@@ -523,3 +523,21 @@ untouched: the 2% gas limit, the ETH reserve, the sender's repeat of both checks
 (under 90 funded days) is unchanged: it already caps its target at $100. The status keeps `mode:
 funded_daily` and gains `large_usdg`; `next_claim_after` follows whichever rule applies to the balance.
 A large-balance bar set below the ordinary minimum is rejected like any other invalid claim setting.
+
+## September 23, 2026: local trading and operational hardening
+
+Code changes remain local; ask the operator before every push. No new code has been deployed and live trading remains disabled. The operator separately authorized backup and storage recovery of the existing deployment.
+
+See `docs/TRADING-RECOVERY.md` for migration behavior, production recovery steps and remaining gates. The patch addresses stale-backfill health, disk/write probes independent of the marker, position-monitor isolation, burn-allocation budget accounting, paper/live acquisition-cost parity, versioned USDG-only validation, failed renewal revocation and overdue evidence. Historical paper rows remain intact; new execution semantics start with `quoted-pool-v2`. Existing quoted positions still require quotes for exits. A failed or stale valuation is not displayed as zero aggregate open P&L.
+
+Backups now include checksums and can be verified after transfer with `scripts/verify-backup.py`. During the separately approved recovery, coordinated current-state and historical backups were verified off-host, both current databases were restored and checked offline, and only the verified historical copies were removed from the full production volume. The unchanged deployment was restarted with trading off. Private operational records are intentionally outside this repository. Log emission is implemented; external email delivery is not claimed by this patch.
+
+Disk-full error reporting now preserves the pipeline and operations retry loops even when their database log writes also fail. Transaction cleanup handles SQLite's automatic rollback on disk exhaustion without masking the original error or retaining a partial transaction.
+
+Validation: 795 offline tests passed, including real SQLite disk-capacity, late profitable paper-recovery, and post-startup chain-lag regressions. Late closes remain in the book but cannot establish execution within the frozen policy deadline. Page JavaScript parses and the working-tree secret/privacy scan passes. An existing AnyIO deprecation warning remains. No live-trading rehearsal was performed; offline restoration did not start an application or signer.
+
+The trading-readiness catch-up flag also accounts for the gap between the committed checkpoint and the moving chain head after startup backfill completes. This uses cached indexer state and an estimated chain timestamp, without adding RPC or database reads to the health route.
+
+Operational follow-up: the recovery-only payment pause was removed after verifying the unchanged settled journal and recovered workers; trading remains off. Storage and chain-head freshness recovered: two final checks were 42 then 23 blocks behind the moving head, with healthy responses and fresh checkpoints. Historical scoring jobs remain queued and are being processed. Do not infer complete chain freshness from the completed startup phase alone. Synchronous token-metadata reads remain a latency limitation in the unchanged production code.
+
+Optional token metadata now uses a shared 15-second network budget and pair-symbol discovery 10 seconds, with at most five seconds per request and no retry amplification. Missing reads remain unknown and existing values are preserved. The bounded batch path accepts only eth_call and is not used for signing or receipt recovery. Timeout, rate-limit, partial-response and method-restriction checks are included in the test count above. This local fix has not been applied to the delayed production metadata path.

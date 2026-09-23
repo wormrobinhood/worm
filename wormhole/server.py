@@ -669,16 +669,14 @@ def make_app(rpc, db, brain, paper, hub):
 
     @app.get("/healthz")
     def health():
-        """ok while the indexer has read a block in the last 180 s (run.py sets hub.indexer); 503 otherwise, so
-        the host restarts a wedged process. Without an indexer attached the answer is ok."""
-        idx = getattr(hub, "indexer", None)
-        last_ok = getattr(idx, "last_ok", None) if idx else None
-        age = round(time.time() - last_ok) if last_ok else None
-        ready = getattr(idx, "ready", None)
-        catching_up = bool(ready is not None and not ready.is_set())   # first backfill: the host must not restart us
-        ok = age is None or age < 180 or catching_up
-        return JSONResponse({"ok": ok, "last_block": db.meta_get("last_block"), "indexer_age_s": age,
-                             "catching_up": catching_up}, status_code=200 if ok else 503)
+        """Operational readiness. Backfill must make progress; a fresh HTTP response is not enough."""
+        from . import runtime_health
+        status = runtime_health.status(db, hub)
+        return JSONResponse(status, status_code=200 if status['ok'] else 503)
+
+    @app.get("/livez")
+    def liveness():
+        return {"ok": True}  # process reachable; explicitly not a data/trading health check
 
     async def _broadcast(msg):
         """One message to every client, each with its own 5 s limit: a stalled client loses its socket

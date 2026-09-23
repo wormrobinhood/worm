@@ -105,6 +105,40 @@ class Rpc:
             out.extend(self._batch_part(calls[i:i + chunk]))
         return out
 
+    def batch_with_deadline(self, calls, deadline, chunk=25):
+        """Optional metadata reads: no retry amplification, missing answers remain None.
+
+        The shared monotonic deadline covers successive batches. Request timeouts use the
+        remaining allowance; this is a network time budget, not a hard process deadline.
+        This method is deliberately unavailable for signing, sending or receipt recovery.
+        """
+        if any(method != 'eth_call' for method, _ in calls):
+            raise ValueError('bounded metadata batches only allow eth_call')
+        out = [None] * len(calls)
+        for start in range(0, len(calls), chunk):
+            if time.monotonic() >= deadline:
+                break
+            self._wait_turn()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            part = calls[start:start + chunk]
+            payload = [{'jsonrpc': '2.0', 'id': i + 1, 'method': method, 'params': params}
+                       for i, (method, params) in enumerate(part)]
+            try:
+                response = self.s.post(self.url, json=payload, timeout=min(5, remaining))
+                if response.status_code != 200:
+                    break
+                body = response.json()
+                if not isinstance(body, list):
+                    break
+                answers = {item.get('id'): item for item in body if isinstance(item, dict)}
+                for i in range(len(part)):
+                    out[start + i] = answers.get(i + 1, {}).get('result')
+            except (requests.RequestException, ValueError):
+                break
+        return out
+
     def _batch_part(self, part):
         payload = [{"jsonrpc": "2.0", "id": k + 1, "method": m, "params": p} for k, (m, p) in enumerate(part)]
         js = None
@@ -249,8 +283,9 @@ def call_fn(rpc, to, sig, out_types, arg_types=(), args=(), block="latest"):
     return decode_result(rpc.eth_call(to, call_data(sig, arg_types, args), block), out_types)
 
 
-def batch_calls(rpc, items, block="latest"):
+def batch_calls(rpc, items, block="latest", deadline=None):
     """items: list of (to, sig, out_types, arg_types, args). Returns decoded results (None on failure)."""
     calls = [("eth_call", [{"to": to, "data": call_data(sig, at, a)}, block]) for to, sig, _, at, a in items]
-    raws = rpc.batch(calls)
+    bounded = getattr(rpc, 'batch_with_deadline', None)
+    raws = bounded(calls, deadline) if deadline is not None and bounded else rpc.batch(calls)
     return [decode_result(raw, it[2]) for raw, it in zip(raws, items)]
