@@ -13,7 +13,7 @@ import logging
 import time
 
 from . import config as C, lab, poolstate, trade_checks as execution
-from .prices import eth_usd_last
+from .prices import eth_usd_last, eth_usd_cached
 from .scorer import SWAP_TOPIC
 
 log = logging.getLogger("wormhole.watch")
@@ -381,11 +381,14 @@ class Watcher:
         if self.on_prices and self.db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='positions'"):
             held = self._pools(self.db.q("SELECT token, pool_key FROM positions WHERE status='open' AND pool_key IS NOT NULL"))
         if book or held:
-            mids = {t: m for t, m in poolstate.mids(self.rpc, {**held, **book}, _eth()).items() if m}
+            mids = {t: m for t, m in poolstate.mids(self.rpc, {**held, **book}, eth_usd_cached(), budget_s=5).items() if m}
             if held and any(t in mids for t in held):
                 self.on_prices({t: mids[t] for t in held if t in mids})
             if book and any(t in mids for t in book):
-                self.paper.mark(prices={t: mids[t] for t in book if t in mids}, value=False)
+                if self.paper.mark(prices={t: mids[t] for t in book if t in mids}, value=False) is False:
+                    raise RuntimeError('paper exits incomplete; monitoring heartbeat not refreshed')
+            if (set(book) | set(held)) != set(mids):
+                raise RuntimeError('position prices incomplete; monitoring heartbeat not refreshed')
 
     def step(self, now=None, *, mark=True):
         now = int(now or time.time())

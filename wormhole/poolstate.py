@@ -4,6 +4,7 @@ One batched extsload of the Uniswap v4 PoolManager per pool: slot0 holds sqrtPri
 mid price at the latest block, before the hook's fee and the creator tax; an exit is still priced by a
 quote. Read-only: nothing here signs or sends."""
 import math
+import time
 
 from eth_abi import encode
 from eth_utils import keccak
@@ -49,7 +50,7 @@ def token_price(pk, token, sqrt_x96, quote_usd):
     return price if math.isfinite(price) and price > 0 else None
 
 
-def mids(rpc, pools, eth_usd):
+def mids(rpc, pools, eth_usd, *, budget_s=None):
     """{token: usd mid price or None} for pools = {token: pool key}. One JSON-RPC batch. An ETH-quoted pool
     needs a fresh eth_usd; without it that token's price is None, never a guess."""
     tokens = list(pools)
@@ -58,7 +59,9 @@ def mids(rpc, pools, eth_usd):
     calls = [("eth_call", [{"to": C.POOL_MANAGER, "data": EXTSLOAD + state_slot(pool_id(pools[t]))[2:]}, "latest"])
              for t in tokens]
     out = {}
-    for token, raw in zip(tokens, rpc.batch(calls)):
+    answers = (rpc.batch_with_deadline(calls, time.monotonic() + budget_s)
+               if budget_s is not None and hasattr(rpc, 'batch_with_deadline') else rpc.batch(calls))
+    for token, raw in zip(tokens, answers):
         pk = pools[token]
         quote_usd = 1.0 if pk.get("quote") == C.USDG else eth_usd if pk.get("quote") == C.ZERO else None
         out[token] = token_price(pk, token, sqrt_price(raw), quote_usd)

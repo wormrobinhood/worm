@@ -103,3 +103,13 @@ def test_position_mids_covers_only_rows_with_a_verified_pool(monkeypatch):
         def batch(self, calls):
             raise RuntimeError("429")
     assert poolstate.position_mids(Down(), rows) == ({}, {TOKEN_LOW})
+
+
+def test_position_read_budget_does_not_fall_back_to_long_retries():
+    class Bounded:
+        def batch(self, calls):
+            raise AssertionError('unbounded batch used')
+        def batch_with_deadline(self, calls, deadline):
+            assert deadline > 0
+            return [None] * len(calls)
+    assert poolstate.mids(Bounded(), {TOKEN_LOW: WORM_POOL}, 2000, budget_s=5) == {TOKEN_LOW: None}

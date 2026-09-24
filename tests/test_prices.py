@@ -163,3 +163,14 @@ def test_eth_usd_last_is_none_until_a_real_fetch(monkeypatch):
     monkeypatch.setattr(PR, "_eth", (1.0, 2600.0))         # fetched long ago, the API is still down
     monkeypatch.setattr(PR, "_eth_failed", 0.0)
     assert PR.eth_usd_last() == 2600.0 and PR.eth_usd(strict=True) is None
+
+
+def test_exit_price_cache_never_refreshes_or_returns_seed_stale_nan(monkeypatch):
+    monkeypatch.setattr(P, '_get', lambda *a: pytest.fail('network access on cached exit path'))
+    assert P.eth_usd_cached() is None
+    monkeypatch.setattr(P, '_eth', (time.time(), 2000))
+    assert P.eth_usd_cached() == 2000
+    for ts, v in [(time.time()-P.ETH_MAX_AGE_S-1, 2000), (time.time(), float('nan')),
+                  (time.time()+500, 2000), (time.time(), 0)]:
+        monkeypatch.setattr(P, '_eth', (ts, v))
+        assert P.eth_usd_cached() is None
