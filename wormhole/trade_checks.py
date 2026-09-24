@@ -11,7 +11,7 @@ import os
 import time
 
 from . import config as C
-from .prices import eth_usd, token_prices, usable_price
+from .prices import eth_usd, eth_usd_cached, token_prices, usable_price
 
 MIN_SCORE = max(70, int(os.environ.get('WH_BUY_MIN_SCORE', '70')))
 SLIPPAGE = 0.03
@@ -33,7 +33,7 @@ def implementation_digest():
     """Conservatively invalidate evidence when price, feature or execution semantics change."""
     root = Path(__file__).parent
     return hashlib.sha256(b''.join((root / name).read_bytes() for name in
-        ('watch.py', 'poolstate.py', 'prices.py', 'paper.py', 'lab.py', 'trade_checks.py',
+        ('watch.py', 'poolstate.py', 'prices.py', 'paper.py', 'paper_research.py', 'lab.py', 'trade_checks.py',
          'chain.py', 'pons.py', 'indexer.py', 'live_trading.py', 'strategy_validation.py'))).hexdigest()
 
 
@@ -101,6 +101,10 @@ def pool(rpc, db, token, quotes=LIVE_QUOTES):
 
 def gas_cost(rpc, units):
     price = eth_usd(strict=True)
+    return _gas_cost_at_price(rpc, units, price)
+
+
+def _gas_cost_at_price(rpc, units, price):
     gp = int(rpc.call('eth_gasPrice', []), 16)
     if price is None or not math.isfinite(price) or price <= 0 or gp <= 0 or units <= 0:
         raise ValueError('fresh gas pricing unavailable')
@@ -141,7 +145,7 @@ def entry(rpc, db, token, dollars, *, quotes=LIVE_QUOTES, reference=None):
             'liquidation_usd': back * 9700 // 10000 / unit * usd - gas_cost(rpc, sell_gas), 'model': MODEL}
 
 
-def exit_quote(rpc, pk, token, amount, *, quotes=LIVE_QUOTES, tolerance=None):
+def exit_quote(rpc, pk, token, amount, *, quotes=LIVE_QUOTES, tolerance=None, cached_prices=False):
     from .trader import quote_buy
     tolerance = EXIT_TOLERANCE if tolerance is None else tolerance
     if not 0 < tolerance <= EXIT_TOLERANCE_RETRY:
@@ -149,12 +153,15 @@ def exit_quote(rpc, pk, token, amount, *, quotes=LIVE_QUOTES, tolerance=None):
     if rpc is None or not verified(pk, token, quotes) or amount <= 0:
         raise ValueError('sell quote unavailable')
     started = time.time()
-    unit, usd = quote_unit(pk)
+    cached = eth_usd_cached() if cached_prices else None
+    if cached_prices and cached is None:
+        raise ValueError('fresh cached gas pricing unavailable')
+    unit, usd = ((10 ** 6, 1.0) if pk['quote'] == C.USDG else (10 ** 18, cached)) if cached_prices else quote_unit(pk)
     out, gas, direction = quote_buy(rpc, pk, pk['quote'], amount)
     minimum = out * (10000 - int(round(tolerance * 10000))) // 10000
     if minimum <= 0:
         raise ValueError('no executable sell quote')
-    fee = gas_cost(rpc, gas)
+    fee = _gas_cost_at_price(rpc, gas, cached) if cached_prices else gas_cost(rpc, gas)
     if time.time() >= started + QUOTE_TTL:
         raise ValueError('sell quote expired')
     return {'amount_raw': amount, 'out_raw': out, 'minimum_raw': minimum, 'minimum_usd': minimum / unit * usd,

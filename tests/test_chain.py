@@ -296,3 +296,34 @@ def test_block_timestamps_none_for_a_missing_block():
     r.batch = batch
     assert r.block_timestamps([5, 3, 5]) == {3: 1_700_000_000, 5: None}
     assert seen == [[3, 5]]
+
+
+def test_bounded_quote_reads_share_deadline_and_reject_late_answers(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr(chain.time, 'monotonic', lambda: clock[0])
+    rpc = make_rpc()
+    budgets = []
+    def post(url, json, timeout):
+        budgets.append(timeout)
+        clock[0] += 3
+        return ok('0x1')
+    rpc.s.post = post
+    view = rpc.read_only(5)
+    assert view.eth_call(TOKEN, '0x') == '0x1'
+    with pytest.raises(RpcError, match='budget'):
+        view.call('eth_gasPrice', [])
+    assert budgets == [5, 2]
+    with pytest.raises(RpcError, match='exhausted'):
+        view.call('eth_gasPrice', [])
+    assert len(budgets) == 2
+
+
+def test_bounded_quote_reads_never_send_or_retry():
+    rpc = make_rpc(Resp({}, status=429))
+    view = rpc.read_only(5)
+    with pytest.raises(ValueError):
+        view.call('eth_sendRawTransaction', ['not-a-transaction'])
+    assert not rpc.s.posts
+    with pytest.raises(RpcError):
+        view.call('eth_gasPrice', [])
+    assert len(rpc.s.posts) == 1

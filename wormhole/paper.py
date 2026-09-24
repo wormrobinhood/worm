@@ -8,7 +8,7 @@ import threading
 import time
 
 from . import config as C
-from . import lab, poolstate
+from . import lab, poolstate, paper_research
 from . import trade_checks as execution, trade_risk
 from .prices import token_prices, usable_price
 
@@ -29,12 +29,15 @@ class Paper:
     def __init__(self, db, rpc=None):
         self.db = db
         self.rpc = rpc
-        self._lock = threading.Lock()        # consider() runs from the scoring worker and the marker at once
+        self._lock = threading.Lock()        # serialize entries only; exits never wait for entry quotes
+        self._position_guard = threading.Lock()
+        self._position_locks = {}
         for col in ("qty_left REAL", "recovered_usd REAL DEFAULT 0", "peak_usd REAL", "realized_usd REAL DEFAULT 0",
                     "policy TEXT", "tp_done TEXT", "trail_on INTEGER DEFAULT 0", "cost REAL",
                     "execution_model TEXT", "pool_key TEXT", "policy_spec TEXT", "gas_usd REAL DEFAULT 0",
                     "liquidation_usd REAL", "marked_ts INTEGER", "strategy TEXT", "features TEXT",
-                    "execution_spec TEXT"):
+                    "execution_spec TEXT", "observed_ts REAL", "monitor_ts INTEGER", "max_monitor_gap_s INTEGER DEFAULT 0",
+                    "entry_shadow TEXT", "exit_trigger_ts INTEGER", "exit_quote_failures INTEGER DEFAULT 0", "exit_quote_failed_ts INTEGER"):
             try:
                 db.x(f"ALTER TABLE paper ADD COLUMN {col}")
             except Exception:
@@ -81,8 +84,10 @@ class Paper:
             arm = lab.pick_arm(self.db)
             opened = self._open(token, symbol or token[:8], arm, lab.parse_arm(arm)[0], why, strategy,
                                 reference=reference, quotes=execution.PAPER_QUOTES)
-            if opened and features:
-                self.db.x("UPDATE paper SET features=? WHERE token=?", (json.dumps(features), token))
+            if opened:
+                shadow = paper_research.risk_filter({'features': features})
+                self.db.x("UPDATE paper SET features=?,entry_shadow=? WHERE token=?",
+                          (json.dumps(features or {}), json.dumps(shadow, sort_keys=True), token))
             return opened
 
     def _open(self, token, sym, arm, policy, why, strategy, reference=None, quotes=execution.LIVE_QUOTES):
@@ -123,91 +128,137 @@ class Paper:
             self.consider(r["token"], {"score": r["score"], "verdict": r["verdict"], "metrics": m})
 
     def mark(self, prices=None, value=True):
-        """prices: {token: usd mid} the watcher just read from the pools; None uses the price API. value=False
-        skips the bid that only values a position nothing is sold from (the fast loop marks far more often
-        than a valuation is needed)."""
-        with self._lock:
-            self._mark(prices, value)
+        """Evaluate exits before optional valuations. Slow valuation I/O holds no book lock.
+
+        Per-position locks prevent duplicate fills while allowing other positions to progress.
+        Older observations and valuation responses cannot overwrite newer position state.
+        """
+        return self._mark(prices, value)
+
+    def _position_lock(self, position_id):
+        with self._position_guard:
+            return self._position_locks.setdefault(position_id, threading.Lock())
+
+    def _value(self, position_id):
+        p = self.db.one("SELECT * FROM paper WHERE id=? AND status='open'", (position_id,))
+        if not p or not p.get('execution_model'):
+            return
+        qty = p['qty_left'] if p['qty_left'] is not None else p['qty']
+        started = time.time()
+        try:
+            liquidation = self._quote(p, int(qty * 1e18))[0]
+        except Exception:
+            return                              # retain the last observation and its age, never invent a fill
+        lock = self._position_lock(position_id)
+        if not lock.acquire(blocking=False):
+            return                              # an exit has priority over this optional valuation
+        try:
+            self.db.x("UPDATE paper SET liquidation_usd=?,marked_ts=? WHERE id=? AND status='open'"
+                      " AND COALESCE(qty_left,qty)=? AND COALESCE(marked_ts,0)<=?",
+                      (liquidation, int(started), position_id, qty, started))
+        finally:
+            lock.release()
 
     def _quote(self, p, amount):
-        bid = execution.exit_quote(self.rpc, json.loads(p['pool_key']), p['token'], amount, quotes=execution.PAPER_QUOTES)
+        rpc = self.rpc.read_only(5) if hasattr(self.rpc, 'read_only') else self.rpc
+        bid = execution.exit_quote(rpc, json.loads(p['pool_key']), p['token'], amount, quotes=execution.PAPER_QUOTES, cached_prices=True)
         return bid.get('paper_fill_usd', bid['minimum_usd']) - bid['gas_usd'], bid['gas_usd']
 
     def _mark(self, mids=None, value=True):
+        observed = time.time()
         opens = self.db.q("SELECT * FROM paper WHERE status='open'")
         if not opens:
             return
-        # One price source per position. A position with its own pool is marked from that pool on the slow
-        # cycle too; the price API only ever marks rows from before pools were stored.
         own = set()
         if mids is None:
             mids, own = poolstate.position_mids(self.rpc, opens)
             prices = token_prices([p["token"] for p in opens if p["token"] not in own])
         else:
             prices, own = {}, set(mids)
-        now = int(time.time())
+        healthy = True
         for p in opens:
             px = mids.get(p["token"]) if p["token"] in own else usable_price(prices.get(p["token"]))
             if not px or not p["entry_usd"] or not p["qty"]:
+                healthy = False
                 continue
-            cost = p["cost"] if p.get("cost") is not None else COST
+            lock = self._position_lock(p['id'])
+            if not lock.acquire(blocking=False):
+                healthy = False
+                continue                        # another marker owns this exit; keep checking the other positions
             try:
-                policy = json.loads(p['policy_spec']) if p.get('policy_spec') else lab.parse_arm(p["policy"] or lab.DEFAULT)[0]
-            except KeyError:                       # an arm that no longer exists: exit by the default rule, never stall the book
-                policy, _ = lab.parse_arm(lab.DEFAULT)
-            st = {"entry": p["entry_usd"], "entry_ts": p["opened_ts"], "qty_left": (p["qty_left"] if p["qty_left"] is not None else p["qty"]) / p["qty"],
-                  "tp_done": json.loads(p["tp_done"] or "[]"), "peak": max(p["peak_usd"] or 0, px), "trail_on": bool(p["trail_on"])}
-            realized = p["realized_usd"] or 0.0
-            last_why = None
-            gas_usd = p.get('gas_usd') or 0
-            quoted = bool(p.get('execution_model'))  # older quoted rows keep quoted exits, never synthetic fills
-            liquidation, marked = p.get('liquidation_usd'), p.get('marked_ts')
-            # A current bid is needed to value a quoted position, even when no exit is triggered.
-            if quoted and value:
-                try:
-                    liquidation, marked = self._quote(p, int(st['qty_left'] * p['qty'] * 1e18))[0], now
-                except Exception:
-                    continue
-            while st["qty_left"] > 1e-9:
-                checkpoint = copy.deepcopy(st)
-                frac, why = lab.exit_step(policy, st, px, now)
-                if frac <= 0:
-                    break
-                if quoted:
-                    try:
-                        usd, gas = self._quote(p, int(frac * p['qty'] * 1e18))
-                    except Exception:
-                        # Roll back only the unfilled step, retaining any earlier quoted fills.
-                        st = checkpoint
-                        break
-                    gas_usd += gas
-                else:
-                    usd = frac * p["qty"] * px * (1 - cost)
-                realized += usd
-                st["qty_left"] -= frac
-                last_why = why
-                self.db.add_event("paper", f"paper sell: {frac * 100:.0f}% of ${p['symbol']} at {px / p['entry_usd']:.2f}x ({why}), +${usd:.2f}", p["token"])
-            qty_left = max(0.0, st["qty_left"]) * p["qty"]
-            closed = st["qty_left"] <= 1e-9
-            pnl = realized - p["size_usd"] if closed else None
+                if self._mark_position(p['id'], px, observed) is False:
+                    healthy = False
+            finally:
+                lock.release()
+        if value:
+            for p in opens:                      # no position or entry lock held during valuation network calls
+                self._value(p['id'])
+        return healthy
+
+    def _mark_position(self, position_id, px, observed):
+        p = self.db.one("SELECT * FROM paper WHERE id=? AND status='open'", (position_id,))
+        if not p or (p.get('observed_ts') or 0) > observed:
+            return
+        now = int(time.time())
+        previous = p.get('monitor_ts')
+        gap = max(0, now - previous) if previous else 0
+        self.db.x("UPDATE paper SET observed_ts=?,monitor_ts=?,max_monitor_gap_s=MAX(COALESCE(max_monitor_gap_s,0),?) WHERE id=?",
+                  (observed, now, gap, position_id))
+        cost = p["cost"] if p.get("cost") is not None else COST
+        try:
+            policy = json.loads(p['policy_spec']) if p.get('policy_spec') else lab.parse_arm(p["policy"] or lab.DEFAULT)[0]
+        except KeyError:                       # an arm that no longer exists: exit by the default rule, never stall the book
+            policy, _ = lab.parse_arm(lab.DEFAULT)
+        st = {"entry": p["entry_usd"], "entry_ts": p["opened_ts"], "qty_left": (p["qty_left"] if p["qty_left"] is not None else p["qty"]) / p["qty"],
+              "tp_done": json.loads(p["tp_done"] or "[]"), "peak": max(p["peak_usd"] or 0, px), "trail_on": bool(p["trail_on"])}
+        realized = p["realized_usd"] or 0.0
+        last_why = None
+        failed_quote = False
+        gas_usd = p.get('gas_usd') or 0
+        quoted = bool(p.get('execution_model'))  # older quoted rows keep quoted exits, never synthetic fills
+        liquidation, marked = p.get('liquidation_usd'), p.get('marked_ts')
+        while st["qty_left"] > 1e-9:
+            checkpoint = copy.deepcopy(st)
+            frac, why = lab.exit_step(policy, st, px, now)
+            if frac <= 0:
+                break
             if quoted:
-                if closed:
-                    liquidation, marked = 0.0, now
-                elif last_why:
-                    liquidation, marked = None, None
-                    try:
-                        liquidation, marked = self._quote(p, int(qty_left * 1e18))[0], now
-                    except Exception:
-                        pass
-            with self.db.transaction():
-                self.db.x("UPDATE paper SET last_usd=?, peak_usd=?, qty_left=?, tp_done=?, trail_on=?, realized_usd=?, recovered_usd=?,"
-                          " status=?, closed_ts=?, exit_usd=?, pnl_usd=?, reason=? WHERE id=?",
-                          (px, st["peak"], qty_left, json.dumps(st["tp_done"]), 1 if st["trail_on"] else 0, realized,
-                           realized if st["tp_done"] else 0, "closed" if closed else "open", now if closed else None,
-                           px if closed else None, pnl, last_why if closed else None, p["id"]))
-                self.db.x("UPDATE paper SET gas_usd=?,liquidation_usd=?,marked_ts=? WHERE id=?", (gas_usd, liquidation, marked, p['id']))
+                self.db.x("UPDATE paper SET exit_trigger_ts=COALESCE(exit_trigger_ts,?) WHERE id=?", (now, p['id']))
+                try:
+                    usd, gas = self._quote(p, int(frac * p['qty'] * 1e18))
+                except Exception:
+                    # Roll back only the unfilled step, retaining any earlier quoted fills.
+                    st = checkpoint
+                    failed_quote = True
+                    self.db.x("UPDATE paper SET exit_quote_failures=COALESCE(exit_quote_failures,0)+1,exit_quote_failed_ts=? WHERE id=?",
+                              (int(time.time()), p['id']))
+                    break
+                gas_usd += gas
+            else:
+                usd = frac * p["qty"] * px * (1 - cost)
+            realized += usd
+            st["qty_left"] -= frac
+            last_why = why
+            self.db.add_event("paper", f"paper sell: {frac * 100:.0f}% of ${p['symbol']} at {px / p['entry_usd']:.2f}x ({why}), +${usd:.2f}", p["token"])
+        qty_left = max(0.0, st["qty_left"]) * p["qty"]
+        closed = st["qty_left"] <= 1e-9
+        pnl = realized - p["size_usd"] if closed else None
+        if quoted:
             if closed:
-                self.db.add_event("paper", f"paper close: ${p['symbol']} pnl ${pnl:+.2f} ({last_why}, arm {p['policy']})", p["token"])
+                liquidation, marked = 0.0, now
+            elif last_why:
+                liquidation, marked = None, None   # the old quote covers a different quantity; valuation runs later
+        with self.db.transaction():
+            self.db.x("UPDATE paper SET last_usd=?, peak_usd=?, qty_left=?, tp_done=?, trail_on=?, realized_usd=?, recovered_usd=?,"
+                      " status=?, closed_ts=?, exit_usd=?, pnl_usd=?, reason=? WHERE id=?",
+                      (px, st["peak"], qty_left, json.dumps(st["tp_done"]), 1 if st["trail_on"] else 0, realized,
+                       realized if st["tp_done"] else 0, "closed" if closed else "open", int(time.time()) if closed else None,
+                       px if closed else None, pnl, last_why if closed else None, p["id"]))
+            self.db.x("UPDATE paper SET gas_usd=?,liquidation_usd=?,marked_ts=? WHERE id=?", (gas_usd, liquidation, marked, p['id']))
+        if closed:
+            self.db.add_event("paper", f"paper close: ${p['symbol']} pnl ${pnl:+.2f} ({last_why}, arm {p['policy']})", p["token"])
+
+        return not failed_quote
 
     def summary(self):
         opens = self.db.q("SELECT * FROM paper WHERE status='open' ORDER BY opened_ts DESC")
@@ -237,4 +288,4 @@ class Paper:
                 "unpriced_count": unpriced,
                 "risk": trade_risk.check(self.db, 'paper', latch=False), "execution_model": execution.MODEL,
                 "entry": entry_text(),
-                "rules": f"exits by the strategy lab, in use: {cur} ({why}); fills need the token's own Pons pool (USDG or ETH) and a round-trip quote, and are booked at the quote less {execution.PAPER_FILL * 100:.0f}% a side plus gas; open positions are re-priced from the chain every few seconds; legacy rows retain their original cost model"}
+                "rules": f"exits by the strategy lab, in use: {cur} ({why}); fills need the token's own Pons pool (USDG or ETH) and a round-trip quote, and are booked at the quote less {execution.PAPER_FILL * 100:.0f}% a side plus gas; exit checks target a 15-second cadence; valuation quotes refresh separately and can become stale; legacy rows retain their original cost model"}

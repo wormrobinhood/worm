@@ -133,6 +133,12 @@ def eth_usd(strict=False):
     return _eth[1]
 
 
+def eth_usd_cached():
+    """Fresh cache only, without a network request or rate-gate wait on the exit path."""
+    ts, value = _eth
+    return value if ts and 0 <= time.time() - ts < ETH_MAX_AGE_S and value > 0 and math.isfinite(value) else None
+
+
 def eth_usd_last():
     """The last ETH price that was really fetched, however old, refreshing it when due; None before the
     first successful fetch. For marking a position between refreshes, never for sizing a trade."""

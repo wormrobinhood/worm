@@ -25,7 +25,7 @@ def feed(monkeypatch, db):
         qty = dollars / price / (1 + cost)
         return {'price': price, 'pool': {'cost': cost}, 'minimum_raw': int(qty * 1e18), 'gas_usd': 0,
                 'liquidation_usd': qty * price * (1 - cost)}
-    def exit_quote(rpc, pool, token, amount, quotes=None):
+    def exit_quote(rpc, pool, token, amount, quotes=None, cached_prices=False):
         return {'minimum_usd': amount / 1e18 * prices[token] * (1 - pool.get('cost', 0.04)), 'gas_usd': 0}
     monkeypatch.setattr(P.execution, 'entry', entry)
     monkeypatch.setattr(P.execution, 'exit_quote', exit_quote)
@@ -312,3 +312,108 @@ def test_legacy_quoted_positions_never_fall_back_to_fabricated_fills(db, feed, m
     monkeypatch.setattr(P.execution, 'exit_quote', no_quote)
     pb.mark(prices={TOKEN: .1}, value=False)
     assert db.one('SELECT status FROM paper')['status'] == 'open'
+
+
+def test_slow_valuation_cannot_block_exit_or_resurrect_closed_value(db, feed, monkeypatch):
+    pb = enter(db, feed)
+    waiting, release = threading.Event(), threading.Event()
+    original = pb._quote
+    def quote(p, amount):
+        if threading.current_thread().name == 'slow-value':
+            waiting.set()
+            assert release.wait(3)
+            return 999.0, 0.0
+        return original(p, amount)
+    monkeypatch.setattr(pb, '_quote', quote)
+    slow = threading.Thread(name='slow-value', target=pb.mark)
+    slow.start()
+    try:
+        assert waiting.wait(2)
+        feed[TOKEN] = .4
+        fast = threading.Thread(target=lambda: pb.mark(prices={TOKEN: .4}, value=False))
+        fast.start(); fast.join(1)
+        assert not fast.is_alive(), 'valuation blocked the stop'
+        row = db.one('SELECT status,liquidation_usd,pnl_usd FROM paper')
+        assert row['status'] == 'closed' and row['liquidation_usd'] == 0 and row['pnl_usd'] < -5
+    finally:
+        release.set(); slow.join(3)
+    assert db.one('SELECT liquidation_usd FROM paper')['liquidation_usd'] == 0
+
+
+def test_slow_entry_does_not_block_existing_position_exit(db, feed, monkeypatch):
+    pb = enter(db, feed)
+    waiting, release = threading.Event(), threading.Event()
+    original = P.execution.entry
+    def entry(*args, **kwargs):
+        waiting.set(); assert release.wait(3)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(P.execution, 'entry', entry)
+    slow = threading.Thread(target=lambda: pb.enter(OTHER, 'BBB', 1.0, 'rule-a', 'entry'))
+    slow.start()
+    try:
+        assert waiting.wait(2)
+        feed[TOKEN] = .4
+        fast = threading.Thread(target=lambda: pb.mark(prices={TOKEN: .4}, value=False))
+        fast.start(); fast.join(1)
+        assert not fast.is_alive()
+        assert db.one('SELECT status FROM paper WHERE token=?', (TOKEN,))['status'] == 'closed'
+    finally:
+        release.set(); slow.join(3)
+
+
+def test_parallel_marks_never_double_sell_and_other_positions_progress(db, feed, monkeypatch):
+    pb = enter(db, feed)
+    pb.enter(OTHER, 'BBB', 1.0, 'rule-a', 'entry')
+    waiting, release = threading.Event(), threading.Event()
+    original = pb._quote
+    def quote(p, amount):
+        if p['token'] == TOKEN:
+            waiting.set(); assert release.wait(3)
+        return original(p, amount)
+    monkeypatch.setattr(pb, '_quote', quote)
+    feed[TOKEN] = feed[OTHER] = .4
+    first = threading.Thread(target=lambda: pb.mark(prices={TOKEN: .4}, value=False))
+    first.start()
+    try:
+        assert waiting.wait(2)
+        pb.mark(prices={TOKEN: .4, OTHER: .4}, value=False)
+        assert db.one('SELECT status FROM paper WHERE token=?', (OTHER,))['status'] == 'closed'
+    finally:
+        release.set(); first.join(3)
+    assert db.one("SELECT COUNT(*) n FROM events WHERE text LIKE 'paper sell:%'")['n'] == 2
+
+
+def test_failed_exit_is_measured_and_not_filled_at_stop_price(db, feed, monkeypatch):
+    pb = enter(db, feed)
+    def unavailable(*args):
+        raise RuntimeError('unavailable')
+    with monkeypatch.context() as m:
+        m.setattr(pb, '_quote', unavailable)
+        pb.mark(prices={TOKEN: .4}, value=False)
+    p = db.one('SELECT * FROM paper')
+    assert p['status'] == 'open' and p['exit_quote_failures'] == 1
+    assert p['monitor_ts'] and p['exit_trigger_ts'] and p['exit_quote_failed_ts']
+    feed[TOKEN] = .35
+    pb.mark(prices={TOKEN: .35}, value=False)
+    p = db.one('SELECT * FROM paper')
+    assert p['status'] == 'closed' and p['pnl_usd'] < -6
+    assert p['closed_ts'] >= p['exit_trigger_ts']
+
+
+def test_stale_mid_response_cannot_overwrite_newer_mark(db, feed):
+    pb = enter(db, feed)
+    pid = db.one('SELECT id FROM paper')['id']
+    pb._mark_position(pid, 1.6, 200)
+    pb._mark_position(pid, .4, 100)
+    p = db.one('SELECT * FROM paper')
+    assert p['status'] == 'open' and p['last_usd'] == 1.6 and p['peak_usd'] == 1.6
+
+
+def test_entry_shadow_is_frozen_without_vetoing_control_book(db, feed):
+    import json
+    pb = book(db)
+    assert pb.enter(TOKEN, 'AAA', 1, 'rule-a', 'research', features={'snipe_pct': 100})
+    p = db.one('SELECT status,entry_shadow FROM paper')
+    decision = json.loads(p['entry_shadow'])
+    assert p['status'] == 'open' and decision['decision'] == 'skip'
+    assert decision['version'] == P.paper_research.FILTER_VERSION

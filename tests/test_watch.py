@@ -35,7 +35,7 @@ def one_rule(monkeypatch):
 def chain(monkeypatch, db):
     """Pool mids and fills come from this dict instead of the chain."""
     mids = {}
-    monkeypatch.setattr(poolstate, "mids", lambda rpc, pools, eth: {t: mids.get(t) for t in pools})
+    monkeypatch.setattr(poolstate, "mids", lambda rpc, pools, eth, **kw: {t: mids.get(t) for t in pools})
     monkeypatch.setattr(W, "eth_usd_last", lambda: 2500.0)
     from wormhole import trader
     monkeypatch.setattr(trader, "pool_key", lambda rpc, database, token: pool(token))
@@ -46,7 +46,7 @@ def chain(monkeypatch, db):
                 "liquidation_usd": qty * reference * 0.98}
     monkeypatch.setattr(P.execution, "entry", entry)
     monkeypatch.setattr(P.execution, "exit_quote",
-                        lambda rpc, pk, token, amount, quotes=None: {"minimum_usd": amount / 1e18 * mids[token] * 0.98, "gas_usd": 0.0})
+                        lambda rpc, pk, token, amount, quotes=None, cached_prices=False: {"minimum_usd": amount / 1e18 * mids[token] * 0.98, "gas_usd": 0.0})
     return mids
 
 
@@ -244,7 +244,8 @@ def test_open_trader_positions_get_fresh_pool_prices_every_step(db, chain):
     w.step(T0 + 15)
     assert seen == [{TOKEN: 0.5}]
     chain[TOKEN] = None                                               # no answer from the node: no price, no call
-    w.step(T0 + 30)
+    with pytest.raises(RuntimeError, match='prices incomplete'):
+        w.step(T0 + 30)
     assert len(seen) == 1
 
 

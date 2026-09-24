@@ -86,3 +86,19 @@ def test_eth_pools_are_for_the_paper_book_only(db, quotes, monkeypatch):
     monkeypatch.setattr(E, 'eth_usd', lambda strict=False: None)
     with pytest.raises(ValueError, match='ETH price'):
         E.entry(object(), db, token, 10., quotes=E.PAPER_QUOTES, reference=.01)
+
+
+def test_cached_paper_exit_uses_no_price_refresh_and_charges_gas(db, quotes, monkeypatch):
+    token, pk = quotes
+    monkeypatch.setattr(E, 'eth_usd', lambda *a, **k: pytest.fail('price refresh on fast path'))
+    monkeypatch.setattr(E, 'eth_usd_cached', lambda: 2000)
+    class Gas:
+        def call(self, method, params):
+            assert method == 'eth_gasPrice'
+            return hex(10**9)
+    result = E.exit_quote(Gas(), pk, token, 10**21, cached_prices=True)
+    assert result['paper_fill_usd'] == pytest.approx(9.7*.99)
+    assert result['gas_usd'] == pytest.approx((130_000+240_000)*1.25e9/1e18*2000)
+    monkeypatch.setattr(E, 'eth_usd_cached', lambda: None)
+    with pytest.raises(ValueError, match='cached'):
+        E.exit_quote(Gas(), pk, token, 10**21, cached_prices=True)

@@ -97,6 +97,30 @@ class Rpc:
             time.sleep(0.7 * (i + 1))
         raise RpcError(f"{method} failed after {retries} tries: {last}")
 
+    def read_only(self, budget_s=5):
+        """A no-retry network budget for disposable paper quotes, never transaction recovery."""
+        return ReadBudget(self, time.monotonic() + budget_s)
+
+    def call_with_deadline(self, method, params, deadline):
+        if method not in ('eth_call', 'eth_gasPrice'):
+            raise ValueError('bounded quote reads only allow eth_call and eth_gasPrice')
+        self._wait_turn()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RpcError('quote read budget exhausted')
+        payload = {'jsonrpc': '2.0', 'id': self._next(), 'method': method, 'params': params}
+        try:
+            response = self.s.post(self.url, json=payload, timeout=min(5, remaining))
+            if response.status_code != 200:
+                raise RpcError('quote read unavailable')
+            body = response.json()
+            if (time.monotonic() > deadline or not isinstance(body, dict)
+                    or body.get('error') or 'result' not in body):
+                raise RpcError('quote read failed or exceeded budget')
+            return body['result']
+        except (requests.RequestException, ValueError) as exc:
+            raise RpcError('quote read unavailable') from exc
+
     def batch(self, calls, chunk=25):
         """calls: list of (method, params). Returns results in order, None where a call failed.
         Only a batch the node rejects as a whole is split in half and retried, down to single calls."""
@@ -214,6 +238,21 @@ class Rpc:
             start = end + 1
             if chunk < full:
                 chunk = min(full, chunk * 2)
+
+
+class ReadBudget:
+    """Small read-only RPC interface sharing the parent's rate gate and one deadline.
+
+    Requests timeouts are network budgets, not hard process deadlines.
+    """
+    def __init__(self, rpc, deadline):
+        self._rpc, self.deadline = rpc, deadline
+
+    def call(self, method, params):
+        return self._rpc.call_with_deadline(method, params, self.deadline)
+
+    def eth_call(self, to, data, block='latest'):
+        return self.call('eth_call', [{'to': to, 'data': data}, block])
 
 
 # ---- ABI helpers -----------------------------------------------------------
