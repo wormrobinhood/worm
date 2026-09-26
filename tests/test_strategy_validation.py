@@ -191,6 +191,71 @@ def test_overdue_position_invalidates_evidence_without_inventing_a_sale(db):
     assert db.one('SELECT status,pnl_usd FROM paper WHERE token=?', (token,)) == {'status': 'open', 'pnl_usd': None}
 
 
+def test_an_edit_before_anything_was_visible_costs_no_attempt(db, monkeypatch):
+    V.tick(db)                                               # k=1, nothing opened yet
+    monkeypatch.setattr(execution, 'PAPER_FILL', .02)        # a parameter edit: the cohort is voided ...
+    V.tick(db)
+    rows = db.q("SELECT status,k,counted FROM strategy_trials ORDER BY id")
+    assert rows == [{'status': 'voided', 'k': 1, 'counted': 0}, {'status': 'collecting', 'k': 1, 'counted': 1}]   # ... and gives k back
+
+
+def test_an_edit_after_a_member_was_visible_costs_the_attempt(db, monkeypatch):
+    V.tick(db)
+    position(db, 1)                                          # an open member: its P&L is on the page
+    V.tick(db)
+    monkeypatch.setattr(execution, 'PAPER_FILL', .02)
+    V.tick(db)
+    rows = db.q("SELECT status,k,counted FROM strategy_trials ORDER BY id")
+    assert rows == [{'status': 'voided', 'k': 1, 'counted': 1}, {'status': 'collecting', 'k': 2, 'counted': 1}]
+
+
+def test_a_non_member_position_of_the_rule_also_counts_as_seen(db, monkeypatch):
+    V.tick(db)
+    position(db, 1)
+    db.x('UPDATE paper SET pool_key=? WHERE token=?', (json.dumps({'quote': C.ZERO}), tok(1)))   # ETH: never a member
+    V.tick(db)
+    assert db.one('SELECT COUNT(*) n FROM strategy_members')['n'] == 0
+    monkeypatch.setattr(execution, 'PAPER_FILL', .02)
+    V.tick(db)
+    assert db.q("SELECT k,counted FROM strategy_trials ORDER BY id") == [{'k': 1, 'counted': 1}, {'k': 2, 'counted': 1}]
+
+
+def test_a_freed_k_is_reused_and_counted_attempts_keep_distinct_bars(db, monkeypatch):
+    monkeypatch.setattr(watch, "STRATEGIES", [RULE, OTHER])
+    V.tick(db)                                               # rule-a k=1, rule-b k=2
+    position(db, 1, rule="rule-b")
+    V.tick(db)
+    monkeypatch.setattr(execution, 'PAPER_FILL', .02)        # both voided: rule-a unseen, rule-b seen
+    V.tick(db)
+    live = {r['rule']: r['k'] for r in db.q("SELECT rule,k FROM strategy_trials WHERE status='collecting'")}
+    assert live == {'rule-a': 1, 'rule-b': 3}
+    held = [r['k'] for r in db.q("SELECT k FROM strategy_trials WHERE counted=1")]
+    assert sorted(set(held)) == [1, 2, 3]                    # 2 stays spent: rule-b's first cohort was seen
+
+
+def test_failures_and_passes_always_count(db):
+    V.tick(db)
+    cohort(db, [-.2] * V.COHORT_N)
+    assert db.q("SELECT status,k,counted FROM strategy_trials ORDER BY id") == [
+        {'status': 'failed', 'k': 1, 'counted': 1}, {'status': 'collecting', 'k': 2, 'counted': 1}]
+
+
+def test_old_trials_migrate_without_passing_or_freeing_anything_seen(db):
+    V.ensure_tables(db)
+    position(db, 1, opened=1000)                             # opened by rule-a while trial 2 ran
+    pid = db.one('SELECT id FROM paper')['id']
+    rows = [(1, 'failed', 1, 0, 500), (2, 'voided', 2, pid - 1, 2000), (3, 'voided', 3, pid, 3000), (4, 'collecting', 4, pid, None)]
+    for tid, status, k, cutoff, completed in rows:
+        db.x("INSERT INTO strategy_trials(id,created,cutoff,arm,spec,baseline,status,rule,k,completed) VALUES(?,?,?,?,?,'',?,?,?,?)",
+             (tid, 1, cutoff, lab.DEFAULT, '{}', status, 'rule-a', k, completed))
+    db.x("UPDATE strategy_trials SET counted=NULL")
+    V.ensure_tables(db)
+    assert {r['id']: r['counted'] for r in db.q('SELECT id,counted FROM strategy_trials')} == {1: 1, 2: 1, 3: 0, 4: 1}
+    assert [r['status'] for r in db.q('SELECT status FROM strategy_trials ORDER BY id')] == ['failed', 'voided', 'voided', 'collecting']
+    V.tick(db)                                               # trial 4's spec is stale: voided; k=3 was never seen
+    assert db.one("SELECT k FROM strategy_trials WHERE status='collecting'")['k'] == 3
+
+
 def test_profitable_late_recovery_cannot_qualify_a_strategy(db):
     V.tick(db)
     cohort(db, [.4] * (V.COHORT_N - 1))

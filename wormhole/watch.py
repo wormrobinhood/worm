@@ -78,6 +78,14 @@ SUPPLY = 1_000_000_000             # every Pons token: fully diluted value = pri
 OPS = {">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b}
 
 
+def evidence_constants():
+    """What decides when a look happens, what it measures and how often exits are checked: part of every paper
+    position's evidence spec (trade_checks.evidence_spec), so changing one voids the cohorts it affects."""
+    return {'fast_every_s': FAST_EVERY_S, 'sample_every_s': SAMPLE_EVERY_S, 'dead_below': DEAD_BELOW,
+            'dead_after_s': DEAD_AFTER_S, 'flow_retry_s': FLOW_RETRY_S, 'flow_window_s': FLOW_WINDOW_S,
+            'flow_cap': FLOW_CAP, 'max_tries': MAX_TRIES, 'supply': SUPPLY}
+
+
 def ensure_tables(db):
     db.x("CREATE TABLE IF NOT EXISTS watch(token TEXT PRIMARY KEY, symbol TEXT, t0 INTEGER, p0 REAL, pool_key TEXT,"
          " status TEXT, looks_done TEXT DEFAULT '[]', tries INTEGER DEFAULT 0, metrics TEXT, note TEXT, flow0 TEXT)")

@@ -1,3 +1,9 @@
+import ast
+import hashlib
+import inspect
+import json
+import pathlib
+import textwrap
 import time
 import pytest
 from wormhole import config as C, trade_checks as E, trader
@@ -102,3 +108,73 @@ def test_cached_paper_exit_uses_no_price_refresh_and_charges_gas(db, quotes, mon
     monkeypatch.setattr(E, 'eth_usd_cached', lambda: None)
     with pytest.raises(ValueError, match='cached'):
         E.exit_quote(Gas(), pk, token, 10**21, cached_prices=True)
+
+
+# ---- the evidence fingerprint -------------------------------------------------------------------
+
+def behaviour_digest(sources):
+    """sha256 over the syntax trees of `sources` with docstrings removed: blind to comments, blank lines and
+    docstrings, changed by any edit to what the code does (a renamed variable included, deliberately)."""
+    h = hashlib.sha256()
+    for src in sources:
+        tree = ast.parse(textwrap.dedent(src))
+        for node in ast.walk(tree):
+            body = getattr(node, 'body', None)
+            if (isinstance(body, list) and body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str)):
+                node.body = body[1:] or [ast.Pass()]
+        h.update(ast.dump(tree).encode())
+    return h.hexdigest()[:32]           # 128 bits: plenty to notice an edit, and not mistaken for a key
+
+
+def semantic_code():
+    """The code that turns quotes, mids and swap logs into paper fills, features and exits."""
+    from wormhole import lab, paper, poolstate, watch
+    fns = (E.entry, E.exit_quote, E.quote_unit, E._gas_cost_at_price, E.entry_basis, E.verified,
+           lab.exit_step, lab.trail_pct, paper.Paper._open, paper.Paper._mark_position, paper.Paper._quote,
+           watch.features, watch.passes, watch.flow, watch.holders_kept, watch.sample_bucket, watch._sample,
+           poolstate.token_price, poolstate.sqrt_price, poolstate.mids)
+    return [inspect.getsource(f) for f in fns]
+
+
+# Re-pin ONLY after deciding the change leaves every fill, feature and exit exactly as it was. Otherwise bump
+# trade_checks.SEMANTICS (which voids every cohort in progress) and then re-pin. ast.dump output is stable within
+# one Python minor version: 3.11, as in the Dockerfile and CI; moving Python means re-pinning once.
+PINNED = {'semantics': 'paper-evidence-3', 'digest': 'a34f31a1afa727bfd98265e0d1bf53ea'}
+
+
+def test_the_code_that_makes_evidence_is_pinned_to_its_semantics_version():
+    assert E.SEMANTICS == PINNED['semantics'], 'SEMANTICS was bumped: re-pin the digest below to the new code'
+    assert behaviour_digest(semantic_code()) == PINNED['digest'], (
+        'evidence code changed: bump trade_checks.SEMANTICS (voids cohorts) unless behaviour is truly unchanged, then re-pin')
+
+
+def test_the_digest_ignores_comments_and_docstrings_but_not_parameters():
+    base = 'def f(x):\n    """Doc."""\n    return x * 0.97\n'
+    assert behaviour_digest([base]) == behaviour_digest(['def f(x):\n    """Other words."""\n    # why\n\n    return x * 0.97  # note\n'])
+    assert behaviour_digest([base]) != behaviour_digest(['def f(x):\n    """Doc."""\n    return x * 0.96\n'])
+
+
+def test_the_evidence_spec_reads_no_source_files_and_moves_with_every_parameter(monkeypatch):
+    from wormhole import lab, strategy_validation as V, watch
+    rule = watch.STRATEGIES[0]
+    spec = E.evidence_spec()
+    assert 'implementation' not in spec and spec['semantics'] == E.SEMANTICS
+    frozen = V.frozen(rule)
+    # a comment-only edit changes a file's bytes, never a value: reading any source file would fail here
+    monkeypatch.setattr(pathlib.Path, 'read_bytes', lambda self: pytest.fail('evidence must not hash source files'))
+    assert V.frozen(rule) == frozen and json.loads(frozen)['execution'] == spec
+    for obj, name, value in ((E, 'PAPER_FILL', .02), (E, 'APPROVAL_GAS_UNITS', 250_000), (E, 'SEMANTICS', 'x'),
+                             (watch, 'FLOW_WINDOW_S', 600), (watch, 'FAST_EVERY_S', 30), (C, 'PAPER_SIZE_USD', 20.0)):
+        with monkeypatch.context() as m:
+            m.setattr(obj, name, value)
+            assert V.frozen(rule) != frozen, name
+    with monkeypatch.context() as m:
+        m.setenv('WH_MAX_DAILY_LOSS_USD', '20')
+        assert V.frozen(rule) != frozen
+    with monkeypatch.context() as m:
+        m.setitem(lab.POLICIES, lab.DEFAULT.split('@')[0], {**lab.parse_arm(lab.DEFAULT)[0], 'stop': -.25})
+        assert V.frozen(rule) != frozen
+    changed = {**rule, 'conditions': [dict(c) for c in rule['conditions']]}
+    changed['conditions'][0]['value'] += 1
+    assert V.frozen(changed) != frozen

@@ -3,9 +3,6 @@
 Quotes are observations, not guaranteed fills. No function in this module signs or sends.
 """
 import json
-import hashlib
-from functools import lru_cache
-from pathlib import Path
 import math
 import os
 import time
@@ -28,21 +25,28 @@ EXIT_TOLERANCE_RETRY = 0.10    # after a sell reverted: give up more to get out
 MODEL = 'quoted-pool-v2'
 
 
-@lru_cache(maxsize=1)
-def implementation_digest():
-    """Conservatively invalidate evidence when price, feature or execution semantics change."""
-    root = Path(__file__).parent
-    return hashlib.sha256(b''.join((root / name).read_bytes() for name in
-        ('watch.py', 'poolstate.py', 'prices.py', 'paper.py', 'paper_research.py', 'lab.py', 'trade_checks.py',
-         'chain.py', 'pons.py', 'indexer.py', 'live_trading.py', 'strategy_validation.py'))).hexdigest()
+# What a paper position's evidence was produced under. A cohort compares this, not source files: the old whole-file
+# digest voided every cohort in progress on any edit (a comment, a refactor, an unrelated fix in chain.py), and each
+# void cost an attempt, so the gate could never finish. Constants are listed by value, so changing one voids the
+# cohorts it affects. SEMANTICS versions the code that turns quotes, mids and swap logs into fills, features and
+# exits: bump it by hand whenever that code changes meaning (it voids every cohort). tests/test_trade_checks.py pins
+# a comment- and docstring-blind digest of that code and fails until a change is acknowledged there: bump
+# SEMANTICS, or re-pin when behaviour really is unchanged. Re-pinning a real change is the one way to cheat this.
+SEMANTICS = 'paper-evidence-3'
+GAS_UNITS_MARGIN = 1.3          # the swap's estimated gas units, padded
+APPROVAL_GAS_UNITS = 240_000    # two bounded approvals, charged on every swap even when an allowance could be reused
+GAS_PRICE_MARGIN = 1.25         # the node's gas price, padded
 
 
 def evidence_spec():
-    return {'model': MODEL, 'entry_basis': 'acquisition_cost_per_token',
-            'implementation': implementation_digest(), 'paper_size_usd': C.PAPER_SIZE_USD,
+    from . import watch, trade_risk
+    return {'model': MODEL, 'semantics': SEMANTICS, 'entry_basis': 'acquisition_cost_per_token',
+            'paper_size_usd': C.PAPER_SIZE_USD, 'paper_max_open': C.PAPER_MAX_OPEN,
             'paper_fill': PAPER_FILL, 'slippage': SLIPPAGE, 'exit_tolerance': EXIT_TOLERANCE,
             'max_roundtrip_loss': MAX_ROUNDTRIP_LOSS, 'max_price_impact': MAX_PRICE_IMPACT,
-            'max_gas_fraction': MAX_GAS_FRACTION, 'live_quotes': list(LIVE_QUOTES)}
+            'max_gas_fraction': MAX_GAS_FRACTION, 'quote_ttl': QUOTE_TTL, 'live_quotes': list(LIVE_QUOTES),
+            'gas': {'units_margin': GAS_UNITS_MARGIN, 'approval_units': APPROVAL_GAS_UNITS, 'price_margin': GAS_PRICE_MARGIN},
+            'loss_limit_usd': trade_risk.loss_limit(), 'watch': watch.evidence_constants()}
 
 
 def entry_basis(dollars, quantity):
@@ -109,7 +113,7 @@ def _gas_cost_at_price(rpc, units, price):
     if price is None or not math.isfinite(price) or price <= 0 or gp <= 0 or units <= 0:
         raise ValueError('fresh gas pricing unavailable')
     # Include two bounded approvals as well as the swap, even if an allowance can be reused.
-    return (math.ceil(units * 1.3) + 240_000) * math.ceil(gp * 1.25) / 1e18 * price
+    return (math.ceil(units * GAS_UNITS_MARGIN) + APPROVAL_GAS_UNITS) * math.ceil(gp * GAS_PRICE_MARGIN) / 1e18 * price
 
 
 def entry(rpc, db, token, dollars, *, quotes=LIVE_QUOTES, reference=None):
