@@ -14,6 +14,9 @@ from . import config as C, claim_policy as P
 from .chain import call_data, call_fn, topic
 
 SWEPT = topic('FeesSwept(uint256,uint256,uint256)')
+# The token whose curve was seen graduated. Graduation is final on Pons and a graduated curve is never swept,
+# so after that the two reads per treasury cycle (factory record, graduated()) are skipped for good.
+GRADUATED = None
 
 
 def ensure(db):
@@ -35,6 +38,8 @@ def candidate(rpc):
     curve = addr(1)
     # No automatic internal buyback swaps. This implementation only distributes quote fees.
     if call_fn(rpc, curve, 'graduated()', ('bool',)):
+        global GRADUATED
+        GRADUATED = C.TOKEN
         return None
     if call_fn(rpc, curve, 'buybackEnabled()', ('bool',)):
         raise ValueError('curve buyback needs separate operator handling')
@@ -74,8 +79,14 @@ def settle(db, row, receipt):
 
 def reconcile(rpc, db):
     ensure(db)
+    from . import outbox
     for row in db.q("SELECT * FROM fee_sweeps WHERE state='pending'"):
-        if not settle(db, row, finality.receipt(rpc, row['tx'])):
+        receipt = finality.receipt(rpc, row['tx'])
+        if not receipt and outbox.gone(row['tx']):
+            # The journal proves it never executes (tx.recover, from chain evidence): nothing was swept.
+            db.x("UPDATE fee_sweeps SET state='reverted' WHERE id=? AND state='pending'", (row['id'],))
+            continue
+        if not settle(db, row, receipt):
             return False
     return True
 
@@ -100,7 +111,10 @@ def cycle(rpc, db, acct, escrow):
         if latest and time.time() - latest['ts'] < 3600:
             status(db, 'sweep cooldown')
             return True
-        item = candidate(rpc)
+        graduated = C.TOKEN in (GRADUATED, db.meta_get('fee_sweep_graduated'))
+        item = None if graduated else candidate(rpc)
+        if not graduated and GRADUATED == C.TOKEN:
+            db.meta_set('fee_sweep_graduated', C.TOKEN)        # remembered across restarts
         if not item:
             status(db, 'no unswept curve fees; escrow claims remain available')
             return True

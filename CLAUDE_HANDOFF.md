@@ -541,3 +541,225 @@ The trading-readiness catch-up flag also accounts for the gap between the commit
 Operational follow-up: the recovery-only payment pause was removed after verifying the unchanged settled journal and recovered workers; trading remains off. Storage and chain-head freshness recovered: two final checks were 42 then 23 blocks behind the moving head, with healthy responses and fresh checkpoints. Historical scoring jobs remain queued and are being processed. Do not infer complete chain freshness from the completed startup phase alone. Synchronous token-metadata reads remain a latency limitation in the unchanged production code.
 
 Optional token metadata now uses a shared 15-second network budget and pair-symbol discovery 10 seconds, with at most five seconds per request and no retry amplification. Missing reads remain unknown and existing values are preserved. The bounded batch path accepts only eth_call and is not used for signing or receipt recovery. Timeout, rate-limit, partial-response and method-restriction checks are included in the test count above. This local fix has not been applied to the delayed production metadata path.
+
+## Disk growth, broadcast storm and lock contention (2026-09-26)
+
+Local branch only: not pushed or deployed. The money path (treasury.py, tx.py, claim_policy.py) and web/ are untouched.
+
+**Launches stop growing.** `prune_launches` only ever removed rows with `meta=0` whose creator had never graduated
+anything, but every live launch got metadata, so `launches` grew by about 7,400 rows a day (254,823 rows, most of the
+database). Now housekeeping forgets every ungraduated launch older than 14 days (never less than 8 days or
+BACKFILL_HOURS + 4 days, so the 7-day serial list and the scorer's 72-hour creator window stay whole). Kept: graduated
+launches, the worm's own token, rows without a timestamp or deployer, and every launch of a creator whose token is
+still waiting in `scan_jobs` (a backlog after an outage). What creator history needs from a forgotten launch is only its
+count, so the count per deployer moves to the new `launch_history` table (WITHOUT ROWID, about 55 bytes a creator) in
+the same transaction as the delete. `creator_trust`, the flagged-creator count and the launch total add it back:
+scores, trust and serial-launcher numbers read the same before and after (test_scorer's forgetting test runs a full
+score before and after). A forgotten launch that graduates late (none in the local sample: the slowest took 3.4 days)
+is read back from the factory and taken off the count, so it is not counted twice. One known difference: an operator
+rescan of a token launched more than about 11 days earlier sees fewer of its creator's launches in its 72-hour window.
+
+**Batched, bounded deletes.** Every housekeeping delete (`db.delete_batched`, `prune_launches`) runs 500 rows per
+transaction with a 50 ms pause between batches and at most 50,000 rows per table per hourly run, and housekeeping logs
+what it removed. On a synthetic 255k-launch database (146 MB) the first prune took three hourly runs of about 5 s,
+the longest lock hold was 85 ms and the WAL never passed 8.2 MB. No VACUUM: the database has `auto_vacuum=0`, and a
+VACUUM needs the file's size again in free space plus a long exclusive lock. So the file does not shrink on the first
+deploy; about half of the launches pages (~70 MB on the synthetic copy) go to the free list and are reused, and the
+file stops growing from launches. Afterwards launches hold about 104k rows; `launch_history` grows at most ~0.25 MB a
+day (one row per new creator) instead of ~4 MB a day. An offline VACUUM during a maintenance window with enough free
+space would return the free pages to the volume (see docs/TRADING-RECOVERY.md for the stop-all-writers procedure).
+
+**Fewer metadata reads.** A live launch now reads only name and symbol (2 calls instead of 5), for the newest 15 of a
+slice (what the ticker shows, was 40), and leaves `meta` alone; a graduation still reads the full record. This also
+fixes a latent bug: the ticker read used to set `meta=1`, so a graduation whose full read failed was never retried
+by `refetch_metadata` and kept a NULL creator tax.
+
+**Other growth.** `wallet_records` forgets wallets with fewer than 3 picks and no new pick for 30 days (`crowd.prune`):
+`crowd.read` and the judged/losing counts ignore such rows and 'needed' counts tokens, so no warning changes; only the
+"wallets on record" total shrinks, and a wallet returning after that long starts its record again. `code_cache` rows
+expire after 30 days (the chain is simply asked again). `posts` keeps every published entry; dropped drafts are
+deleted and the up-to-4 KB `packet` of an entry is cleared after 30 days (nothing reads it). `events_text` stays:
+treasury.py's hourly de-duplication (`WHERE text=?`) needs it and that file is not mine to change.
+
+**Websocket storm.** Every launch (~12 s), operations cycle and action forced a snapshot rebuild and a full ~485 KB
+state to every viewer. Now only a verdict forces one. `StatePush` sends a state only when it changed: anything outside
+the fast fields at the next 8 s look, and changes only to the clock, block number, launch ticker, 24h/total launch
+counters and dig at most once a minute (the scan messages carry the dig live; the page also polls every 20 s). An
+unchanged snapshot is never resent. The snapshot is serialized and gzipped once per build: `/api/state` serves the
+gzip body (a real snapshot compressed 285 KB to 53 KB) instead of re-encoding for each of the page's 20-second polls.
+`hub.act` events now reach the page as `{"type":"action"}` (its existing `applyAction`: "burning $WORM…", "claiming
+its fees…"), and a viewer connecting within two minutes of one is told of it.
+
+**Lock contention.** Page-only parts that scan whole tables are cached on the database object: the brain summary
+(parses every resolved outcome's checks) and crowd summary for 60 s, the 7-day serial list (~0.5 s over 250k launches)
+5 min, flagged creators (~0.3 s) 10 min. The trader's readiness gate in run.py still reads the brain fresh.
+
+**Fee sweep.** Once the worm's curve reads `graduated()`, the sweep stops reading the factory record and the curve
+every treasury cycle (remembered in memory and in `meta.fee_sweep_graduated`). Graduation is final and a graduated
+curve was never swept, so only the skipped reads change; pending sweeps are still reconciled first.
+
+Expected on first deploy: three hourly housekeeping runs forget ~150k launches, then the database file holds its size
+while launches, wallets and posts stay bounded; public-node metadata calls drop by ~22k a day; each open page receives
+roughly a tenth of the bytes. 826 offline tests pass.
+
+## September 26, 2026: surplus burn program, small spaced burns, stuck-payment recovery
+
+Local branch only; nothing pushed, deployed, signed or sent. Operator decisions implemented:
+
+- **Surplus burn program** (`wormhole/burn_program.py`). `WH_SURPLUS_BURN_USD` (0 = off), `WH_SURPLUS_BURN_DAYS`
+  (7), `WH_SURPLUS_BURN_ID` (`surplus-1`). Armed on the first treasury cycle that sees an amount: id, total, days
+  and start go to meta `burn_program` and are frozen. Releases are `surplus_burn` ledger rows tagged with the
+  program id, which `owed_to_burn` counts (the `trade_profit` pattern); burns spend program money first and
+  record it in the new ledger columns `program`, `program_usd`. Idempotency: restart/redeploy never restarts
+  or re-counts; an edited amount/length never changes a running program or re-runs a finished one; 0 pauses
+  releases, any amount resumes on the original schedule; an id is used once (meta `burn_program_ids`), and a new
+  id waits for the running program to be released and burned in full. A release never takes USDG below
+  `owed_total` (owed buckets, pending spends, launch allocation, gas refills) plus the 90-day runway reserve; when
+  short it waits. Releases happen at burn opportunities (one ledger row per burn instead of one per 5-minute tick).
+- **Small and often.** `burn_step` gates every burn on meta `burn_next_at` (private): `WH_BURN_EVERY_MIN` (180)
+  times 1-1.5, drawn per burn with `SystemRandom`, written with the pending row. `WH_BURN_MAX_USD` (25) caps a
+  slice, `WH_MIN_BURN_USD` default is now 2. Each slice is quoted against a reference buy of 1% of it (fees and tax
+  cancel) and shrunk until its impact is at most `WH_BURN_MAX_IMPACT` (0.02), else it waits; the refreshed quote
+  after the approvals is checked again. `BURN_SLIPPAGE` 3% -> 2% (`WH_BURN_SLIPPAGE`): the quote already includes
+  the hook fee and creator tax (the quoted round trip rises with the tax, 2026-09-19 section) and the slice's own
+  impact, so the tolerance only covers other swaps in the <=30 s between quote and signing; 2% of $25 caps a bad
+  fill at $0.50. Invalid burn knobs stop the process at start.
+- **Approvals unchanged, on purpose.** A standing Permit2 grant would make each burn one transaction, but the
+  existing, tested model is exact-amount approvals at both layers with a ten-minute Permit2 expiry, reducing
+  legacy grants. Keeping it costs two cheap approval transactions per burn (about 45 burns over the week).
+- **Public snapshot.** `treasury.claim_policy` no longer carries `next_claim_after` or `balance_since`;
+  `burn_state` says "burns a few times a day, in buys of at most $25". New: `burn_max_usd`, `burn_program`
+  {active, state, total_usd, released_usd, burned_usd, burned_qty, scheduled_usd, started_ts, ends_ts, days,
+  interval_s (configured spacing, not the next moment), reason, burns [{ts, usd, qty, tx}] (program part of each
+  slice)}, and `burn_history` (last 200 burns, oldest first). `web/docs.html` burn paragraph updated; the Live
+  page itself was not touched (another branch is redesigning it).
+- **Stuck payments** (`wormhole/intents.py`, `tx.recover(rpc, db)`, `scripts/resolve-intent.py`): (a) an intent
+  left `preparing` by a crash between the bookkeeping write and `ready` is closed as `abandoned` when the node
+  does not hold it; (b) an intent whose nonce was used by our own settled transaction is `dropped`; both release
+  their ledger/fee-sweep/gas-refill row as failed (owed again). A refused resend, a nonce used outside the journal
+  or a contradiction is parked (note in the journal, `transaction_parked` + `stalled` in `/api/ops/health`, an
+  hourly generic event) instead of raising every cycle. Operator: dry-run report, `--apply`, `--accept HASH`,
+  `--cancel HASH` (zero-value self-transfer at the nonce, `tx.cancel`). Launch/trade-owned intents are never
+  closed automatically; launch paths still stop on `preparing` (they pass no db). (c) A successful claim without
+  `ClaimedToken` settles from the escrow's USDG Transfer, or closes as `claim_failed` when no USDG reached the
+  wallet; USDG from elsewhere stays pending and raises `payment_evidence_incomplete`. (d) `finish`'s fallback
+  insert is removed (unreachable: the pending row is written before any broadcast).
+
+To arm the 7-day program: set `WH_SURPLUS_BURN_USD=530` (optionally `WH_SURPLUS_BURN_DAYS=7`) and redeploy.
+Tests: 845 offline (was 811); fixture quoters now scale with the input like the real quoter. Not verified
+against the chain: the quoter/hook-fee claim above rests on the 2026-09-19 measurements, not a new read.
+
+## September 26, 2026: web revamp (local, not deployed)
+
+Front end only; no Python changed. `web/design.css` is now the one stylesheet (cascade layers: tokens, base,
+layout, components, views, motion, utilities; the prototype's tokens verbatim; `!important` only in the
+motion-off rule and `[hidden]`). The inline style in `index.html` is gone. `index.html` holds the markup
+(header, bottom tab bar under 768 px, four `<section class="view">` containers switched by the hash, honesty
+footer) and the engine script (worm, rain, scout, live dig, vision chart, `load()`/`connect()`). `design.js`
+holds one `render(state)` that draws every view with key-guarded, build-once renderers, plus the router
+(`#learning/report`, `#treasury/burn`, `#learning/paper` sub-anchors), count-ups, reveals, reading-position
+preservation, the brain (built once, moved between Live and Learning), the burn band and the surplus-burn
+week. The docs page links `design.css` for the shared header; its own styles sit in `@layer docs` between
+base and layout.
+
+Surplus-burn week: renders from `treasury.burn_program` (`active`, `total_usd`, `released_usd`,
+`burned_usd`, `burned_qty`, `started_ts`, `ends_ts`, `days`, `interval_s`, `reason`, `burns[]`),
+`treasury.burn_max_usd` and `treasury.burn_history[]` when present; otherwise the regular "next burn" meter.
+No next-burn time is ever shown; planned marks are an even, unlabelled schedule from `interval_s`. Verified
+only with injected data. Derived client-side for now: "got it wrong" cards (from `brain.outcomes`, lessons
+and the feed), the base rate (readiness accuracy `base_rate_pct`), plain rule names (a map in `design.js`),
+the 1e9 supply and the stage floors. Motion choice persists in `localStorage['worm.motion']`.
+
+
+## Always-on burn rounds and burn gas accounting (2026-09-26, local, not deployed)
+
+The operator asked that burning be on whenever there is spare money above the 90-day reserve, and that the ETH the
+burn transactions pay be accounted for.
+
+- `burn_program.arm_auto` / `spare_usd`: with `WH_SURPLUS_BURN_AUTO=1` (default) and no running program, a round
+  `auto-<ts>` is armed for the USDG above `owed_total` and `reserve_usd()` once it reaches $25, over 7 days, and
+  released and burned in the existing small, jittered, impact-checked slices. A round runs to its end (`arm` returns it
+  unpaused while rounds are on); the next starts from new spare. Rounds never start while a manual program is
+  unfinished, paused or not. Status carries `auto` and a round-specific `reason`.
+- Gas: measured on chain from the ledger's own receipts: burn swap 177k–229k gas, approvals ~50k each, about
+  0.000017 ETH (~$0.05) per burn at 0.027 gwei, up to ~$0.11 when busy. `budget.GAS_USD_DAY` default 0.10 -> 0.35, so
+  the 90-day reserve is now (0.75 + 0.35) x 90 = $99 instead of $76.50. ETH itself is still topped up by
+  `gas_refill` from the operations USDG.
+- Ledger column `gas_eth`: `settle` adds each transaction's fee (gasUsed x effectiveGasPrice + l1Fee) to its row;
+  burn approvals' fees are carried in meta `burn_gas_carry` onto the next burn row. `treasury.burn_gas_eth` is the
+  public sum over burn and burn_failed rows (burns before this change count 0). The Treasury burn card shows it.
+- Tests: `tests/conftest.py` runs the suite with rounds off (`WH_SURPLUS_BURN_AUTO=0`); the new tests opt in. 872 pass.
+- On first deploy with the current treasury (~$661 USDG, ~$4 owed, $99 reserve) the first round would be about
+  $555 over 7 days.
+
+
+## Honest paper evidence (2026-09-26, local branch, not deployed)
+
+Goal: make the paper evidence honest and able to reach a verdict. The gate is unchanged: 50 positions, the
+error budget and the lower-bound rule. Trading is also unchanged: WH_TRADING, LIVE_SELL_READY and the budget
+were not touched. The full write-up is in docs/PAPER-RESEARCH.md under "Honest evidence". There is one commit
+per fix.
+
+- **Live-comparable numbers** (`paper.pair`, `paper.live_comparable`, `Paper.summary`). A row is
+  live-comparable when it has a USDG pool, a second-look rule, quoted fills and `opened_in_pause=0`. The new
+  snapshot fields are `paper.live_comparable`, `paper.all_pools` (each with realized, count, wins, win_rate,
+  open_count and by_rule), `paper.filtered`, `paper.skipped`, `paper.risk_live_comparable`, and `pair` and
+  `live_comparable` on every open or closed row. The old top-level totals are unchanged.
+- **Fingerprint and attempts** (`trade_checks.evidence_spec`, `SEMANTICS='paper-evidence-3'`,
+  `watch.evidence_constants`, `strategy_validation.attempt/_seen/stage`, column `strategy_trials.counted`).
+  - The spec holds values, not file hashes, plus run-time digests of the code's syntax (comment- and
+    docstring-blind, read from the source files): `trade_checks.EVIDENCE_CODE` in `evidence_spec()['code']` and
+    `strategy_validation.GATE_CODE` in `frozen()['gate']` with the gate constants. Nothing is pinned by hand.
+    Keep both lists complete when adding code that picks, prices or judges positions.
+  - Why the new attempt rule cannot be gamed: a void costs its k once anything of the cohort was visible (a
+    member, or any position of its rule since the cutoff). A void before that returns the k. Counted
+    attempts keep distinct k values, so the budget still sums to at most 0.10.
+- **Breaker** (`Paper.enter(..., pool=)`, `trade_risk.check(scope='usdg')`, meta key
+  `loss_pause_until_paper_usdg`, table `paper_skips`, column `paper.opened_in_pause`, `paper.pause_windows`).
+  - USDG candidates answer to the USDG-scoped breaker. Others answer to the whole book's.
+  - Skips are recorded and the lab follows them. They are not cohort members: the pause is decided before
+    the candidate exists, so it cannot select on outcome.
+  - The pause flag is rebuilt once, on startup, from the whole-book breaker (meta `paper_pause_flags=v1`).
+- **Lab** (`lab.SIM_VERSION=2`, columns `lab_cases.source/pool_key/pair/gas/sim/gap_s`, tables
+  `lab_arms_usdg`, `lab_arms_v1`, `lab.resimulate`, `lab.paper_gas`, `watch.sample_lab`).
+  - Take-profits fill at their level. Every leg pays gas. A gain across a gap of more than 15 minutes is
+    capped at +100%.
+  - Paper-entry cases are priced from their pool every minute by the watcher, one batched storage read.
+  - Entry cases are keyed `token:entry` beside the untouched verdict case (no deletes). A v1 verdict case's entry-time pool tick is labelled `ticks.src='pool'` and excluded from its path; only unclear ones are 'mixed'. The advisor backtest uses the same path, gas and gap rule.
+  - `research_policy` is research only. `current_policy` is still the code default until a cohort passes.
+- **shadow-keep-v1** (`watch.FILTERED`, `watch.filtered_member`, `strategy_validation._sources`,
+  `trader.candidates`). It buys nothing. Its members are the four rules' USDG entries whose recorded
+  `entry-risk-shadow-v1` decision was keep. It gets its own cohort and its own k.
+- **Live parity**: `live_trading.pool_mid` passes the pool's fresh mid as the entry `reference`, for the quote
+  and for its refresh after approvals. For real money only, the mid must be within `MID_API_BAND` (15%) of a fresh
+  price-API reading when one exists, or the live entry is skipped (a thin pool can be pushed by one swap). Paper is
+  unchanged.
+- **Web**: the paper card shows "Could be traded for real · USDG pools" first, then "All pools, ETH included ·
+  learning only", then a per-rule table. The lab is marked "simulated, not traded" and shows the USDG ranking
+  first. Verified with Playwright on injected fields; the live snapshot does not have them yet.
+
+What the first deploy will do:
+- All four collecting trials are voided, because their frozen spec format changed:
+  - quiet-v1 had 2 members and keeps its k.
+  - The others keep theirs only if their rule opened positions since their cutoff (likely ETH ones).
+- New cohorts take the smallest free k. shadow-keep-v1 starts its first cohort.
+- Positions opened in past pauses are flagged. On the public snapshot, 20 of the last 30 closed trades
+  (including DURR, the only kept USDG trade) fall inside rebuilt whole-book pause windows.
+- The lab's v1 table moves aside and recent cases are re-simulated, 40 per tick.
+
+Honest numbers from the public snapshot's last 30 closed trades (older rows are not in the snapshot):
+- All pools: 30 closed, +$4.72, 40% won.
+- Live-comparable: 2 closed (WIF +$0.79, CDS -$2.93), -$2.14.
+- DURR (+$2.85, USDG) is excluded as opened in a pause. Under the USDG-scoped rule used from now on it would
+  count: 3 closed, +$0.71.
+- shadow-keep-v1 on history: 5 kept, all won, +$23.48, none live-comparable.
+- Whole book: -$45.09 over 117.
+
+Risks and open points:
+- The USDG breaker is new, so USDG entries continue while ETH losses pause ETH entries. Throughput for the
+  USDG cohort is still only 3 of the last 30 trades, so a verdict needs many weeks.
+- The historical pause flag and the forward breaker use different scopes. The historical flag is the stricter
+  one, on purpose.
+- The code digests depend on the Python minor version (3.11 in the Dockerfile and CI): moving Python voids
+  every cohort once.
+- Tests: 903 pass (872 before).

@@ -14,7 +14,9 @@ from . import config as C
 from . import treasury as T
 
 COMPUTE_USD_DAY = float(os.environ.get("WH_COMPUTE_USD_DAY", "0.75"))
-GAS_USD_DAY = float(os.environ.get("WH_GAS_USD_DAY", "0.10"))
+# Gas measured on chain (2026-09-26): a burn (two approvals and the swap) ≈ 0.000017 ETH ≈ $0.05, up to ≈ $0.11
+# when busy; about six burns a day plus the claim, forward and gold ≈ $0.35 a day, so the 90-day reserve covers it.
+GAS_USD_DAY = float(os.environ.get("WH_GAS_USD_DAY", "0.35"))
 BRIDGE_USD_MONTH = float(os.environ.get("WH_BRIDGE_USD_MONTH", "0.20" if C.COMPUTE_PROVIDER == "venice" else "0"))   # AI Surplus is paid on this chain: nothing to bridge
 RESERVE_DAYS = 90
 HORIZON = 90

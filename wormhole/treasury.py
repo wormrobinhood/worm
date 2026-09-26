@@ -7,24 +7,56 @@ outcomes remain pending until reconciliation. New chain submissions use the priv
 """
 import logging
 import json
+import math
 import os
+import random
 import time
 
 from eth_abi import decode, encode
 
-from . import finality
+from . import finality, outbox
 from .tx import ReceiptPending
 from . import config as C
 from .chain import addr_from_topic, call_data, call_fn, selector, topic
 
 log = logging.getLogger("wormhole.treasury")
+
+
+def _knob(name, default, low, high):
+    """A treasury setting from the environment, checked once at start: a typo stops the process instead of
+    buying at the wrong size or pace."""
+    try:
+        v = float(os.environ.get(name, default))
+    except ValueError:
+        raise SystemExit(f"{name} must be a number") from None
+    if not (math.isfinite(v) and low <= v <= high):
+        raise SystemExit(f"{name} must be between {low:g} and {high:g}")
+    return v
+
+
 MIN_FORWARD_USD = 0.50
 WATCH = None               # set by run.py: callable(ev) that tells the screen and the page what the worm is doing right now
 BUSY_SINCE = 0.0           # when the transaction now in flight was broadcast; 0 when none is
 BUSY_MAX_S = 120           # a transaction that never settles does not stop the digging for longer than this
-MIN_BURN_USD = float(os.environ.get("WH_MIN_BURN_USD", "5.0"))      # a burn is one pool swap: the share is batched so gas and slippage stay small
+# The burn buys small and often: no slice above BURN_MAX_USD, no two burns closer than BURN_EVERY_MIN minutes
+# plus a random 0-50% (so the moment cannot be predicted and traded against), and no slice whose own price
+# impact on the pool, measured against a tiny reference quote, exceeds BURN_MAX_IMPACT. The last $249 single
+# burn moved the pool about 14%; a $25 slice on the same pool moves it about 1.4%.
+MIN_BURN_USD = _knob("WH_MIN_BURN_USD", "2.0", 0.5, 1000)        # below this a slice waits: gas stays a small part of it
+BURN_MAX_USD = _knob("WH_BURN_MAX_USD", "25", MIN_BURN_USD, 10000)
+BURN_EVERY_MIN = _knob("WH_BURN_EVERY_MIN", "180", 10, 10080)
+BURN_JITTER = 0.5          # the spacing is BURN_EVERY_MIN times 1 to 1.5, drawn per burn
+BURN_MAX_IMPACT = _knob("WH_BURN_MAX_IMPACT", "0.02", 0.001, 0.2)
+# The quote the swap is checked against already includes the pool fee, the pons hook fee and the token's
+# creator tax (the hook takes them inside the swap and the v4 quoter runs the hook: the quoted round trip rises
+# with the tax, see CLAUDE_HANDOFF 2026-09-19), and the slice's own impact. What is left for this tolerance is
+# other swaps landing between the refreshed quote (at most QUOTE_MAX_AGE_S old at signing) and inclusion. 2% of
+# a $25 slice caps what a bad fill can cost at $0.50; a tighter bound mostly adds reverts, which cost gas and
+# leave the slice owed for the next burn.
+BURN_SLIPPAGE = _knob("WH_BURN_SLIPPAGE", "0.02", 0.005, 0.05)
 MIN_SWEEP_USD = 1.0        # realised trading profit is swept to the burn once it is this far above the high-water mark
-BURN_SLIPPAGE = 0.03       # the swap reverts if the pool delivers less than the quote minus this
+_rng = random.SystemRandom()   # burn spacing: not reproducible from anything public
+BURN_HISTORY_MAX = 200     # burns listed in the public snapshot
 MIN_GOLD_USD = float(os.environ.get("WH_MIN_GOLD_USD", "5.0"))      # a gold buy is one v3 swap: batched like the burn
 GOLD_SLIPPAGE = 0.02       # gold's pools are deep; the swap reverts below the quote minus this
 QUOTE_V3_T = "(address,address,uint256,uint24,uint160)"        # QuoterV2.quoteExactInputSingle's struct
@@ -36,16 +68,38 @@ QUOTE_MAX_AGE_S = 30       # refuse to sign after slow quote/preflight RPC calls
 PERMIT_TTL_S = 600         # router authorization expires even if no swap is submitted
 TAKE = b"\x0e"             # Uniswap v4 router action: take a currency to a recipient (amount 0 = the whole open delta)
 CLAIMED_TOPIC = topic("ClaimedToken(address,address,uint256)")     # PonsV2FeeEscrow: recipient, token indexed
+PRIVATE_CLAIM_KEYS = ("next_claim_after", "balance_since")        # claim timing: kept in meta, left out of the page
 TRANSFER_TOPIC = topic("Transfer(address,address,uint256)")
 
 
 def ensure_tables(db):
     db.x("CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, asset TEXT,"
          " amount REAL, tx TEXT, note TEXT, qty REAL)")
-    for col in ("qty REAL", "to_addr TEXT", "authorization TEXT", "owner_share REAL", "burn_share REAL", "gold_share REAL"):                # tokens burned / bought; the recipient a transfer was sent to
+    # tokens burned / bought; the recipient a transfer was sent to; the fee split a claim was made under; the
+    # surplus burn program a release or a burn belongs to, and how much of a burn was program money; the ETH its
+    # transactions paid in gas (a burn's approvals included)
+    for col in ("qty REAL", "to_addr TEXT", "authorization TEXT", "owner_share REAL", "burn_share REAL", "gold_share REAL",
+                "program TEXT", "program_usd REAL", "gas_eth REAL"):
         name = col.split()[0]
         if name not in {r['name'] for r in db.q('PRAGMA table_info(ledger)')}:
             db.x(f"ALTER TABLE ledger ADD COLUMN {col}")
+
+
+def tx_fee_eth(rc):
+    """ETH a mined transaction paid: gas used times the effective price, plus any L1 data fee. 0 when unknown."""
+    try:
+        fee = int(rc.get("gasUsed") or "0x0", 16) * int(rc.get("effectiveGasPrice") or "0x0", 16)
+        return (fee + int(rc.get("l1Fee") or "0x0", 16)) / 1e18
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
+
+
+def carry_burn_gas(db, rc):
+    """A burn approval's gas, kept until the burn row it belongs to is written (the approval can succeed and the
+    burn still wait), so every ETH a burn spent is booked on a burn row."""
+    fee = tx_fee_eth(rc) if rc else 0.0
+    if fee > 0:
+        db.meta_set("burn_gas_carry", repr(float(db.meta_get("burn_gas_carry") or 0) + fee))
 
 
 def pin_claim_shares(db):
@@ -86,11 +140,11 @@ def owed_to_owner(db):
 
 
 def owed_to_burn(db):
-    """The burn share of every claim so far plus the trading profit swept to the burn, minus what was burned
-    or is on its way, in USDG."""
+    """The burn share of every claim so far plus the trading profit swept to the burn and the surplus the burn
+    program released (wormhole/burn_program.py), minus what was burned or is on its way, in USDG."""
     pin_claim_shares(db)
     c = db.one("SELECT COALESCE(SUM(amount * burn_share),0) s FROM ledger WHERE kind='claim'")["s"]
-    t = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind='trade_profit'")["s"]
+    t = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind IN ('trade_profit','surplus_burn')")["s"]
     b = db.one("SELECT COALESCE(SUM(amount),0) s FROM ledger WHERE kind IN ('burn','burn_pending')")["s"]
     return c + t - b
 
@@ -244,17 +298,62 @@ def _event_text(kind, amount, row):
     return f"{kind}: {amount:.2f} USDG"
 
 
+def claim_without_event(rc, wallet):
+    """A successful claim receipt that lacks the escrow's ClaimedToken log: the USDG that moved decides.
+    Returns (amount, evidence): the sum of the escrow's USDG transfers to the wallet; 0.0 when no USDG reached
+    the wallet at all (a USDG balance cannot change without a Transfer log, so nothing was paid); None when
+    USDG reached the wallet from some other address in the same transaction, which this cannot account for."""
+    paid, other = 0, 0
+    for lg in rc.get("logs", []):
+        t = lg.get("topics", [])
+        if (lg.get("address", "").lower() == C.USDG and len(t) == 3 and t[0] == TRANSFER_TOPIC
+                and addr_from_topic(t[2]) == wallet.lower()):
+            if addr_from_topic(t[1]) == C.FEE_ESCROW:
+                paid += _word(lg["data"])
+            else:
+                other += 1
+    if other:
+        return None, "USDG reached the wallet from another address in the claim transaction"
+    if paid:
+        return paid / 1e6, "amount from the escrow's USDG transfer; it emitted no ClaimedToken"
+    return 0.0, "the escrow paid nothing: no ClaimedToken and no USDG transfer"
+
+
+def _review(db, tx, reason=None):
+    """Keep private health's list of payments waiting on receipt evidence: reason=None takes tx off it."""
+    try:
+        items = json.loads(db.meta_get("payment_review") or "{}")
+    except ValueError:
+        items = {}
+    if reason is None:
+        if tx not in items:
+            return
+        items.pop(tx)
+    elif tx in items and items[tx]["reason"] == reason:
+        return
+    else:
+        items[tx] = {"reason": reason, "since": items.get(tx, {}).get("since") or int(time.time())}
+    db.meta_set("payment_review", json.dumps(items))
+
+
 def settle(db, row, rc, wallet, to=None):
     """Apply a receipt to a '<kind>_pending' ledger row and write the event. Returns (kind, amount)."""
     base = row["kind"].removesuffix("_pending")
     ok = rc.get("status") == "0x1"
-    amount, why, qty = row["amount"], "reverted", None
+    amount, why, qty, extra = row["amount"], "reverted", None, ""
     to = row.get("to_addr") or to                  # the recipient it was sent to, not whoever is configured now
     if ok and base == "claim":
         got = claimed_in(rc, wallet)               # what the escrow actually paid, not the pre-tx read
         if got is None:
-            _say_hourly(db, 'error', f'claim receipt incomplete; funds reserved pending verification: {row["tx"]}')
-            return row['kind'], row['amount']
+            got, evidence = claim_without_event(rc, wallet)
+            if got is None:
+                _review(db, row["tx"], f"claim receipt incomplete: {evidence}")
+                _say_hourly(db, 'error', f'claim receipt incomplete; funds reserved pending verification: {row["tx"]}')
+                return row['kind'], row['amount']
+            if got <= 0:
+                ok, why = False, evidence
+            else:
+                extra = f" ({evidence})"
         amount = got
     elif ok and base == "burn":
         qty = burned_in(rc)                        # the tokens that reached the burn address, from the receipt
@@ -265,12 +364,16 @@ def settle(db, row, rc, wallet, to=None):
     elif ok:
         ok = transferred(rc, C.USDG, wallet, to, units(row["amount"]))
         why = "no Transfer log for the amount"
-    if rc.get('status') not in ('0x0', '0x1') or (rc.get('status') == '0x1' and not ok):
+    if rc.get('status') not in ('0x0', '0x1') or (rc.get('status') == '0x1' and not ok and base != "claim"):
+        _review(db, row["tx"], f"{base} receipt evidence incomplete: "
+                               f"{why if rc.get('status') == '0x1' else 'invalid receipt status'}")
         _say_hourly(db, 'error', f'{base} receipt evidence incomplete; retained pending: {row["tx"]}')
         return row['kind'], row['amount']
     kind = base if ok else f"{base}_failed"
-    note = row["note"] if ok else f"{row['note']} ({why})"
-    db.x("UPDATE ledger SET kind=?, amount=?, note=?, qty=? WHERE id=?", (kind, amount, note, qty, row["id"]))
+    note = ((row["note"] or "") + extra if extra else row["note"]) if ok else f"{row['note']} ({why})"
+    db.x("UPDATE ledger SET kind=?, amount=?, note=?, qty=?, gas_eth=COALESCE(gas_eth,0)+? WHERE id=?",
+         (kind, amount, note, qty, tx_fee_eth(rc), row["id"]))
+    _review(db, row["tx"])
     if ok:
         text = _event_text(kind, amount, dict(row, qty=qty))
         db.add_event("treasury", text)
@@ -281,16 +384,12 @@ def settle(db, row, rc, wallet, to=None):
     return kind, amount
 
 
-def finish(db, h, rc, wallet, to=None, fallback=None):
-    """Settle the pending row written at broadcast for hash h (send_tx's on_broadcast). fallback: the row's
-    (kind, amount, note, to_addr) to write now if the broadcast callback failed to write it, so a transfer
-    that left the wallet is never missing from the ledger (and never sent twice for lack of a row)."""
+def finish(db, h, rc, wallet, to=None):
+    """Settle the pending row written at broadcast for hash h (send_tx's on_broadcast). The row always exists:
+    send_tx submits only after the callback wrote it, and raises before any broadcast when it could not. A
+    missing row therefore means something else settled it already; nothing is rebuilt (a rebuilt claim would
+    lack its fee split, a rebuilt pending row would reserve the money twice)."""
     row = db.one("SELECT * FROM ledger WHERE tx=? AND kind LIKE '%_pending' ORDER BY id DESC LIMIT 1", (h,))
-    if not row and fallback:
-        db.add_event("error", f"the ledger row for {h} was not written at broadcast; rebuilt from the receipt")
-        db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note,to_addr) VALUES(?,?,?,?,?,?,?)",
-             (int(time.time()), fallback["kind"], "USDG", fallback["amount"], h, fallback["note"], fallback.get("to_addr")))
-        row = db.one("SELECT * FROM ledger WHERE tx=? AND kind LIKE '%_pending' ORDER BY id DESC LIMIT 1", (h,))
     if not row:
         db.add_event("error", f"no pending ledger row for {h}")
         return None, None
@@ -310,9 +409,25 @@ def reconcile(rpc, db, kinds, wallet, to_for=None):
             kind, _ = settle(db, row, rc, wallet, to_for(row) if to_for else None)
             if kind.endswith('_pending'):
                 still += 1
+        elif outbox.gone(row["tx"]):
+            unsent(db, row, *outbox.gone(row["tx"]))
         else:
             still += 1
     return still
+
+
+def unsent(db, row, end, why):
+    """A pending row whose transaction the journal proves never executes (tx.recover closed it from chain
+    evidence: 'abandoned' before broadcast, or 'dropped' because our own settled transaction used its nonce).
+    The row becomes '<kind>_failed', so the amount is owed again and is sent at most once more."""
+    base = row["kind"].removesuffix("_pending")
+    text = "never broadcast" if end == "abandoned" else "never mined"
+    db.x("UPDATE ledger SET kind=?, note=? WHERE id=? AND kind=?",
+         (f"{base}_failed", f"{row['note']} ({text})", row["id"], row["kind"]))
+    _review(db, row["tx"])
+    log.warning("%s %s %s: %s", base, row["tx"], text, why)
+    db.add_event("error", f"{base} {text}; its amount is owed again: {row['tx']}")
+    watch(base, f"{base} did not go through: {text}", row["tx"], done=True)
 
 
 # ---- the cycle ----------------------------------------------------------------
@@ -321,13 +436,16 @@ def summary(rpc, db):
     ensure_tables(db)
     out = {"wallet": C.WALLET or None, "owner": C.OWNER_WALLET or None, "share": C.OWNER_SHARE, "token": C.TOKEN or None,
            "burn_share": C.BURN_SHARE, "gold_share": C.GOLD_SHARE, "ops_share": C.OPS_SHARE, "trading": C.TRADING,
-           "burn_min_usd": MIN_BURN_USD, "gold_min_usd": MIN_GOLD_USD,
+           "burn_min_usd": MIN_BURN_USD, "burn_max_usd": BURN_MAX_USD, "gold_min_usd": MIN_GOLD_USD,
            "live": C.LIVE, "claimable_usdg": None, "usdg": None, "eth": None,
            "claimed_total": 0.0, "forwarded_total": 0.0, "compute_total": 0.0, "burned_total": 0.0, "burned_qty": 0.0,
            "gold_total": 0.0, "gold_qty": 0.0, "gold_held": None, "gold_usd": None, "trading_profit_to_burn": 0.0,
            "owed_to_owner": 0.0, "owed_to_burn": 0.0, "owed_to_gold": 0.0, "burn_state": "", "gold_state": "", "ledger": []}
     try:
-        out['claim_policy'] = json.loads(db.meta_get('claim_policy_status') or '{}')
+        # The claim decision without its clock: when the next claim may happen (and so when its burn and gold
+        # buys follow) is not published, only why it waits.
+        out['claim_policy'] = {k: v for k, v in json.loads(db.meta_get('claim_policy_status') or '{}').items()
+                               if k not in PRIVATE_CLAIM_KEYS}
         out['fee_sweep'] = json.loads(db.meta_get('fee_sweep_status') or '{}')
         out['gas_refill'] = json.loads(db.meta_get('gas_refill_status') or '{}')
     except (ValueError, TypeError):
@@ -358,6 +476,8 @@ def summary(rpc, db):
         elif r["kind"] == "trade_profit":
             out["trading_profit_to_burn"] = round(r["s"], 4)
     out["burned_qty"] = round(db.one("SELECT COALESCE(SUM(qty),0) q FROM ledger WHERE kind='burn'")["q"] or 0.0, 2)
+    # the ETH burns paid in gas (booked since the gas column exists; older burns count 0), failed tries included
+    out["burn_gas_eth"] = round(db.one("SELECT COALESCE(SUM(gas_eth),0) g FROM ledger WHERE kind IN ('burn','burn_failed')")["g"] or 0.0, 8)
     out["gold_qty"] = round(db.one("SELECT COALESCE(SUM(qty),0) q FROM ledger WHERE kind='gold'")["q"] or 0.0, 6)
     try:
         out["owed_to_owner"] = round(max(0.0, owed_to_owner(db)), 4)
@@ -370,6 +490,17 @@ def summary(rpc, db):
         out.update(owed_to_owner=None, owed_to_burn=None, owed_to_gold=None,
                    burn_state='paused: accounting needs review', gold_state='paused: accounting needs review',
                    accounting_error="accounting unavailable; operator review required")
+    try:
+        from . import burn_program
+        out["burn_program"] = burn_program.status(db)
+    except Exception as e:
+        log.info("burn program status failed: %s", e)
+        out["burn_program"] = {"active": False, "state": "unavailable"}
+    # Every settled burn, oldest first, for the page's track (the newest BURN_HISTORY_MAX): what was spent,
+    # what was burned and where to verify it. Only the past; nothing about the next one.
+    out["burn_history"] = [{"ts": r["ts"], "usd": round(r["amount"], 2), "qty": round(r["qty"] or 0.0, 2), "tx": r["tx"]}
+                           for r in reversed(db.q("SELECT ts, amount, qty, tx FROM ledger WHERE kind='burn'"
+                                                  " ORDER BY id DESC LIMIT ?", (BURN_HISTORY_MAX,)))]
     out["ledger"] = db.q("SELECT id,ts,kind,asset,amount,tx,note,qty FROM ledger ORDER BY id DESC LIMIT 20")
     return out
 
@@ -394,7 +525,7 @@ def claim(rpc, db, acct, claimable):
         log.warning("fee claim failed: %s", e)
         db.add_event("error", "fee claim failed; see private logs")
         return False
-    return finish(db, h, rc, C.WALLET, fallback={"kind": "claim_pending", "amount": claimable, "note": note})[0] == "claim"
+    return finish(db, h, rc, C.WALLET)[0] == "claim"
 
 
 def forward(rpc, db, acct):
@@ -431,17 +562,16 @@ def forward(rpc, db, acct):
         log.warning("forward failed: %s", e)
         db.add_event("error", "forward failed; see private logs")
         return False
-    return finish(db, h, rc, C.WALLET, to=to,
-                  fallback={"kind": "forward_pending", "amount": n / 1e6, "note": note, "to_addr": to})[0] == "forward"
+    return finish(db, h, rc, C.WALLET, to=to)[0] == "forward"
 
 
 def burn_state(owed):
-    """One line for the page: why nothing has burned yet, or that a burn is due."""
+    """One line for the page: why nothing has burned yet, or how burns go. Never the moment of the next one."""
     if not C.TOKEN:
         return "waits for the token"
     if owed < MIN_BURN_USD:
-        return f"burns once ${MIN_BURN_USD:.0f} is owed"
-    return "due: burns on the next cycle once $WORM has its pool"
+        return f"burns once ${MIN_BURN_USD:g} is owed"
+    return f"burns a few times a day, in buys of at most ${BURN_MAX_USD:g}"
 
 
 def _say_hourly(db, kind, text):
@@ -472,17 +602,19 @@ def approve_for_router(rpc, db, acct, need):
     if a != need:
         data = selector("approve(address,uint256)") + encode(["address", "uint256"], [C.PERMIT2, need]).hex()
         h, rc = send_tx(rpc, acct, C.USDG, data)
+        carry_burn_gas(db, rc)
         if not rc or rc.get("status") != "0x1":
             raise RuntimeError(f"USDG approval for Permit2 reverted: {h}")
-        db.add_event("treasury", f"approved USDG for Permit2 for this burn: {h}")
+        log.info("approved USDG for Permit2 for a burn: %s", h)   # private: a public line would announce the swap
     now = int(time.time())
     if amt != need or not now + SWAP_TTL_S <= exp <= now + PERMIT_TTL_S:
         data = selector("approve(address,address,uint160,uint48)") + encode(
             ["address", "address", "uint160", "uint48"], [C.USDG, C.UNIVERSAL_ROUTER, need, now + PERMIT_TTL_S]).hex()
         h, rc = send_tx(rpc, acct, C.PERMIT2, data)
+        carry_burn_gas(db, rc)
         if not rc or rc.get("status") != "0x1":
             raise RuntimeError(f"Permit2 approval for the router reverted: {h}")
-        db.add_event("treasury", f"approved the Universal Router for this burn with a short expiry: {h}")
+        log.info("approved the Universal Router for a burn with a short expiry: %s", h)
     a, amt, exp = router_allowance(rpc, C.WALLET)
     now = int(time.time())
     if a != need or amt != need or not now + SWAP_TTL_S <= exp <= now + PERMIT_TTL_S:
@@ -503,9 +635,48 @@ def burn_calldata(pk, zero_for_one, amount_in, min_out, deadline):
                                                              [V4_SWAP, inputs, deadline]).hex()
 
 
+def price_impact(rpc, pk, n, out):
+    """How much worse a slice of n USDG units buys than a tiny reference buy, 0 to 1. The pool fee, the hook
+    fee and the creator tax are percentages of the input in both quotes and cancel out: what is left is the
+    slice's own push on the pool."""
+    from . import trader
+    ref = max(10_000, n // 100)
+    ref_out, _gas, _zfo = trader.quote_buy(rpc, pk, C.TOKEN, ref)
+    if ref_out <= 0 or out <= 0:
+        raise ValueError('no liquidity quoted')
+    return max(0.0, 1 - (out * ref) / (ref_out * n))
+
+
+def burn_slice(rpc, pk, n):
+    """The largest slice up to n USDG units whose price impact stays within BURN_MAX_IMPACT: quote, and shrink in
+    proportion while it does not fit. Returns (n, out, zero_for_one, impact); n is 0 when nothing at or above
+    MIN_BURN_USD fits (or nothing is quoted) and the burn waits."""
+    from . import trader
+    impact = None
+    for _ in range(4):
+        out, _gas, zfo = trader.quote_buy(rpc, pk, C.TOKEN, n)
+        if out <= 0:
+            return 0, 0, zfo, None
+        impact = price_impact(rpc, pk, n, out)
+        if impact <= BURN_MAX_IMPACT:
+            return n, out, zfo, impact
+        smaller = int(n * BURN_MAX_IMPACT / impact * 0.9)
+        if smaller < units(MIN_BURN_USD):
+            break
+        n = smaller
+    return 0, 0, None, impact
+
+
+def next_burn_at(now):
+    """The earliest moment of the next burn: BURN_EVERY_MIN, plus up to BURN_JITTER more, drawn per burn."""
+    return now + BURN_EVERY_MIN * 60 * (1 + _rng.uniform(0, BURN_JITTER))
+
+
 def burn(rpc, db, acct):
-    """Buy $WORM with the owed burn share and send it to the burn address, once at least MIN_BURN_USD is owed
-    and the token has graduated to a pool (a curve buy is not a pool swap). Returns True on a settled burn."""
+    """Buy $WORM with owed burn money and send it to the burn address: one slice of at most BURN_MAX_USD, shrunk
+    until its price impact fits BURN_MAX_IMPACT, once at least MIN_BURN_USD is owed and the token has graduated
+    to a pool (a curve buy is not a pool swap). The pace between slices is burn_step's. Returns True on a
+    settled burn."""
     if not C.TOKEN:
         return False
     owed = owed_to_burn(db)
@@ -516,7 +687,7 @@ def burn(rpc, db, acct):
     except Exception as e:
         log.info("usdg balance read failed: %s", e)
         return False
-    n = units(min(owed, have))
+    n = units(min(owed, have, BURN_MAX_USD))
     if n < units(MIN_BURN_USD):
         return False
     from . import trader
@@ -534,13 +705,17 @@ def burn(rpc, db, acct):
         db.add_event("error", "burn: $WORM's pool is not quoted in USDG; the burn share stays owed")
         return False
     try:
-        out, _gas, zfo = trader.quote_buy(rpc, pk, C.TOKEN, n)
+        n, out, zfo, impact = burn_slice(rpc, pk, n)
     except Exception as e:
         log.warning("burn: quote failed: %s", e)
         db.add_event("error", "burn: quote failed; see private logs")
         return False
-    if not out:
-        db.add_event("error", "burn: no liquidity quoted; the burn share stays owed")
+    if not n:
+        if impact is None:
+            db.add_event("error", "burn: no liquidity quoted; the burn share stays owed")
+        else:
+            _say_hourly(db, "treasury", f"burn waits: the pool is too thin for a ${MIN_BURN_USD:.0f} slice within "
+                                        f"{BURN_MAX_IMPACT * 100:g}% price impact")
         return False
     try:
         expiry = approve_for_router(rpc, db, acct, n)
@@ -548,12 +723,13 @@ def burn(rpc, db, acct):
         log.warning("burn: approval failed: %s", e)
         db.add_event("error", "burn: approval failed; see private logs")
         return False
-    # Approvals may take minutes. Never reuse the quote obtained before them.
+    # Approvals may take minutes. Never reuse the quote obtained before them, and look at the pool again.
     quoted_at = time.time()
     try:
         out, _gas, zfo = trader.quote_buy(rpc, pk, C.TOKEN, n)
         if out <= 0:
             raise ValueError('no liquidity in refreshed quote')
+        impact = price_impact(rpc, pk, n, out)
         deadline = min(int(quoted_at) + SWAP_TTL_S, expiry)
         min_out = max(1, int(out * (1 - BURN_SLIPPAGE)))
         data = burn_calldata(pk, zfo, n, min_out, deadline)
@@ -561,13 +737,27 @@ def burn(rpc, db, acct):
         log.exception('burn quote refresh failed')
         db.add_event('error', 'burn: fresh quote unavailable; the burn share stays owed')
         return False
+    if impact > BURN_MAX_IMPACT:
+        _say_hourly(db, "treasury", "burn waits: the pool moved while the approvals were mined; the slice stays owed")
+        return False
     from .tx import send_tx
+    from . import burn_program
+    pid, program_owed = burn_program.unburned(db)
+    part = round(min(n / 1e6, program_owed), 6) if pid else 0.0      # program money is burned first
 
     note = f"{int(round(C.BURN_SHARE * 100))}% of income: buy $WORM on its pool and send it to the burn address"
+    if part > 0:
+        note += f"; ${part:.2f} of it from the surplus burn program"
 
     def pending(h):
-        db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
-             (int(time.time()), "burn_pending", "USDG", n / 1e6, h, note))
+        now = time.time()
+        with db.transaction():
+            carried = float(db.meta_get("burn_gas_carry") or 0)
+            db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note,program,program_usd,gas_eth) VALUES(?,?,?,?,?,?,?,?,?)",
+                 (int(now), "burn_pending", "USDG", n / 1e6, h, note, pid if part > 0 else None, part or None,
+                  carried or None))
+            db.meta_set("burn_gas_carry", "0")
+            db.meta_set("burn_next_at", repr(next_burn_at(now)))
         watch("burn", f"buying $WORM with {n / 1e6:.2f} USDG on its pool and sending it to the burn address", h)
 
     try:
@@ -580,7 +770,22 @@ def burn(rpc, db, acct):
         log.warning("burn failed: %s", e)
         db.add_event("error", "burn failed; see private logs")
         return False
-    return finish(db, h, rc, C.WALLET, fallback={"kind": "burn_pending", "amount": n / 1e6, "note": note})[0] == "burn"
+    return finish(db, h, rc, C.WALLET)[0] == "burn"
+
+
+def burn_step(rpc, db, acct, now=None):
+    """The burn's pace: nothing before the moment the last burn drew (private, never published), then the burn
+    program's release for what its schedule made due, then one slice."""
+    now = time.time() if now is None else now
+    if not C.TOKEN or now < float(db.meta_get("burn_next_at") or 0):
+        return False
+    try:
+        from . import burn_program
+        burn_program.release(rpc, db, now)
+    except Exception as e:
+        log.warning("burn program release skipped: %s", e)
+        _say_hourly(db, "error", "burn program: release skipped (settings or balance unavailable); see private logs")
+    return burn(rpc, db, acct)
 
 
 # ---- gold: buy tokenized gold (GLD) with the gold share and keep it as a reserve ----
@@ -705,12 +910,12 @@ def gold(rpc, db, acct):
         log.warning("gold buy failed: %s", e)
         db.add_event("error", "gold buy failed; see private logs")
         return False
-    return finish(db, h, rc, C.WALLET, fallback={"kind": "gold_pending", "amount": n / 1e6, "note": note})[0] == "gold"
+    return finish(db, h, rc, C.WALLET)[0] == "gold"
 
 
 def cycle(rpc, db, acct):
-    """Settle what is in flight, claim fees when worth it, forward the creator's share, then burn, then buy gold.
-    Only ever runs armed (WH_LIVE=1)."""
+    """Settle what is in flight, claim fees when worth it, forward the creator's share, then burn (a slice when its
+    time has come), then buy gold. Only ever runs armed (WH_LIVE=1)."""
     ensure_tables(db)
     if not (C.LIVE and acct and C.WALLET):
         return
@@ -748,7 +953,7 @@ def cycle(rpc, db, acct):
         sweep_trading_profit(db)
     except Exception as e:
         log.warning("trading profit sweep failed: %s", e)
-    for action in (forward, burn, gold):
+    for action in (forward, burn_step, gold):
         if db.one("SELECT 1 FROM ledger WHERE kind LIKE '%_pending' AND tx IS NOT NULL"):
             return
         action(rpc, db, acct)

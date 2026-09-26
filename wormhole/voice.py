@@ -250,6 +250,26 @@ def cycle(db, extra=None, force=False):
     return None if reason else text
 
 
+POSTS_KEEP_DAYS = 30       # dropped drafts, and the observation packet behind a published entry, are kept this long
+
+
+def prune(db, days=POSTS_KEEP_DAYS, **batching):
+    """The journal itself stays. After `days` a dropped draft is deleted, and a published entry loses its
+    packet (up to 4 KB of the numbers it was written from; nothing reads it back). Returns (drafts, packets)."""
+    from .db import delete_batched, PRUNE_BATCH, PRUNE_MAX
+    ensure_tables(db)
+    cutoff = int(time.time()) - int(days * 86400)
+    drafts = delete_batched(db, "posts", "ok=0 AND ts<?", (cutoff,), **batching)
+    packets = 0
+    while packets < batching.get("limit", PRUNE_MAX):
+        n = db.xc("UPDATE posts SET packet=NULL WHERE id IN (SELECT id FROM posts WHERE packet IS NOT NULL AND ts<? LIMIT ?)",
+                  (cutoff, batching.get("batch", PRUNE_BATCH)))
+        packets += n
+        if n < batching.get("batch", PRUNE_BATCH):
+            break
+    return drafts, packets
+
+
 def summary(db):
     ensure_tables(db)
     rows = db.q("SELECT id, ts, text, mood, model, ok, reason FROM posts WHERE ok=1 ORDER BY id DESC LIMIT 60")

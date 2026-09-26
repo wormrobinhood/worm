@@ -18,7 +18,7 @@ def test_treasury_errors_keep_private_text_out_of_events(db,rpc,acct,live,monkey
     monkeypatch.setattr(T,'owed_to_gold',lambda db:10)
     monkeypatch.setattr(T,'usdg_balance',lambda *a:100)
     monkeypatch.setattr(trader,'pool_key',lambda *a:{'quote':C.USDG})
-    monkeypatch.setattr(trader,'quote_buy',lambda *a:(10**18,100000,True))
+    monkeypatch.setattr(trader,'quote_buy',lambda rpc,pk,token,n:(n*10**12,100000,True))   # in proportion: no price impact
     monkeypatch.setattr(T,'quote_gold',lambda *a:10**18)
     monkeypatch.setattr(T,'approve_for_router',lambda *a:int(T.time.time())+T.PERMIT_TTL_S)
     monkeypatch.setattr(T,'approve_for_gold',lambda *a:None)

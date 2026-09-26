@@ -6,7 +6,8 @@ import time
 
 from . import config as C
 from .chain import call_data
-from .pons import TOKEN_LAUNCHED, POOL_GRADUATED, token_metadata, pair_symbols
+from .db import launch_remembered
+from .pons import TOKEN_LAUNCHED, POOL_GRADUATED, token_metadata, token_names, pair_symbols
 
 log = logging.getLogger("wormhole.indexer")
 
@@ -15,6 +16,7 @@ CONFIRM = 3                 # blocks of lag behind the head (0.3 s): a node behi
 RESCAN = 600                # blocks re-read every tick (a minute): what a lagging node hid last time is picked up
 SAMPLE_EVERY = 10_000       # backfill: real timestamps every 10k blocks, launches interpolated between them
 POISON_FAILS = 20           # identical follow failures (about a minute) before the range is skipped and reported
+TICKER_NAMES = 15           # newest launches of a slice whose names are read: the page's ticker shows 15
 CUT = {"name": 80, "symbol": 24, "logo": 400, "description": 600, "twitter": 120, "telegram": 120, "website": 200}
 
 INSERT_LAUNCH = ("INSERT INTO launches(token,curve,deployer,pair_token,pair_symbol,config_id,grad_threshold,block,ts,tx)"
@@ -167,9 +169,10 @@ class Indexer:
         if new_grads:
             self._metadata([g["token"] for g in new_grads])
         if live and new_launches:
-            # names for the live ticker only; the backfill skips this to spare the public node
-            recent = new_launches[-40:]
-            self._metadata([l["token"] for l in recent], curve=False)
+            # names for the live ticker only, and only as many as it shows; the backfill skips this to spare the
+            # public node. A graduation reads the full record (logo, socials, curve settings) when it happens.
+            recent = new_launches[-TICKER_NAMES:]
+            self._names([l["token"] for l in recent])
             if self.on_launch:
                 for l in recent:
                     self.on_launch(l["token"])
@@ -225,9 +228,10 @@ class Indexer:
             except Exception as e:
                 log.info("launch timestamp lookup failed for %s: %s", token[:10], e)
             ts = ts or self.est_ts(blk)
-        self.db.x("INSERT OR IGNORE INTO launches(token,curve,deployer,pair_token,pair_symbol,config_id,grad_threshold,"
-                  "block,ts,tx,creator_tax_bps,buyback) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                  (token, curve, deployer, pair, sym, None, str(thr), blk, ts, tx, tax, buyback))
+        if self.db.xc("INSERT OR IGNORE INTO launches(token,curve,deployer,pair_token,pair_symbol,config_id,grad_threshold,"
+                      "block,ts,tx,creator_tax_bps,buyback) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                      (token, curve, deployer, pair, sym, None, str(thr), blk, ts, tx, tax, buyback)) == 1:
+            launch_remembered(self.db, deployer, ts)     # a launch pruned before it graduated is counted once
         return True
 
     def _find_launch(self, token, grad_block=None):
@@ -250,6 +254,14 @@ class Indexer:
         except Exception as e:
             log.info("launch block lookup failed for %s: %s", token[:10], e)
         return None, None
+
+    def _names(self, tokens):
+        """Name and symbol for the ticker. meta is left alone: it means the full record was read, and a
+        graduation whose full read fails must still be picked up by refetch_metadata."""
+        cut = lambda s, n: None if s is None else s[:n]
+        for t, m in token_names(self.rpc, tokens).items():
+            self.db.x("UPDATE launches SET name=COALESCE(?,name), symbol=COALESCE(?,symbol) WHERE token=?",
+                      (cut(m["name"], CUT["name"]), cut(m["symbol"], CUT["symbol"]), t))
 
     def _metadata(self, tokens, curve=True):
         """Names, socials and curve settings for tokens we hold. A read that failed keeps the old value and

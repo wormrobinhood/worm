@@ -4,10 +4,11 @@ A trial freezes one strategy when it starts: an entry rule (watch.STRATEGIES, by
 the book uses. Its members are the paper positions that rule opens afterwards, the first one per creator,
 and a member's result is what the paper book realised: pool-quoted fills, gas and the token's own costs.
 When the first COHORT_N members have all closed, the trial is evaluated once. Nothing is replaced and no
-running bound is peeked at. All rules share one error budget: the k-th attempt (a rule's first cohort, or a
-retry after a failure or an edit) is judged at TOTAL_ALPHA/(k(k+1)), so trying more rules, or retrying until
-luck wins, gets harder each time. The next cohort starts as soon as one ends, so a pass is renewed by fresh
-evidence (at the bar it passed at) or expires; editing the rule or the exit policy voids it.
+running bound is peeked at. All rules share one error budget: the k-th attempt (a rule's first cohort, a
+retry after a failure, or a restart after an edit made once any of the cohort's evidence was visible) is
+judged at TOTAL_ALPHA/(k(k+1)), so trying more rules, or retrying until luck wins, gets harder each time. The
+next cohort starts as soon as one ends, so a pass is renewed by fresh evidence (at the bar it passed at) or
+expires; editing the rule, the exit policy or the execution spec (trade_checks.evidence_spec) voids it.
 
 These are paper fills against live pool quotes, not proof of executable profit at size."""
 import json
@@ -31,43 +32,108 @@ def ensure_tables(db):
          " result TEXT,CONSTRAINT member_identity PRIMARY KEY(trial,token),UNIQUE(trial,creator))")
     db.x("CREATE TABLE IF NOT EXISTS strategy_ticks(trial INTEGER,token TEXT,ts INTEGER,price REAL,PRIMARY KEY(trial,token,ts))")
     have = {r['name'] for r in db.q('PRAGMA table_info(strategy_trials)')}
-    for col in ('rule TEXT', 'k INTEGER'):
+    for col in ('rule TEXT', 'k INTEGER', 'counted INTEGER'):
         if col.split()[0] not in have:
             db.x(f'ALTER TABLE strategy_trials ADD COLUMN {col}')
     db.x("UPDATE strategy_trials SET status=? WHERE rule IS NULL AND status='collecting'", (LEGACY,))
+    # Trials from before `counted` existed: an evaluated or running one holds its k; a voided one holds it when
+    # anything it could have shown was on the page before it ended (see _seen). Never un-fails or passes anything.
+    db.x("UPDATE strategy_trials SET counted=1 WHERE counted IS NULL AND rule IS NOT NULL AND status IN ('collecting','passed','failed')")
+    for t in db.q("SELECT * FROM strategy_trials WHERE counted IS NULL AND rule IS NOT NULL AND status='voided'"):
+        db.x('UPDATE strategy_trials SET counted=? WHERE id=?', (1 if _seen(db, t, t['completed']) else 0, t['id']))
 
 
 def frozen(rule):
     """The strategy as one canonical string: the entry rule and the exit policy new positions get."""
+    from . import watch, paper_research
     policy, _ = lab.parse_arm(lab.DEFAULT)
-    return json.dumps({'entry': rule, 'exit': policy, 'arm': lab.DEFAULT,
+    if rule.get('of'):
+        # A filtered rule freezes the rules it draws from and the filter's own thresholds: editing either voids it.
+        rule = {**rule, 'bases': [r for r in watch.STRATEGIES if r['name'] in rule['of']],
+                'limits': [list(x) for x in paper_research.LIMITS], 'filter_version': paper_research.FILTER_VERSION}
+    return json.dumps({'entry': rule, 'exit': policy, 'arm': lab.DEFAULT, 'gate': gate_spec(),
                        'execution': execution.evidence_spec()}, sort_keys=True)
 
 
+# The code that decides membership, results, the bar and the verdict. Frozen with every trial: an edit to the gate
+# itself (a smaller cohort, a looser alpha, a different settlement) voids the cohorts it would judge, exactly like
+# an edit to the strategy, and costs their attempts once they were seen.
+GATE_CODE = {'strategy_validation': ('frozen', 'gate_spec', 'rules', '_sources', '_seen', 'attempt', 'stage', '_fresh',
+                                     'admit', 'settle', 'bound', 'evaluate', 'tick', '_view', 'summary'),
+             'watch': ('filtered_member',)}
+
+
+def gate_spec():
+    return {'cohort_n': COHORT_N, 'total_alpha': TOTAL_ALPHA, 'settlement_grace_s': SETTLEMENT_GRACE_S,
+            'valid_for': VALID_FOR, 'code': execution.code_digest(GATE_CODE)}
+
+
 def rules():
+    """Every rule with a cohort: the entry rules, then the filtered rules drawn from them (watch.FILTERED)."""
     from . import watch
-    return list(watch.STRATEGIES)
+    return list(watch.STRATEGIES) + list(watch.FILTERED)
+
+
+def _sources(trial):
+    """The paper `strategy` labels whose positions can belong to this trial: its own rule, or for a filtered rule
+    the rules it draws from, as frozen in the trial itself."""
+    try:
+        entry = json.loads(trial['spec'] or '{}').get('entry') or {}
+    except (ValueError, AttributeError):
+        entry = {}
+    return list(entry.get('of') or [trial['rule']]), entry if entry.get('of') else None
+
+
+def _seen(db, trial, until=None):
+    """Could anyone have looked at this trial's evidence? True once it has a member, or once its rule opened any
+    paper position after its cutoff, or had a pick turned away by the loss breaker since it began (USDG or not: every
+    such result is public). A void after that is peeking-then-restarting and costs its attempt; a void before it costs nothing."""
+    if db.one('SELECT 1 FROM strategy_members WHERE trial=?', (trial['id'],)):
+        return True
+    if 'strategy' not in {r['name'] for r in db.q('PRAGMA table_info(paper)')}:
+        return False
+    names, _ = _sources(trial)
+    marks, until = ','.join('?' * len(names)), until if until is not None else 2 ** 62
+    if db.one(f"SELECT 1 FROM paper WHERE id>? AND strategy IN ({marks}) AND opened_ts<=?", (trial['cutoff'] or 0, *names, until)):
+        return True
+    # A pick the loss breaker turned away is public too (an event, and a lab case that follows its price).
+    if db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_skips'"):
+        return bool(db.one(f"SELECT 1 FROM paper_skips WHERE strategy IN ({marks}) AND ts>=? AND ts<=?",
+                           (*names, trial['created'] or 0, until)))
+    return False
 
 
 def attempt(db, rule, spec):
-    """The k a new cohort is judged at. Every attempt takes the next k from one budget shared by all rules:
-    a rule's first cohort, and any retry after a failure or an edit. The renewal of a standing pass is no new
-    attempt and keeps the k it passed at."""
+    """The k a new cohort is judged at, from one budget shared by all rules. Every counted attempt holds its own
+    k for good: a cohort that was evaluated (passed or failed), one still collecting, and one voided after its
+    evidence could be seen. The new cohort takes the smallest k no counted attempt holds, so a cohort voided
+    before anything of it was visible gives its k back (it never happened) and each counted attempt keeps a
+    distinct k: the budget sums to at most TOTAL_ALPHA however many rules and edits there are. The renewal of a
+    standing pass is no new attempt and keeps the k it passed at."""
     last = db.one('SELECT status,spec,k FROM strategy_trials WHERE rule=? ORDER BY id DESC LIMIT 1', (rule,))
     if last and last['status'] == 'passed' and last['spec'] == spec and last['k']:
         return last['k']
-    return 1 + db.one('SELECT COALESCE(MAX(k),0) n FROM strategy_trials WHERE rule IS NOT NULL')['n']
+    held = {r['k'] for r in db.q("SELECT k FROM strategy_trials WHERE rule IS NOT NULL AND k IS NOT NULL"
+                                 " AND (counted=1 OR status IN ('collecting','passed','failed'))")}
+    k = 1
+    while k in held:
+        k += 1
+    return k
 
 
 def stage(db):
     """Every entry rule always has one cohort collecting. A trial whose frozen strategy no longer matches
-    the code is voided, whether it was collecting or had passed."""
+    the code is voided, whether it was collecting or had passed; it keeps its attempt if it had been seen."""
     ensure_tables(db)
     with db.transaction():
         for rule in rules():
             spec = frozen(rule)
-            db.x("UPDATE strategy_trials SET status='voided', completed=? WHERE rule=? AND spec!=? AND status IN ('collecting','passed')",
-                 (int(time.time()), rule['name'], spec))
+            now = int(time.time())
+            for t in db.q("SELECT * FROM strategy_trials WHERE rule=? AND spec!=? AND status IN ('collecting','passed')",
+                          (rule['name'], spec)):
+                seen = t['status'] == 'passed' or _seen(db, t)
+                db.x("UPDATE strategy_trials SET status='voided', completed=?, counted=? WHERE id=?",
+                     (now, 1 if seen else 0, t['id']))
             if db.one("SELECT 1 FROM strategy_trials WHERE rule=? AND status='collecting'", (rule['name'],)):
                 continue
             # The next cohort of an unchanged strategy continues where the last one's members ended, so the
@@ -79,7 +145,7 @@ def stage(db):
             if previous:
                 cutoff = db.one("SELECT COALESCE(MAX(p.id),?) n FROM strategy_members m JOIN paper p ON p.token=m.token WHERE m.trial=?",
                                 (cutoff, previous['id']))['n']
-            db.x("INSERT INTO strategy_trials(created,cutoff,arm,spec,baseline,status,rule,k) VALUES(?,?,?,?,'','collecting',?,?)",
+            db.x("INSERT INTO strategy_trials(created,cutoff,arm,spec,baseline,status,rule,k,counted) VALUES(?,?,?,?,'','collecting',?,?,1)",
                  (int(time.time()), cutoff, lab.DEFAULT, spec, rule['name'], attempt(db, rule['name'], spec)))
 
 
@@ -88,17 +154,24 @@ def _fresh(row):
 
 
 def admit(db, trial):
-    """Paper positions this rule opened after the trial began, oldest first, the first one per creator."""
+    """Paper positions this rule opened after the trial began, oldest first, the first one per creator. For a
+    filtered rule: positions its source rules opened whose shadow decision at entry matched."""
+    from . import watch
     if 'strategy' not in {r['name'] for r in db.q('PRAGMA table_info(paper)')}:
         return                                       # the paper book adds its columns when it starts
     exit_spec = json.dumps(json.loads(trial['spec'])['exit'], sort_keys=True)
     have = db.one('SELECT COUNT(*) n FROM strategy_members WHERE trial=?', (trial['id'],))['n']
-    rows = db.q("SELECT p.id,p.token,p.opened_ts,p.policy_spec,p.gas_usd,p.cost,p.execution_model,p.execution_spec,p.pool_key,l.deployer FROM paper p LEFT JOIN launches l ON l.token=p.token"
-                " WHERE p.id>? AND p.strategy=? AND p.token NOT IN (SELECT token FROM strategy_members WHERE trial=?) ORDER BY p.id",
-                (trial['cutoff'], trial['rule'], trial['id']))
+    names, filtered = _sources(trial)
+    rows = db.q("SELECT p.id,p.token,p.opened_ts,p.policy_spec,p.gas_usd,p.cost,p.execution_model,p.execution_spec,p.pool_key,"
+                "p.strategy,p.entry_shadow,l.deployer FROM paper p LEFT JOIN launches l ON l.token=p.token"
+                f" WHERE p.id>? AND p.strategy IN ({','.join('?' * len(names))}) AND p.token NOT IN"
+                " (SELECT token FROM strategy_members WHERE trial=?) ORDER BY p.id",
+                (trial['cutoff'], *names, trial['id']))
     for r in rows:
         if have >= COHORT_N:
             return
+        if filtered and not watch.filtered_member(filtered, r):
+            continue
         try:
             same_exit = json.dumps(json.loads(r['policy_spec'] or 'null'), sort_keys=True) == exit_spec
             spec = json.loads(trial['spec'])['execution']

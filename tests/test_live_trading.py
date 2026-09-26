@@ -9,6 +9,7 @@ from test_trader import FakeRpc, receipt, pad, tok, HASH, RUNWAY, candidate
 from wormhole.pons import TRANSFER
 
 ARM = 'costout_1.5x@0m'          # these tests walk a take-profit, a trail and a stop: an arm that has all three
+POOL_MID = L.pool_mid
 
 
 @pytest.fixture
@@ -29,6 +30,7 @@ def setup(db, monkeypatch):
     monkeypatch.setattr(L.strategy_validation, 'summary', lambda db: {'passed': True, 'arm': ARM, 'passed_rules': ['rule-a']})
     monkeypatch.setattr(L.execution, 'pool', lambda *args, **kw: pool)
     monkeypatch.setattr(L.execution, 'entry', lambda *args, **kw: dict(quote))
+    monkeypatch.setattr(L, 'pool_mid', lambda rpc, pk, token: .01)
     monkeypatch.setattr(L, 'approve_exact', lambda *args, **kw: int(time.time()) + 600)
     monkeypatch.setattr(L, 'call_fn', lambda *args: [10**30])
     monkeypatch.setattr(trader, 'token_prices', lambda tokens: {})
@@ -421,6 +423,60 @@ def test_allocated_burn_profit_cannot_refill_spent_principal(setup, monkeypatch)
     reopened = DB(s.db.path)
     assert L.budget(reopened)['room'] == 0
     reopened.c.close()
+
+
+def test_live_measures_impact_against_the_pools_own_mid_like_paper(setup, monkeypatch):
+    s = setup
+    seen = []
+    monkeypatch.setattr(L.execution, 'entry', lambda *a, **kw: seen.append(kw.get('reference')) or dict(s.quote))
+    mids = iter([.0101, .0102])
+    monkeypatch.setattr(L, 'pool_mid', lambda rpc, pk, token: next(mids))
+    buy(s)
+    assert seen == [.0101, .0102]                     # a fresh pool read for the quote and for its refresh
+    assert s.db.one("SELECT COUNT(*) n FROM trades")['n'] == 1
+
+
+def test_no_pool_mid_no_live_order(setup, monkeypatch):
+    s = setup
+    def unavailable(rpc, pk, token):
+        raise ValueError('pool price unavailable')
+    monkeypatch.setattr(L, 'pool_mid', unavailable)
+    buy(s)
+    assert s.db.one("SELECT COUNT(*) n FROM trades")['n'] == 0 and not s.calls
+
+
+def test_pool_mid_reads_the_pool_and_refuses_a_missing_answer(monkeypatch):
+    pk = {'c0': C.USDG, 'c1': tok(1), 'fee': 0, 'tick_spacing': 200, 'hooks': C.HOOK, 'quote': C.USDG}
+    monkeypatch.setattr(L, 'token_prices', lambda tokens: {})               # no API price: no veto
+    monkeypatch.setattr(L.poolstate, 'mids', lambda rpc, pools, eth: {t: .02 for t in pools})
+    assert L.pool_mid(None, pk, tok(1)) == .02
+    monkeypatch.setattr(L.poolstate, 'mids', lambda rpc, pools, eth: {t: None for t in pools})
+    with pytest.raises(ValueError):
+        L.pool_mid(None, pk, tok(1))
+
+
+def test_a_pool_mid_far_from_the_price_api_is_no_live_reference(monkeypatch):
+    pk = {'c0': C.USDG, 'c1': tok(1), 'fee': 0, 'tick_spacing': 200, 'hooks': C.HOOK, 'quote': C.USDG}
+    monkeypatch.setattr(L.poolstate, 'mids', lambda rpc, pools, eth: {t: .02 for t in pools})
+    fresh = lambda price: (lambda tokens: {tok(1): {'price_usd': price, 'observed_at': time.time()}})
+    monkeypatch.setattr(L, 'token_prices', fresh(.018))                      # 11% apart: within the band
+    assert L.pool_mid(None, pk, tok(1)) == .02
+    monkeypatch.setattr(L, 'token_prices', fresh(.016))                      # 25% apart: a pushed pool, or a stale API
+    with pytest.raises(ValueError, match='disagree'):
+        L.pool_mid(None, pk, tok(1))
+    def down(tokens):
+        raise OSError('price API down')
+    monkeypatch.setattr(L, 'token_prices', down)                             # the API failing is no veto either
+    assert L.pool_mid(None, pk, tok(1)) == .02
+
+
+def test_a_disagreeing_pool_skips_the_live_entry(setup, monkeypatch):
+    s = setup
+    monkeypatch.setattr(L, 'pool_mid', POOL_MID)               # the real check, which the fixture stubs out
+    monkeypatch.setattr(L.poolstate, 'mids', lambda rpc, pools, eth: {t: .02 for t in pools})
+    monkeypatch.setattr(L, 'token_prices', lambda tokens: {t: {'price_usd': .01, 'observed_at': time.time()} for t in tokens})
+    buy(s)
+    assert s.db.one("SELECT COUNT(*) n FROM trades")['n'] == 0 and not s.calls
 
 
 def test_paper_and_receipt_settlement_share_the_same_exit_basis(setup, monkeypatch):

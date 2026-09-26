@@ -56,14 +56,14 @@ def test_parse_arm():
 
 
 def test_costout_takes_two_thirds_then_trails():
-    # 1.0 -> 1.6 (take profit at 1.5x, sell 2/3) -> 2.0 (new peak) -> 1.1 (40% under the peak: trailing stop)
+    # 1.0 -> 1.6 (take profit at 1.5x: 2/3 sold at the 1.5 level, not the 1.6 sample) -> 2.0 (new peak) -> 1.1 (trail)
     r = lab.simulate("costout_1.5x@0m", path([1.0, 1.6, 2.0, 1.1, 1.0]), 0)
-    assert abs(r - net([(0.667, 1.6), (0.333, 1.1)])) < 1e-9
+    assert abs(r - net([(0.667, 1.5), (0.333, 1.1)])) < 1e-9
 
 
 def test_simulate_is_scale_free():
     shape = [1.0, 1.6, 2.0, 1.1, 1.0]
-    want = net([(0.667, 1.6), (0.333, 1.1)])
+    want = net([(0.667, 1.5), (0.333, 1.1)])
     for e in (1e-5, 1.0, 100.0):
         r = lab.simulate("costout_1.5x@0m", path([e * x for x in shape]), 0)
         assert abs(r - want) < 1e-9, e
@@ -83,14 +83,14 @@ def test_every_arm_is_scale_free():
 
 def test_costout_on_real_price_levels():
     r = lab.simulate("costout_1.5x@0m", path([1e-5, 1.6e-5, 2e-5, 1.1e-5]), 0)
-    want = 0.667 * QS * 1.6 * (1 - F) + 0.333 * QS * 1.1 * (1 - F) - 1
+    want = 0.667 * QS * 1.5 * (1 - F) + 0.333 * QS * 1.1 * (1 - F) - 1
     assert abs(r - want) < 1e-9 and 0.3 < r < 0.5
 
 
 def test_per_side_cost_is_a_parameter():
     p = path([1.0, 1.6, 2.0, 1.1, 1.0])
     r = lab.simulate("costout_1.5x@0m", p, 0, fee=0.04)
-    assert abs(r - net([(0.667, 1.6), (0.333, 1.1)], fee=0.04)) < 1e-9
+    assert abs(r - net([(0.667, 1.5), (0.333, 1.1)], fee=0.04)) < 1e-9
     assert r < lab.simulate("costout_1.5x@0m", p, 0)
 
 
@@ -103,7 +103,7 @@ def test_after_take_profit_the_stop_no_longer_applies():
     # once cost is out the rest rides on the trailing stop only: 1.6 -> 0.5 is below the old stop but
     # exits on the trail (peak 1.6 * 0.6 = 0.96) at the 0.5 tick, not earlier
     r = lab.simulate("costout_1.5x@0m", path([1.0, 1.6, 0.5]), 0)
-    assert abs(r - net([(0.667, 1.6), (0.333, 0.5)])) < 1e-9
+    assert abs(r - net([(0.667, 1.5), (0.333, 0.5)])) < 1e-9
 
 
 def test_trailing_from_start_tracks_the_peak():
@@ -114,9 +114,9 @@ def test_trailing_from_start_tracks_the_peak():
 
 def test_ladder_sells_three_quarters_on_a_spike_then_trails():
     r = lab.simulate("ladder@0m", path([1.0, 3.2, 1.5]), 0)
-    # 1.5x, 2x and 3x all hit on the same tick: three quarters at 3.2; the last quarter exits on the
-    # 50% trail (3.2 * 0.5 = 1.6) at the 1.5 tick
-    assert abs(r - net([(0.75, 3.2), (0.25, 1.5)])) < 1e-9
+    # 1.5x, 2x and 3x all hit on the same tick: a quarter each at its own level (limit fills), not at 3.2;
+    # the last quarter exits on the 50% trail (3.2 * 0.5 = 1.6) at the 1.5 tick
+    assert abs(r - net([(0.25, 1.5), (0.25, 2.0), (0.25, 3.0), (0.25, 1.5)])) < 1e-9
 
 
 def test_time_limit_sells_at_the_deadline():
@@ -255,9 +255,127 @@ def test_resolve_uses_the_case_cost(db, monkeypatch):
     c = db.one("SELECT * FROM lab_cases WHERE token=?", (TOKEN_A,))
     assert c["status"] == "resolved"
     res = json.loads(c["results"])
-    assert res["costout_1.5x@0m"] == round(lab.simulate("costout_1.5x@0m", ticks, t0, fee=0.04), 4)
-    assert res["costout_1.5x@0m"] != round(lab.simulate("costout_1.5x@0m", ticks, t0), 4)
+    gas = dict(gas_per_side=lab.GAS_PER_SIDE, max_gap_s=lab.MAX_GAP_S)       # no paper book here: the default gas
+    assert res["costout_1.5x@0m"] == round(lab.simulate("costout_1.5x@0m", ticks, t0, fee=0.04, **gas), 4)
+    assert res["costout_1.5x@0m"] != round(lab.simulate("costout_1.5x@0m", ticks, t0, **gas), 4)
+    assert res["costout_1.5x@0m"] < round(lab.simulate("costout_1.5x@0m", ticks, t0, fee=0.04), 4)   # gas is charged
     assert db.one("SELECT n FROM lab_arms WHERE name='costout_1.5x@0m'")["n"] == 1
+    assert c["sim"] == lab.SIM_VERSION and c["gas"] == lab.GAS_PER_SIDE
+
+
+# ---- the conservative fills, gas, gaps and one price source (SIM_VERSION 2) ---------------------------
+
+def test_a_jump_past_a_take_profit_earns_the_level_not_the_jump():
+    r = lab.simulate("fixed_40_25@0m", path([1.0, 16.0, 16.0]), 0)            # a sample 16x up: sold at 1.4x
+    assert abs(r - net([(1.0, 1.4)])) < 1e-9
+    assert r < 0.4                                                             # a +40% rule can never book more than +40%
+
+
+def test_a_stop_fills_at_the_sample_that_crossed_it():
+    r = lab.simulate("fixed_40_25@0m", path([1.0, 0.5, 0.5]), 0)             # gapped through the -25% stop
+    assert abs(r - net([(1.0, 0.5)])) < 1e-9
+
+
+def test_every_leg_pays_gas():
+    p = path([1.0, 1.6, 2.0, 1.1, 1.0])
+    assert lab.simulate("costout_1.5x@0m", p, 0) - lab.simulate("costout_1.5x@0m", p, 0, gas_per_side=.004) == \
+        __import__("pytest").approx(3 * .004)                                  # buy, take profit, trail
+
+
+def test_a_gain_across_a_hole_in_the_data_is_capped():
+    holey = [(0, 1.0), (300, 1.05), (300 + 6 * 3600, 30.0), (300 + 6 * 3600 + 300, 20.0)]   # six silent hours, then 30x
+    notes = {}
+    r = lab.simulate("trail_35@0m", holey, 0, max_gap_s=lab.MAX_GAP_S, notes=notes)
+    assert r == lab.GAP_CAP and notes == {"capped": True}
+    assert lab.simulate("trail_35@0m", holey, 0) > 10                          # what v1 booked
+    loss = [(0, 1.0), (300, 1.0), (300 + 6 * 3600, 0.3), (7 * 3600, 0.3)]
+    assert lab.simulate("fixed_40_25@0m", loss, 0, max_gap_s=lab.MAX_GAP_S) < -0.5   # a loss across a hole stays whole
+
+
+def test_the_version_1_table_is_set_aside_and_recent_cases_are_resimulated(db, monkeypatch):
+    lab.ensure_tables(db)
+    monkeypatch.setattr(lab, "time", Clock(NOW))
+    monkeypatch.setattr(lab, "token_prices", lambda addrs: {})
+    t0 = NOW - lab.HORIZON_S - 3600
+    ticks = [(t0 + i * 600, p) for i, p in enumerate([1.0, 20.0] + [20.0] * 300)]
+    case(db, TOKEN_A, t0, ticks)
+    db.x("UPDATE lab_cases SET status='resolved', results='{\"fixed_40_25@0m\": 18.9}', sim=NULL WHERE token=?", (TOKEN_A,))
+    case(db, TOKEN_B, t0, [(t0 + 7 * 86400, 1.0)], sym="BBB")                 # its early ticks are pruned: cannot be redone
+    db.x("UPDATE lab_cases SET status='resolved', results='{}', sim=NULL WHERE token=?", (TOKEN_B,))
+    arm_stats(db, "fixed_40_25@0m", 158, 0.34, 2.1)
+    db.meta_set("lab_sim", 1)
+    lab.ensure_tables(db)
+    assert db.one("SELECT n FROM lab_arms_v1 WHERE name='fixed_40_25@0m'")["n"] == 158
+    assert db.one("SELECT n FROM lab_arms WHERE name='fixed_40_25@0m'")["n"] == 0
+    lab.tick(db)
+    a = db.one("SELECT * FROM lab_cases WHERE token=?", (TOKEN_A,))
+    assert a["sim"] == lab.SIM_VERSION and json.loads(a["results"])["fixed_40_25@0m"] < 0.4
+    assert db.one("SELECT sim FROM lab_cases WHERE token=?", (TOKEN_B,))["sim"] == 1
+    s = lab.summary(db)
+    assert s["simulated"] and s["cases_ranked"] == 1 and s["cases_legacy"] == 1
+    assert next(x for x in s["arms"] if x["arm"] == "fixed_40_25@0m")["n"] == 1
+
+
+def test_mixed_source_cases_are_never_ranked_and_usdg_cases_rank_separately(db, monkeypatch):
+    lab.ensure_tables(db)
+    monkeypatch.setattr(lab, "time", Clock(NOW))
+    monkeypatch.setattr(lab, "token_prices", lambda addrs: {})
+    t0 = NOW - lab.HORIZON_S
+    ticks = [(t0 + i * 600, 1.0 + 0.01 * (i % 3)) for i in range(289)]
+    case(db, TOKEN_A, t0, ticks)
+    case(db, TOKEN_B, t0, ticks, sym="BBB")
+    db.x("UPDATE lab_cases SET source='mixed' WHERE token=?", (TOKEN_A,))
+    db.x("UPDATE lab_cases SET source='pool', pair='USDG' WHERE token=?", (TOKEN_B,))
+    lab.tick(db)
+    assert db.one("SELECT n FROM lab_arms WHERE name=?", (lab.DEFAULT,))["n"] == 1          # B only
+    assert db.one("SELECT n FROM lab_arms_usdg WHERE name=?", (lab.DEFAULT,))["n"] == 1
+    assert json.loads(db.one("SELECT results FROM lab_cases WHERE token=?", (TOKEN_A,))["results"])  # kept, just not ranked
+    assert lab.summary(db)["cases_mixed"] == 1
+
+
+def test_a_v1_case_the_book_entered_keeps_its_ticks_and_its_rank(db, monkeypatch):
+    from wormhole.paper import Paper
+    Paper(db)
+    lab.ensure_tables(db)
+    monkeypatch.setattr(lab, "time", Clock(NOW))
+    monkeypatch.setattr(lab, "token_prices", lambda addrs: {})
+    t0 = NOW - lab.HORIZON_S - 3600
+    api = [(t0 + i * 300, 1.0 + 0.01 * (i % 4)) for i in range(600)]
+    opened = t0 + 7200 + 150                                                 # no API reading in the entry window
+    for token, extra in ((TOKEN_A, [(opened - 20, 5.0)]),                    # one pool reading at the entry: clear
+                         (TOKEN_B, [(opened - 100, 5.0), (opened - 10, 5.0)])):   # two readings in the window: unclear
+        case(db, token, t0, sorted(api + extra))
+        db.x("UPDATE lab_cases SET status='resolved', results='{}' WHERE token=?", (token,))
+        db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,strategy) VALUES(?,?,?,?,?,?,'closed','rule-a')",
+             (token, "T", opened, 1.0, 10.0, 10.0))
+    db.meta_set("lab_sim", 1)
+    lab.ensure_tables(db)
+    assert db.one("SELECT source FROM lab_cases WHERE token=?", (TOKEN_A,))["source"] == "api"
+    assert db.q("SELECT ts FROM ticks WHERE token=? AND src='pool'", (TOKEN_A,)) == [{"ts": opened - 20}]
+    assert db.one("SELECT source FROM lab_cases WHERE token=?", (TOKEN_B,))["source"] == "mixed"
+    before = db.one("SELECT COUNT(*) n FROM ticks")["n"]
+    lab.tick(db)
+    assert db.one("SELECT COUNT(*) n FROM ticks")["n"] == before                            # nothing deleted
+    a = db.one("SELECT sim FROM lab_cases WHERE token=?", (TOKEN_A,))
+    assert a["sim"] == lab.SIM_VERSION and db.one("SELECT n FROM lab_arms WHERE name=?", (lab.DEFAULT,))["n"] == 1
+    assert 5.0 not in [p for _, p in lab.path_of(db, {"token": TOKEN_A, "source": "api"})]
+
+
+def test_a_lab_ranking_can_never_choose_the_exit(db, monkeypatch):
+    """Only code changes the exit new positions get: a winning lab table, an adopted AI arm or a lab-only pass
+    changes nothing without a paper cohort."""
+    monkeypatch.setattr(lab, "LAB_MIN_N", 10)
+    lab.ensure_tables(db)
+    lab.LEARNED["ai_x"] = {"tp": [(1.3, 1.0)], "trail": None, "trail_from_start": False, "stop": -0.2, "max_age": 3600}
+    try:
+        for table in ("lab_arms", "lab_arms_usdg"):
+            db.x(f"INSERT OR IGNORE INTO {table}(name) VALUES('ai_x@0m')")
+            db.x(f"UPDATE {table} SET n=100, sum_ret=50, sum_sq=26, wins=90 WHERE name IN ('ai_x@0m','trail_35@0m')")
+        assert lab.research_policy(db)[1] == "learned"                        # the table would pick another arm ...
+        assert lab.current_policy(db) == (lab.DEFAULT, "default until a paper cohort passes")   # ... nothing uses it
+        assert all(lab.pick_arm(db) == lab.DEFAULT for _ in range(20))
+    finally:
+        lab.LEARNED.pop("ai_x", None)
 
 
 # ---- the loop: stale paths, missing prices, pruning -----------------------------------------------

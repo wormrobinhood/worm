@@ -19,6 +19,7 @@ KEY = "0x" + "11" * 32                                # throwaway key, tests onl
 os.environ["WH_SECRET"] = KEY
 os.environ["WH_DATA_DIR"] = str(TEST_ROOT / 'data')
 os.environ["WH_LIVE"] = "0"
+os.environ["WH_SURPLUS_BURN_AUTO"] = "0"      # always-on burn rounds: opted into per test
 os.environ["WH_OWNER_WALLET"] = "0x" + "22" * 20
 # keys the real .env may carry that would otherwise reach the tests: pinned to harmless values
 os.environ["WH_WALLET"] = ""

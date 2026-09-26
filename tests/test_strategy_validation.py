@@ -15,6 +15,7 @@ OTHER = {"name": "rule-b", "looks": [60], "conditions": [{"feature": "ret_p0", "
 @pytest.fixture(autouse=True)
 def one_rule(monkeypatch):
     monkeypatch.setattr(watch, "STRATEGIES", [RULE])
+    monkeypatch.setattr(watch, "FILTERED", [])            # the filtered rule has its own tests below
 
 
 def exit_spec():
@@ -189,6 +190,192 @@ def test_overdue_position_invalidates_evidence_without_inventing_a_sale(db):
     V.tick(db)
     assert V.summary(db)['rules'][0]['last']['status'] == 'failed'
     assert db.one('SELECT status,pnl_usd FROM paper WHERE token=?', (token,)) == {'status': 'open', 'pnl_usd': None}
+
+
+def test_an_edit_before_anything_was_visible_costs_no_attempt(db, monkeypatch):
+    V.tick(db)                                               # k=1, nothing opened yet
+    monkeypatch.setattr(execution, 'PAPER_FILL', .02)        # a parameter edit: the cohort is voided ...
+    V.tick(db)
+    rows = db.q("SELECT status,k,counted FROM strategy_trials ORDER BY id")
+    assert rows == [{'status': 'voided', 'k': 1, 'counted': 0}, {'status': 'collecting', 'k': 1, 'counted': 1}]   # ... and gives k back
+
+
+def test_an_edit_after_a_member_was_visible_costs_the_attempt(db, monkeypatch):
+    V.tick(db)
+    position(db, 1)                                          # an open member: its P&L is on the page
+    V.tick(db)
+    monkeypatch.setattr(execution, 'PAPER_FILL', .02)
+    V.tick(db)
+    rows = db.q("SELECT status,k,counted FROM strategy_trials ORDER BY id")
+    assert rows == [{'status': 'voided', 'k': 1, 'counted': 1}, {'status': 'collecting', 'k': 2, 'counted': 1}]
+
+
+def test_a_non_member_position_of_the_rule_also_counts_as_seen(db, monkeypatch):
+    V.tick(db)
+    position(db, 1)
+    db.x('UPDATE paper SET pool_key=? WHERE token=?', (json.dumps({'quote': C.ZERO}), tok(1)))   # ETH: never a member
+    V.tick(db)
+    assert db.one('SELECT COUNT(*) n FROM strategy_members')['n'] == 0
+    monkeypatch.setattr(execution, 'PAPER_FILL', .02)
+    V.tick(db)
+    assert db.q("SELECT k,counted FROM strategy_trials ORDER BY id") == [{'k': 1, 'counted': 1}, {'k': 2, 'counted': 1}]
+
+
+def test_a_pick_the_breaker_turned_away_counts_as_seen(db, monkeypatch):
+    from wormhole.paper import Paper
+    Paper(db)
+    V.tick(db)
+    created = db.one("SELECT created FROM strategy_trials")["created"]
+    db.x("INSERT INTO paper_skips(token,symbol,ts,strategy,reason,pair) VALUES(?,?,?,?,?,?)",
+         (tok(2), 'T', created - 10, 'rule-a', 'loss breaker', 'USDG'))           # before the trial: not its evidence
+    db.x("INSERT INTO paper_skips(token,symbol,ts,strategy,reason,pair) VALUES(?,?,?,?,?,?)",
+         (tok(3), 'T', created, 'rule-b', 'loss breaker', 'USDG'))                # another rule's pick
+    assert not V._seen(db, db.one("SELECT * FROM strategy_trials"))
+    db.x("INSERT INTO paper_skips(token,symbol,ts,strategy,reason,pair) VALUES(?,?,?,?,?,?)",
+         (tok(1), 'T', created, 'rule-a', 'loss breaker', 'USDG'))                # its outcome is followed in public
+    monkeypatch.setattr(execution, 'PAPER_FILL', .02)
+    V.tick(db)
+    assert db.q("SELECT k,counted FROM strategy_trials ORDER BY id") == [{'k': 1, 'counted': 1}, {'k': 2, 'counted': 1}]
+
+
+def test_a_freed_k_is_reused_and_counted_attempts_keep_distinct_bars(db, monkeypatch):
+    monkeypatch.setattr(watch, "STRATEGIES", [RULE, OTHER])
+    V.tick(db)                                               # rule-a k=1, rule-b k=2
+    position(db, 1, rule="rule-b")
+    V.tick(db)
+    monkeypatch.setattr(execution, 'PAPER_FILL', .02)        # both voided: rule-a unseen, rule-b seen
+    V.tick(db)
+    live = {r['rule']: r['k'] for r in db.q("SELECT rule,k FROM strategy_trials WHERE status='collecting'")}
+    assert live == {'rule-a': 1, 'rule-b': 3}
+    held = [r['k'] for r in db.q("SELECT k FROM strategy_trials WHERE counted=1")]
+    assert sorted(set(held)) == [1, 2, 3]                    # 2 stays spent: rule-b's first cohort was seen
+
+
+def test_failures_and_passes_always_count(db):
+    V.tick(db)
+    cohort(db, [-.2] * V.COHORT_N)
+    assert db.q("SELECT status,k,counted FROM strategy_trials ORDER BY id") == [
+        {'status': 'failed', 'k': 1, 'counted': 1}, {'status': 'collecting', 'k': 2, 'counted': 1}]
+
+
+def test_old_trials_migrate_without_passing_or_freeing_anything_seen(db):
+    V.ensure_tables(db)
+    position(db, 1, opened=1000)                             # opened by rule-a while trial 2 ran
+    pid = db.one('SELECT id FROM paper')['id']
+    rows = [(1, 'failed', 1, 0, 500), (2, 'voided', 2, pid - 1, 2000), (3, 'voided', 3, pid, 3000), (4, 'collecting', 4, pid, None)]
+    for tid, status, k, cutoff, completed in rows:
+        db.x("INSERT INTO strategy_trials(id,created,cutoff,arm,spec,baseline,status,rule,k,completed) VALUES(?,?,?,?,?,'',?,?,?,?)",
+             (tid, 1, cutoff, lab.DEFAULT, '{}', status, 'rule-a', k, completed))
+    db.x("UPDATE strategy_trials SET counted=NULL")
+    V.ensure_tables(db)
+    assert {r['id']: r['counted'] for r in db.q('SELECT id,counted FROM strategy_trials')} == {1: 1, 2: 1, 3: 0, 4: 1}
+    assert [r['status'] for r in db.q('SELECT status FROM strategy_trials ORDER BY id')] == ['failed', 'voided', 'voided', 'collecting']
+    V.tick(db)                                               # trial 4's spec is stale: voided; k=3 was never seen
+    assert db.one("SELECT k FROM strategy_trials WHERE status='collecting'")['k'] == 3
+
+
+def test_an_edit_to_the_gate_itself_voids_the_cohort_it_would_judge(db, monkeypatch):
+    V.tick(db)
+    for i in range(30):
+        position(db, i, .5 + .001 * i)                       # 30 winners on the page
+    for i in range(30, 50):
+        position(db, i)                                      # 20 still open
+    V.tick(db)
+    spec = V.frozen(RULE)
+    for name, value in (('COHORT_N', 30), ('TOTAL_ALPHA', .5), ('SETTLEMENT_GRACE_S', 10 ** 6), ('VALID_FOR', 10 ** 9)):
+        with monkeypatch.context() as m:
+            m.setattr(V, name, value)
+            assert V.frozen(RULE) != spec, name
+    monkeypatch.setattr(V, 'COHORT_N', 30)                   # lower the bar after peeking ...
+    monkeypatch.setattr(V, 'TOTAL_ALPHA', .5)
+    V.tick(db)
+    rows = db.q("SELECT status,k,counted FROM strategy_trials ORDER BY id")
+    assert rows[0] == {'status': 'voided', 'k': 1, 'counted': 1}               # ... voids it, and the attempt stays spent
+    assert rows[1]['status'] == 'collecting' and rows[1]['k'] == 2 and not V.summary(db)['passed']
+
+
+def test_the_gate_code_is_in_the_frozen_spec():
+    from wormhole import trade_checks
+    import ast
+    src = (trade_checks.Path(V.__file__)).read_text()
+    names = V.GATE_CODE['strategy_validation']
+    base = trade_checks.source_digest(ast.parse(src), names)
+    commented = src.replace("def bound(values, z):\n", "def bound(values, z):\n    # a comment changes nothing\n")
+    assert commented != src and trade_checks.source_digest(ast.parse(commented), names) == base
+    looser = src.replace("passed = out['lcb'] > 0", "passed = out['lcb'] > -0.05")
+    assert looser != src and trade_checks.source_digest(ast.parse(looser), names) != base
+    assert json.loads(V.frozen(RULE))['gate']['code'] == trade_checks.code_digest(V.GATE_CODE)
+
+
+# ---- a filtered rule: another rule's entries that the frozen shadow filter kept ----------------------
+
+KEEP = {"name": "keep-a", "of": ["rule-a"], "filter": "entry-risk-shadow-v1", "decision": "keep"}
+
+
+def shadow(db, token, decision, version="entry-risk-shadow-v1"):
+    db.x("UPDATE paper SET entry_shadow=? WHERE token=?",
+         (json.dumps({"decision": decision, "version": version, "reasons": [], "missing": []}), token))
+
+
+def test_the_filtered_rule_enrolls_only_kept_usdg_entries_and_leaves_the_base_rule_alone(db, monkeypatch):
+    monkeypatch.setattr(watch, "FILTERED", [KEEP])
+    V.tick(db)
+    assert [(r["rule"], r["k"]) for r in db.q("SELECT rule,k FROM strategy_trials ORDER BY id")] == [("rule-a", 1), ("keep-a", 2)]
+    for i, decision in enumerate(("keep", "skip", "abstain", "keep", "keep"), start=1):
+        shadow(db, position(db, i), decision)
+    shadow(db, position(db, 6), "keep", version="entry-risk-shadow-v0")        # another filter version: never
+    position(db, 7)                                                            # no decision recorded: never
+    db.x("UPDATE paper SET pool_key=? WHERE token=?", (json.dumps({"quote": C.ZERO}), tok(5)))   # kept, but an ETH pool
+    V.tick(db)
+    members = lambda rule: [m["token"] for m in db.q("SELECT m.token FROM strategy_members m JOIN strategy_trials t ON t.id=m.trial"
+                                                     " WHERE t.rule=? ORDER BY m.token", (rule,))]
+    assert members("keep-a") == [tok(1), tok(4)]
+    assert members("rule-a") == sorted([tok(1), tok(2), tok(3), tok(4), tok(6), tok(7)])   # exactly as without it
+    assert db.one("SELECT COUNT(*) n FROM paper")["n"] == 7                                # it buys nothing itself
+
+
+def test_the_filtered_rule_is_judged_once_under_the_same_gate(db, monkeypatch):
+    monkeypatch.setattr(watch, "FILTERED", [KEEP])
+    V.tick(db)
+    for i in range(V.COHORT_N):
+        shadow(db, position(db, i, .3 + .001 * i), "keep")
+    V.tick(db)
+    s = V.summary(db)
+    keep = next(v for v in s["rules"] if v["rule"] == "keep-a")
+    assert keep["passed"] and keep["last"]["n"] == V.COHORT_N and keep["last"]["attempt"] == 2
+    assert "keep-a" in s["passed_rules"]
+
+
+def test_editing_the_filter_or_its_base_rule_voids_the_filtered_cohort(db, monkeypatch):
+    from wormhole import paper_research
+    monkeypatch.setattr(watch, "FILTERED", [KEEP])
+    V.tick(db)
+    spec = V.frozen(KEEP)
+    monkeypatch.setattr(paper_research, "LIMITS", paper_research.LIMITS[:-1])
+    assert V.frozen(KEEP) != spec
+    monkeypatch.undo()
+    monkeypatch.setattr(watch, "FILTERED", [KEEP])
+    monkeypatch.setattr(watch, "STRATEGIES", [{**RULE, "looks": [45]}])
+    assert V.frozen(KEEP) != spec
+
+
+def test_live_candidates_of_a_passed_filtered_rule_are_its_kept_entries(db, monkeypatch):
+    from wormhole import trader
+    trader.ensure_tables(db)
+    monkeypatch.setattr(watch, "FILTERED", [KEEP])
+    shadow(db, position(db, 1), "keep")
+    shadow(db, position(db, 2), "skip")
+    assert [r["token"] for r in trader.candidates(db, ["keep-a"])] == [tok(1)]
+    assert sorted(r["token"] for r in trader.candidates(db, ["rule-a"])) == [tok(1), tok(2)]
+
+
+def test_the_production_filtered_rule_draws_from_every_entry_rule_under_the_recorded_filter(monkeypatch):
+    from wormhole import paper_research
+    monkeypatch.undo()
+    rule = watch.FILTERED[0]
+    assert rule["name"] == "shadow-keep-v1" and rule["filter"] == paper_research.FILTER_VERSION
+    assert rule["of"] == [r["name"] for r in watch.STRATEGIES] and rule["decision"] == "keep"
+    assert [r["name"] for r in V.rules()][-1] == "shadow-keep-v1"
 
 
 def test_profitable_late_recovery_cannot_qualify_a_strategy(db):

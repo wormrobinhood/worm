@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 import collections
 import hashlib
 from contextlib import asynccontextmanager
+import gzip
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ from starlette.datastructures import MutableHeaders
 
 from . import config as C
 from . import launch_schedule
+from .db import launches_total
 from .growth import treasury
 from .learn import creator_trust
 from .budget import projection
@@ -45,6 +47,14 @@ RESCAN_DEDUPE_S = 600       # an address queued, being scored or scored this rec
 PENDING_MAX = 20            # broadcaster inbox: past this many waiting items the oldest frame kick is dropped
 PENDING_HARD_MAX = 200      # and past this the oldest item of any kind is dropped (memory backstop)
 SNAPSHOT_MAX_AGE_S = 3.0    # /api/state and the websocket reuse one built snapshot for this long
+STATE_EVERY_S = 8           # how often the broadcaster looks for a changed snapshot
+VOLATILE_PUSH_S = 60        # a change only in the fast counters (below) is pushed at most this often
+SLOW_PARTS_S = 60           # page-only summaries that scan whole tables are rebuilt at most this often
+ACTION_SHOWN_S = 120        # the page shows a transaction in flight this long; a new viewer is told of one this recent
+# Fields that move every few seconds without anything a viewer would wait for: the block number, the launch
+# ticker and its counters (a launch every ~12 s), the clock, and the dig (the scan messages carry it live).
+VOLATILE = ("now", "ticker", "dig")
+VOLATILE_STATS = ("last_block", "launches_24h", "launches_total")
 LOOPBACK = ("127.0.0.1", "::1")
 WS_MAX_CLIENTS = 300        # live viewers at once; beyond this the page falls back to polling /api/state
 WS_MAX_PER_IP = 8
@@ -205,7 +215,7 @@ def snapshot(rpc, db, brain, paper, hub=None):
     st = {
         "launches_24h": db.one("SELECT COUNT(*) n FROM launches WHERE ts>=?", (day,))["n"],
         "grads_24h": db.one("SELECT COUNT(*) n FROM launches WHERE graduated=1 AND grad_ts>=?", (day,))["n"],
-        "launches_total": db.one("SELECT COUNT(*) n FROM launches")["n"],
+        "launches_total": launches_total(db),
         "scored": db.one("SELECT COUNT(*) n FROM scores")["n"],
         "queued": db.one("SELECT COUNT(*) n FROM scan_jobs WHERE state IN ('pending','leased')")["n"],
         "failed_scans": db.one("SELECT COUNT(*) n FROM scan_jobs WHERE state='failed'")["n"],
@@ -225,48 +235,98 @@ def snapshot(rpc, db, brain, paper, hub=None):
             trust_cache[r["deployer"]] = creator_trust(db, r["deployer"])[0]
         r["trust"] = trust_cache[r["deployer"]]
     ticker = db.q("SELECT token,name,symbol,pair_symbol,ts,deployer FROM launches ORDER BY block DESC LIMIT 15")
-    serial = db.q("SELECT deployer, COUNT(*) launches, SUM(graduated) grads, MAX(ts) last_ts FROM launches WHERE ts>=?"
-                  " GROUP BY deployer HAVING launches>=5 ORDER BY launches DESC LIMIT 10", (now - 7 * 86400,))
-    rugs = {r["deployer"]: r["n"] for r in db.q("SELECT l.deployer, COUNT(*) n FROM outcomes o JOIN launches l"
-                                                 " ON l.token=o.token WHERE o.outcome IN ('rugged','dumped') GROUP BY l.deployer")}
-    for s in serial:
-        s["rugged"] = rugs.get(s["deployer"], 0)
-        s["trust"] = creator_trust(db, s["deployer"])[0]
+    serial = _slow(db, "serial", 300, lambda: _serial(db, now))   # a week-long list; ~0.5 s over 250k launches
     worst = db.q("SELECT l.token,l.name,l.symbol,l.deployer,s.score,s.verdict,s.reasons,l.grad_ts FROM scores s"
                  " JOIN launches l ON l.token=s.token WHERE s.verdict='avoid' ORDER BY s.scored_at DESC LIMIT 8")
     worst = [_js(r, ("reasons",)) for r in worst]
     char = treasury(rpc)
     runway = projection(db, T.free_usd(db, char.get("usd_real", char["usd"])))   # real money only, minus what is owed away
-    brain_sum, lab_sum = brain.summary(), LB.summary(db)
+    # the brain's summary parses every resolved outcome's checks: the page takes it once a minute (the trader's
+    # readiness gate in run.py still reads it fresh)
+    brain_sum, lab_sum = _slow(db, "brain", SLOW_PARTS_S, brain.summary), LB.summary(db)
     ready = RD.compute(brain_sum, lab_sum, runway, TR.MAX_POSITION_USD)
     return {"now": now, "launch": launch_schedule.status(db, now), "stats": st, "scout": _scout(db), "readiness": ready, "lessons": _lessons(db), "receipts": _receipts(db), "feed": feed, "ticker": ticker,
             "dig": (hub.dig if hub else []), "screen_on": bool(getattr(hub, "screen_on", True)) if hub else True,
             "treasury": _treasury_cached(rpc, db), "voice": V.summary(db), "trader": TR.summary(db),
             "compute": _compute_cached(), "live": C.LIVE, "lab": lab_sum,
             "bad_actors": {"serial": serial, "worst": worst},
-            "paper": paper.summary(), "second_look": SL.summary(db), "crowd": CROWD.summary(db), "brain": brain_sum, "events": db.events(60), "advisor": ADV.summary(db),
+            "paper": paper.summary(), "second_look": SL.summary(db), "crowd": _slow(db, "crowd", SLOW_PARTS_S, lambda: CROWD.summary(db)), "brain": brain_sum, "events": db.events(60), "advisor": ADV.summary(db),
             "character": char, "runway": runway, "disclosure": DISCLOSURE,
             "links": {"pons": "https://www.ponsfamily.com/launchpad/", "explorer": "https://robinhoodchain.blockscout.com/",
                       "x": C.X_URL or None, "site": C.SITE_URL}}
 
 
+def _fingerprint(data):
+    """(core, fast): hashes of what a viewer would wait for, and of the fast counters listed in VOLATILE."""
+    core = {k: v for k, v in data.items() if k not in VOLATILE}
+    stats, launch = data.get("stats"), data.get("launch")
+    if isinstance(stats, dict):
+        core["stats"] = {k: v for k, v in stats.items() if k not in VOLATILE_STATS}
+    if isinstance(launch, dict):
+        core["launch"] = {k: v for k, v in launch.items() if k != "server_now"}
+    fast = [data.get("ticker"), data.get("dig"), [(stats or {}).get(k) for k in VOLATILE_STATS]]
+    digest = lambda v: hashlib.sha256(json.dumps(v, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+    return digest(core), digest(fast)
+
+
+class Snap(collections.namedtuple("Snap", "data text gz core fast")):
+    """One built snapshot: the dict, its JSON text and gzip body (made once, served to everyone), and its
+    fingerprint for the broadcaster."""
+
+
 class SnapshotCache:
     """One snapshot, rebuilt at most every SNAPSHOT_MAX_AGE_S and by one thread at a time: /api/state, the
     websocket hello and the broadcaster all read it, so a burst of requests costs one build under the
-    database lock instead of one each. force=True (a verdict just landed) rebuilds regardless of age."""
+    database lock instead of one each, and one serialization instead of one per viewer. force=True (a verdict
+    just landed) rebuilds regardless of age."""
 
     def __init__(self, build, max_age=SNAPSHOT_MAX_AGE_S):
         self._build, self.max_age = build, max_age
         self._lock = threading.Lock()
-        self.ts, self.data, self.builds = 0.0, None, 0
+        self.ts, self.snap, self.builds = 0.0, None, 0
 
-    def get(self, force=False):
+    def entry(self, force=False):
         with self._lock:
-            if self.data is None or force or time.monotonic() - self.ts > self.max_age:
-                self.data = self._build()
+            if self.snap is None or force or time.monotonic() - self.ts > self.max_age:
+                data = self._build()
+                text = json.dumps(data, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+                self.snap = Snap(data, text, gzip.compress(text.encode(), compresslevel=6, mtime=0), *_fingerprint(data))
                 self.ts = time.monotonic()
                 self.builds += 1
-            return self.data
+            return self.snap
+
+    def get(self, force=False):
+        return self.entry(force).data
+
+    @property
+    def data(self):
+        return self.snap.data if self.snap else None
+
+
+class StatePush:
+    """When the websocket gets a full state. A state is about half a megabyte, so it goes out only when it
+    changed: at once after a verdict (a kick), within STATE_EVERY_S for anything outside the fast counters,
+    and at most every VOLATILE_PUSH_S when only those moved (the page also polls /api/state every 20 s).
+    An unchanged snapshot is never sent again."""
+
+    def __init__(self, every=STATE_EVERY_S, fast_every=VOLATILE_PUSH_S):
+        self.every, self.fast_every = every, fast_every
+        self.looked = self.sent = 0.0
+        self.core = self.fast = None
+
+    def due(self, now, kick=False):
+        """Time to look at the snapshot."""
+        if kick or now - self.looked >= self.every:
+            self.looked = now
+            return True
+        return False
+
+    def worth(self, snap, now):
+        """Send this snapshot? Records it as sent when so."""
+        if snap.core != self.core or (snap.fast != self.fast and now - self.sent >= self.fast_every):
+            self.core, self.fast, self.sent = snap.core, snap.fast, now
+            return True
+        return False
 
 
 def _lessons(db, limit=8):
@@ -314,24 +374,49 @@ def _receipts(db, limit=12):
     return out
 
 
-_scache = (0, None)
+def _slow(db, key, ttl, build):
+    """A page-only part of the snapshot, rebuilt at most every `ttl` seconds. Kept on the database object, so
+    it lives and dies with the data it describes. Snapshot builds are serialized by SnapshotCache."""
+    store = db.__dict__.setdefault("_page_parts", {})
+    hit = store.get(key)
+    if hit and time.monotonic() - hit[0] < ttl:
+        return hit[1]
+    v = build()
+    store[key] = (time.monotonic(), v)
+    return v
+
+
+def _serial(db, now):
+    """The busiest launchers of the last seven days, with what their tokens did and their trust."""
+    serial = db.q("SELECT deployer, COUNT(*) launches, SUM(graduated) grads, MAX(ts) last_ts FROM launches WHERE ts>=?"
+                  " GROUP BY deployer HAVING launches>=5 ORDER BY launches DESC LIMIT 10", (now - 7 * 86400,))
+    rugs = {r["deployer"]: r["n"] for r in db.q("SELECT l.deployer, COUNT(*) n FROM outcomes o JOIN launches l"
+                                                 " ON l.token=o.token WHERE o.outcome IN ('rugged','dumped') GROUP BY l.deployer")}
+    for s in serial:
+        s["rugged"] = rugs.get(s["deployer"], 0)
+        s["trust"] = creator_trust(db, s["deployer"])[0]
+    return serial
+
+
+def creators_flagged(db):
+    """Creators with five or more launches ever (forgotten ones included) or a token that rugged or dumped."""
+    return db.one("SELECT COUNT(*) n FROM ("
+                  " SELECT d FROM (SELECT deployer d, COUNT(*) c FROM launches GROUP BY deployer"
+                  "  UNION ALL SELECT deployer, launches FROM launch_history) GROUP BY d HAVING SUM(c)>=5"
+                  " UNION SELECT l.deployer FROM outcomes o JOIN launches l ON l.token=o.token"
+                  "  WHERE o.outcome IN ('rugged','dumped'))")["n"]
 
 
 def _scout(db):
-    """Headline numbers for the community: what the worm caught, cached 30 s."""
-    global _scache
-    if time.time() - _scache[0] < 30 and _scache[1]:
-        return _scache[1]
-    called = db.one("SELECT COUNT(*) n FROM outcomes WHERE resolved=1 AND verdict='avoid' AND outcome IN ('rugged','dumped')")["n"]
-    checked = db.one("SELECT COUNT(*) n FROM outcomes WHERE resolved=1 AND verdict='avoid' AND outcome!='unknown'")["n"]
-    missed = db.one("SELECT COUNT(*) n FROM outcomes WHERE resolved=1 AND verdict='looks healthy' AND outcome IN ('rugged','dumped')")["n"]
-    creators = db.one("SELECT COUNT(*) n FROM (SELECT l.deployer d, COUNT(*) c, SUM(CASE WHEN o.outcome IN ('rugged','dumped')"
-                      " THEN 1 ELSE 0 END) r FROM launches l LEFT JOIN outcomes o ON o.token=l.token GROUP BY l.deployer"
-                      " HAVING c>=5 OR r>=1)")["n"]
-    v = {"called": called, "checked_warnings": checked, "warn_precision": round(100.0 * called / checked) if checked else None,
-         "missed": missed, "creators_flagged": creators}
-    _scache = (time.time(), v)
-    return v
+    """Headline numbers for the community: what the worm caught. The outcome counts are cached a minute; the
+    flagged creators (a pass over every launch) ten minutes."""
+    def build():
+        called = db.one("SELECT COUNT(*) n FROM outcomes WHERE resolved=1 AND verdict='avoid' AND outcome IN ('rugged','dumped')")["n"]
+        checked = db.one("SELECT COUNT(*) n FROM outcomes WHERE resolved=1 AND verdict='avoid' AND outcome!='unknown'")["n"]
+        missed = db.one("SELECT COUNT(*) n FROM outcomes WHERE resolved=1 AND verdict='looks healthy' AND outcome IN ('rugged','dumped')")["n"]
+        return {"called": called, "checked_warnings": checked, "warn_precision": round(100.0 * called / checked) if checked else None,
+                "missed": missed, "creators_flagged": _slow(db, "creators", 600, lambda: creators_flagged(db))}
+    return _slow(db, "scout", SLOW_PARTS_S, build)
 
 
 _tcache = (0, None)
@@ -524,8 +609,14 @@ def make_app(rpc, db, brain, paper, hub):
         return page
 
     @app.get("/api/state")
-    def state():
-        return JSONResponse(snap.get())
+    def state(request: Request):
+        """The cached snapshot's own bytes; gzipped once per build for every viewer that accepts it (about a
+        tenth of the size: every open page polls this every 20 s)."""
+        s = snap.entry()
+        if "gzip" in request.headers.get("accept-encoding", "").lower():
+            return Response(s.gz, media_type="application/json",
+                            headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+        return Response(s.text, media_type="application/json", headers={"Vary": "Accept-Encoding"})
 
     @app.get('/api/launch/status')
     def launch_status():
@@ -702,10 +793,13 @@ def make_app(rpc, db, brain, paper, hub):
         await sock.accept()
         clients.add(sock)
         try:
-            data = await asyncio.get_running_loop().run_in_executor(None, snap.get)
-            await asyncio.wait_for(sock.send_text(json.dumps({"type": "state", "data": data})), timeout=5)
+            s = await asyncio.get_running_loop().run_in_executor(None, snap.entry)
+            await asyncio.wait_for(sock.send_text('{"type":"state","data":' + s.text + '}'), timeout=5)
             if hub.frame_latest:
                 await asyncio.wait_for(sock.send_text(json.dumps({"type": "frame", "data": hub.frame_latest})), timeout=5)
+            act = hub.action_latest
+            if act and time.time() - (act.get("ts") or 0) < ACTION_SHOWN_S:     # a burn or claim still in flight
+                await asyncio.wait_for(sock.send_text(json.dumps({"type": "action", "data": act}, default=str)), timeout=5)
             while True:
                 try:                                  # drain whatever the client sends (nothing is read from it)
                     msg = await asyncio.wait_for(sock.receive(), timeout=30)
@@ -721,7 +815,10 @@ def make_app(rpc, db, brain, paper, hub):
             clients.discard(sock)
 
     async def broadcaster():
-        last, last_frame_ts = 0, None
+        """Frames, scan steps and actions go out as they come (small). A full state goes out when StatePush
+        says it changed; only a verdict forces a fresh build. Launches (one every ~12 s), the operations
+        cycle and actions no longer rebuild and resend the whole state: the cadence carries them."""
+        push, last_frame_ts = StatePush(), None
         while True:
             await asyncio.sleep(0.5)
             kick = False
@@ -730,24 +827,28 @@ def make_app(rpc, db, brain, paper, hub):
                     item = hub.pending.get()
                 except IndexError:
                     break
-                if item["kind"] == "frame":
+                kind = item["kind"]
+                if kind == "frame":
                     fr = hub.frame_latest
                     if fr and fr.get("ts") != last_frame_ts:
                         last_frame_ts = fr.get("ts")
                         await _broadcast(json.dumps({"type": "frame", "data": fr}))
-                    continue
-                if item["kind"] == "scan":
+                elif kind == "action":          # the page's applyAction: "burning $WORM…" in its status bar
+                    if item.get("payload"):
+                        await _broadcast(json.dumps({"type": "action", "data": item["payload"]}, default=str))
+                elif kind == "scan":
                     await _broadcast(json.dumps({"type": "scan", "data": item["payload"]}))
-                    if (item.get("payload") or {}).get("step") != "verdict":
-                        continue
-                kick = True
-            if clients and (kick or time.time() - last > 8):
-                last = time.time()
+                    kick = kick or (item.get("payload") or {}).get("step") == "verdict"
+                elif kind == "score":
+                    kick = True
+            now = time.time()
+            if clients and push.due(now, kick):
                 try:
-                    data = await asyncio.get_running_loop().run_in_executor(None, snap.get, kick)
+                    s = await asyncio.get_running_loop().run_in_executor(None, snap.entry, kick)
                 except Exception as e:
                     log.warning("snapshot failed: %s", e)
                     continue
-                await _broadcast(json.dumps({"type": "state", "data": data}))
+                if push.worth(s, now):
+                    await _broadcast('{"type":"state","data":' + s.text + '}')
 
     return app

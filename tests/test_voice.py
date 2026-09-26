@@ -106,3 +106,19 @@ def test_overlong_lesson_is_skipped_instead_of_truncated():
     text, _ = voice.write_stub(p)
     assert "recorded detail" not in text
     assert voice.check(text, p) is None
+
+
+def test_old_drafts_and_packets_are_let_go_but_the_journal_stays(db):
+    import time
+    now = int(time.time())
+    voice.ensure_tables(db)
+    old = now - 40 * 86400
+    db.many("INSERT INTO posts(ts,text,mood,model,ok,reason,packet) VALUES(?,?,?,?,?,?,?)",
+            [(old, "old entry", "calm", "stub", 1, None, "{}"), (old, "old draft", "", "stub", 0, "hype", "{}"),
+             (now, "new entry", "calm", "stub", 1, None, "{}"), (now, "new draft", "", "stub", 0, "hype", "{}")])
+    assert voice.prune(db, pause=0) == (1, 1)
+    rows = db.q("SELECT text, packet FROM posts ORDER BY id")
+    assert rows == [{"text": "old entry", "packet": None}, {"text": "new entry", "packet": "{}"},
+                    {"text": "new draft", "packet": "{}"}]
+    assert [e["text"] for e in voice.summary(db)["entries"]] == ["new entry", "old entry"]
+    assert voice.prune(db, pause=0) == (0, 0)

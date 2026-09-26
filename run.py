@@ -11,7 +11,7 @@ import time
 from wormhole import strategy_validation
 from wormhole import config as C
 from wormhole.chain import Rpc
-from wormhole.db import DB, prune_launches
+from wormhole.db import DB, delete_batched, prune_launches
 from wormhole.indexer import Indexer
 from wormhole.learn import Brain
 from wormhole.paper import Paper
@@ -22,7 +22,7 @@ from wormhole import treasury as T
 from wormhole import voice, trader, compute, lab, advisor
 from wormhole import launch as L
 from wormhole.budget import projection
-from wormhole import readiness, tx, launch_schedule, runtime_health
+from wormhole import readiness, tx, launch_schedule, runtime_health, outbox
 from wormhole import watch as second_look
 from wormhole import crowd, linked
 import os
@@ -226,18 +226,24 @@ def main():
                 trader.decide(rpc, db, rw, C.LIVE, acct, rd)
 
             def housekeeping():
-                if cycle_n % 12 == 1:                 # once an hour
-                    prune_launches(db)
-                    now_ = int(time.time())
-                    db.x("DELETE FROM curve_buyers WHERE ts<?", (now_ - 3 * 86400,))          # the fleet window is a day
-                    linked.prune(db)
-                    db.x("DELETE FROM events WHERE ts<? AND kind NOT IN ('lesson','launch')", (now_ - 60 * 86400,))
+                if cycle_n % 12 == 1:                 # once an hour; every prune is batched and bounded per run
+                    t0, now_ = time.time(), int(time.time())
+                    gone = {"launches": prune_launches(db)}
+                    gone["curve_buyers"] = delete_batched(db, "curve_buyers", "ts<?", (now_ - 3 * 86400,))   # the fleet window is a day
+                    gone["token_senders"], gone["code_cache"] = linked.prune(db)
+                    gone["events"] = delete_batched(db, "events", "ts<? AND kind NOT IN ('lesson','launch')", (now_ - 60 * 86400,))
+                    gone["wallet_records"] = crowd.prune(db)
+                    gone["posts"], gone["post_packets"] = voice.prune(db)
+                    log.info("housekeeping removed %s in %.1fs", ", ".join(f"{k} {v}" for k, v in gone.items()), time.time() - t0)
                     if hasattr(idx, "refetch_metadata"):
                         idx.refetch_metadata()
 
             # exits and bookkeeping run before entries; every stage is isolated so one failure cannot skip the rest
             try:
-                payments_ready = tx.recover(rpc)
+                payments_ready = tx.recover(rpc, db)
+                if not payments_ready and outbox.parked():
+                    # Parked, not failing: loud once an hour here, the detail in /api/ops/health.
+                    T._say_hourly(db, 'error', 'payments paused: a transaction needs operator review (scripts/resolve-intent.py)')
             except Exception as e:
                 payments_ready = False
                 log.error('payments paused: %s', e)

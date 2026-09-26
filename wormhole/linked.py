@@ -24,6 +24,7 @@ GROUP_MIN_PCT = 10.0         # a linked group is worth a line from this share of
 SENDERS_KEPT = 400           # biggest senders remembered per token
 CODE_ASKED_MAX = 80          # members of big groups the chain is asked about, per token
 KEEP_DAYS = 21
+CODE_KEEP_DAYS = 30          # an eth_getCode answer is reused this long, then asked again when needed
 
 
 def ensure_tables(db):
@@ -142,6 +143,12 @@ def read(rpc, db, token, curve, moves, held, circ):
     return out
 
 
-def prune(db):
+def prune(db, **batching):
+    """Senders older than KEEP_DAYS, and code reads older than CODE_KEEP_DAYS: a wallet asked about again is
+    simply read again (and a counterfactual wallet that has since been deployed is then seen as a contract).
+    Returns (senders removed, code reads removed)."""
+    from .db import delete_batched
     ensure_tables(db)
-    db.x("DELETE FROM token_senders WHERE ts<?", (int(time.time()) - KEEP_DAYS * 86400,))
+    now = int(time.time())
+    return (delete_batched(db, "token_senders", "ts<?", (now - KEEP_DAYS * 86400,), **batching),
+            delete_batched(db, "code_cache", "ts<?", (now - CODE_KEEP_DAYS * 86400,), **batching))

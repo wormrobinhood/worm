@@ -2,13 +2,16 @@
 
 Quotes are observations, not guaranteed fills. No function in this module signs or sends.
 """
-import json
+import ast
+import copy
 import hashlib
-from functools import lru_cache
-from pathlib import Path
+import json
 import math
 import os
+import sys
 import time
+from functools import lru_cache
+from pathlib import Path
 
 from . import config as C
 from .prices import eth_usd, eth_usd_cached, token_prices, usable_price
@@ -28,21 +31,101 @@ EXIT_TOLERANCE_RETRY = 0.10    # after a sell reverted: give up more to get out
 MODEL = 'quoted-pool-v2'
 
 
-@lru_cache(maxsize=1)
-def implementation_digest():
-    """Conservatively invalidate evidence when price, feature or execution semantics change."""
-    root = Path(__file__).parent
-    return hashlib.sha256(b''.join((root / name).read_bytes() for name in
-        ('watch.py', 'poolstate.py', 'prices.py', 'paper.py', 'paper_research.py', 'lab.py', 'trade_checks.py',
-         'chain.py', 'pons.py', 'indexer.py', 'live_trading.py', 'strategy_validation.py'))).hexdigest()
+# What a paper position's evidence was produced under. A cohort compares this, not whole source files: the old
+# whole-file hash voided every cohort in progress on any edit (a comment, an unrelated fix in chain.py), and each void
+# cost an attempt, so the gate could never finish. Constants are listed by value; the code that makes fills, features
+# and exits is covered by a digest of its syntax (EVIDENCE_CODE), blind to comments and docstrings, computed at run
+# time. SEMANTICS is bumped by hand only for a change of meaning outside that code (a new data source, say).
+SEMANTICS = 'paper-evidence-3'
+GAS_UNITS_MARGIN = 1.3          # the swap's estimated gas units, padded
+APPROVAL_GAS_UNITS = 240_000    # two bounded approvals, charged on every swap even when an allowance could be reused
+GAS_PRICE_MARGIN = 1.25         # the node's gas price, padded
+
+
+@lru_cache(maxsize=None)
+def _tree(module):
+    return ast.parse((Path(__file__).parent / f'{module}.py').read_text())
+
+
+def _named(tree, name):
+    """The top-level function, `Class.method` or top-level assignment called `name`, or None."""
+    scope, _, attr = name.rpartition('.')
+    body = tree.body
+    if scope:
+        cls = next((n for n in body if isinstance(n, ast.ClassDef) and n.name == scope), None)
+        body = cls.body if cls else []
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == attr:
+            return node
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == attr for t in node.targets):
+            return node
+    return None
+
+
+def source_digest(tree, names):
+    """sha256 (128 bits) over the syntax of `names` in a parsed module, docstrings removed: blind to comments,
+    blank lines and wording, changed by any edit to what the code does (a renamed variable included)."""
+    h = hashlib.sha256(('python %d.%d' % sys.version_info[:2]).encode())   # ast.dump differs between Python versions
+    for name in names:
+        node = _named(tree, name)
+        if node is None:
+            raise ValueError(f'{name} not found: the evidence code list is out of date')
+        node = copy.deepcopy(node)
+        for n in ast.walk(node):
+            body = getattr(n, 'body', None)
+            if (isinstance(body, list) and body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str)):
+                n.body = body[1:] or [ast.Pass()]
+        h.update(name.encode() + b'\0' + ast.dump(node).encode())
+    return h.hexdigest()[:32]
+
+
+def code_digest(parts):
+    """source_digest of {module: names} read from the package's own files, never from the live objects, so a test
+    double or a runtime patch cannot change it. Computed at run time: nobody pins it by hand."""
+    return _code_digest(tuple(sorted((m, tuple(n)) for m, n in parts.items())))
+
+
+@lru_cache(maxsize=None)
+def _code_digest(parts):
+    h = hashlib.sha256()
+    for module, names in parts:
+        h.update(module.encode() + source_digest(_tree(module), names).encode())
+    return h.hexdigest()[:32]
+
+
+# The code that picks, prices and closes a paper position and decides whether it could stand in for live. Its digest
+# is part of every position's evidence spec, computed at run time, so no edit to it can reach a cohort unannounced.
+# The entry rules' own definitions are frozen per rule (strategy_validation.frozen), not here: adding a rule must not
+# void the others. A new Python minor version changes every digest and so voids every cohort once.
+EVIDENCE_CODE = {
+    'trade_checks': ('entry', 'exit_quote', 'quote_unit', 'gas_cost', '_gas_cost_at_price', 'entry_basis', 'verified',
+                     'pool', 'eligible', 'LIVE_QUOTES', 'PAPER_QUOTES'),
+    'paper': ('pair', 'live_comparable', 'pause_windows', 'Paper._consider', 'Paper.enter', 'Paper._open', 'Paper._mark',
+              'Paper._mark_position', 'Paper._quote', 'Paper._value'),
+    'trade_risk': ('loss_limit', 'check'),
+    'lab': ('parse_arm', 'side_cost', 'token_cost', 'trail_pct', 'exit_step'),
+    'watch': ('features', 'passes', 'flow', '_flows', 'holders_kept', 'sample_bucket', '_needs_flow', '_needs_holders',
+              'all_looks', '_resolve_pools', '_sample', 'filtered_member', 'Watcher._pools', 'Watcher.mark_positions'),
+    'poolstate': ('pool_id', 'state_slot', 'sqrt_price', 'token_price', 'mids', 'position_mids'),
+    'trader': ('pool_key', 'quote_buy'),
+    'prices': ('usable_price', 'observed_at', 'token_prices', 'eth_usd', 'eth_usd_cached', 'eth_usd_last'),
+    'paper_research': ('FILTER_VERSION', 'FEATURES', 'LIMITS', 'entry_features', 'risk_filter'),
+}
 
 
 def evidence_spec():
-    return {'model': MODEL, 'entry_basis': 'acquisition_cost_per_token',
-            'implementation': implementation_digest(), 'paper_size_usd': C.PAPER_SIZE_USD,
+    from . import watch, trade_risk
+    return {'model': MODEL, 'semantics': SEMANTICS, 'code': code_digest(EVIDENCE_CODE),
+            'entry_basis': 'acquisition_cost_per_token',
+            'paper_size_usd': C.PAPER_SIZE_USD, 'paper_max_open': C.PAPER_MAX_OPEN,
             'paper_fill': PAPER_FILL, 'slippage': SLIPPAGE, 'exit_tolerance': EXIT_TOLERANCE,
+            'exit_tolerance_retry': EXIT_TOLERANCE_RETRY,
             'max_roundtrip_loss': MAX_ROUNDTRIP_LOSS, 'max_price_impact': MAX_PRICE_IMPACT,
-            'max_gas_fraction': MAX_GAS_FRACTION, 'live_quotes': list(LIVE_QUOTES)}
+            'max_gas_fraction': MAX_GAS_FRACTION, 'quote_ttl': QUOTE_TTL, 'live_quotes': list(LIVE_QUOTES),
+            'paper_quotes': list(PAPER_QUOTES),
+            'gas': {'units_margin': GAS_UNITS_MARGIN, 'approval_units': APPROVAL_GAS_UNITS, 'price_margin': GAS_PRICE_MARGIN},
+            'loss_limit_usd': trade_risk.loss_limit(), 'watch': watch.evidence_constants()}
 
 
 def entry_basis(dollars, quantity):
@@ -109,7 +192,7 @@ def _gas_cost_at_price(rpc, units, price):
     if price is None or not math.isfinite(price) or price <= 0 or gp <= 0 or units <= 0:
         raise ValueError('fresh gas pricing unavailable')
     # Include two bounded approvals as well as the swap, even if an allowance can be reused.
-    return (math.ceil(units * 1.3) + 240_000) * math.ceil(gp * 1.25) / 1e18 * price
+    return (math.ceil(units * GAS_UNITS_MARGIN) + APPROVAL_GAS_UNITS) * math.ceil(gp * GAS_PRICE_MARGIN) / 1e18 * price
 
 
 def entry(rpc, db, token, dollars, *, quotes=LIVE_QUOTES, reference=None):
