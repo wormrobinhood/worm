@@ -194,9 +194,11 @@ def status(db, now=None):
                 'interval_s': interval, 'reason': None, 'burns': []}
     released, burned = released_usd(db, p['id']), burned_usd(db, p['id'])
     try:
-        amount = settings()[0]
+        amount, _days, pid = settings()
     except ValueError:
-        amount = 0
+        amount, pid = 0, None
+    if pid != p['id']:
+        amount = 0          # another id is named: this program is paused (see arm)
     done = released >= p['total'] - DONE_EPS and burned >= p['total'] - DONE_EPS
     state = ('finished' if done else 'burning the rest' if released >= p['total'] - DONE_EPS
              else 'paused' if amount <= 0 else 'releasing')

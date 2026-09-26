@@ -238,7 +238,7 @@ function renderPulse(s){
  const bp=burnProgram(tr),slot=el.querySelector('.burn__slot');
  if(bp){if(changed('weekLive',[bp,tr.burn_max_usd,Math.floor(Date.now()/60000),innerWidth<600]))slot.innerHTML=weekTrack('wk-live',s,bp,{})}
  else if(changed('nextLive',[tr.owed_to_burn,tr.burn_min_usd])){const min=nz(tr.burn_min_usd)||5,p=Math.min(100,100*nz(tr.owed_to_burn)/min);
-  slot.innerHTML=`<div class="next-burn"><div class="next-burn__head"><span>Next burn</span><span><b>${fmt.usd(tr.owed_to_burn,{cents:true})}</b> of ${fmt.usd(min)} saved up</span></div><span class="w-meter w-meter--ember${p>=80?' is-close':''}"><i data-m="next"></i></span><p class="next-burn__foot">a small buy-and-burn every few hours, whenever enough fees are saved</p></div>`;
+  slot.innerHTML=`<div class="next-burn"><div class="next-burn__head"><span>Next burn</span><span>${savedLine(tr.owed_to_burn,min,'in the next small buy')}</span></div><span class="w-meter w-meter--ember${p>=80?' is-close':''}"><i data-m="next"></i></span><p class="next-burn__foot">a small buy-and-burn every few hours, whenever enough fees are saved</p></div>`;
   setMeter(slot.querySelector('[data-m="next"]'),p)}
  const lastBurn=allBurns(s).pop(),last=el.querySelector('.burn__last');
  if(lastBurn){last.hidden=false;last.querySelector('span').textContent='last burn '+ago(lastBurn.ts)+' ·';const a=last.querySelector('a'),u=txUrl(s,lastBurn.tx);a.hidden=!u;if(u)a.href=u}else last.hidden=true;
@@ -573,14 +573,16 @@ function renderBurnCard(s){
  <div class="w-stats w-stats--4"><div class="w-stat"><span class="label">Share of supply</span><span class="w-stat__value">${share.toFixed(2)}%</span><span class="w-stat__note">of 1 billion $WORM</span></div><div class="w-stat"><span class="label">Spent on burns</span><span class="w-stat__value">${fmt.usd(tr.burned_total)}</span><span class="w-stat__note">${nz(tr.owed_to_burn)>0?`+ ${fmt.usd(tr.owed_to_burn,{cents:true})} waiting`:'nothing waiting'}</span></div><div class="w-stat"><span class="label">Burns</span><span class="w-stat__value">${fmt.int(burns.length)}</span><span class="w-stat__note">${burns.length?'last '+ago(burns[burns.length-1].ts):'none yet'}</span></div><div class="w-stat"><span class="label">Share of fees</span><span class="w-stat__value">${Math.round(nz(tr.burn_share)*100)}%</span><span class="w-stat__note">of every claim buys $WORM to burn</span></div></div>
  ${prog}
  ${burns.length?`<div class="burn-hist"><span class="label">Every burn since launch</span>${historyTrack('hist-treasury',s,burns)}</div>`:''}
- <div class="next-burn"><div class="next-burn__head"><span>Next regular burn</span><span><b>${fmt.usd(tr.owed_to_burn,{cents:true})}</b> of ${fmt.usd(min)} saved up</span></div><span class="w-meter w-meter--ember${p>=80?' is-close':''}"><i data-m="next"></i></span></div>`;
+ <div class="next-burn"><div class="next-burn__head"><span>Next regular burn</span><span>${savedLine(tr.owed_to_burn,min,'in the next small buy')}</span></div><span class="w-meter w-meter--ember${p>=80?' is-close':''}"><i data-m="next"></i></span></div>`;
  setMeter(el.querySelector('[data-m="next"]'),p);
 }
+// "$1.20 of $2 saved up" until the minimum is reached; past it the amount is simply waiting to go.
+function savedLine(owed,min,ready){return nz(owed)>=min?`<b>${fmt.usd(owed,{cents:true})}</b> ${ready}`:`<b>${fmt.usd(owed,{cents:true})}</b> of ${fmt.usd(min)} saved up`}
 function renderGold(s){
  const tr=s.treasury||{},min=nz(tr.gold_min_usd)||5,p=Math.min(100,100*nz(tr.owed_to_gold)/min);if(!changed('gold',[tr.gold_usd,tr.gold_held,tr.gold_total,tr.owed_to_gold,tr.gold_state]))return;
  $('#gold').innerHTML=`<div class="w-card__head"><div><span class="label label--gold">Gold reserve</span><h2 class="w-card__title" id="gold-title">${fmt.usd(tr.gold_usd,{cents:true})} in gold</h2></div><div class="ingots" aria-hidden="true"><i></i><i></i><i></i></div></div>
  <div class="w-stats"><div class="w-stat w-stat--s"><span class="label">Held</span><span class="w-stat__value">${isNum(tr.gold_held)?Number(tr.gold_held).toFixed(4):'—'} GLD</span></div><div class="w-stat w-stat--s"><span class="label">Bought for</span><span class="w-stat__value">${fmt.usd(tr.gold_total,{cents:true})}</span></div></div>
- <div class="next-burn next-gold"><div class="next-burn__head"><span>Next gold buy</span><span><b>${fmt.usd(tr.owed_to_gold,{cents:true})}</b> of ${fmt.usd(min)} saved up</span></div><span class="w-meter w-meter--gold"><i data-m="g"></i></span></div>
+ <div class="next-burn next-gold"><div class="next-burn__head"><span>Next gold buy</span><span>${savedLine(tr.owed_to_gold,min,'ready to buy')}</span></div><span class="w-meter w-meter--gold"><i data-m="g"></i></span></div>
  <p class="w-note">${Math.round(nz(tr.gold_share)*100)}% of every claim buys tokenized gold (GLD) on Robinhood Chain. It is never spent on running costs and never counted in the runway.</p>`;
  setMeter($('#gold [data-m="g"]'),p);
 }

@@ -153,6 +153,7 @@ def test_a_new_id_waits_for_the_running_program(db, rpc, armed, monkeypatch):
     monkeypatch.setenv('WH_SURPLUS_BURN_ID', 'surplus-2')
     BP.release(rpc, db, T0 + DAY)
     assert BP.saved(db)['id'] == 'surplus-1' and released(db) == 0.0         # another id pauses the running one
+    assert BP.status(db, T0 + DAY)['state'] == 'paused'
     assert 'waits for surplus-1' in db.one("SELECT text FROM events ORDER BY id DESC LIMIT 1")['text']
     monkeypatch.setenv('WH_SURPLUS_BURN_ID', 'surplus-1')                  # naming it again resumes it
     BP.release(rpc, db, T0 + DAY)
