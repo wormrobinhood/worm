@@ -655,3 +655,55 @@ def test_the_biggest_holders_that_are_people_are_kept_for_the_second_look(db):
     rpc.fail_batch = True
     db.x("DELETE FROM code_cache")
     assert "top_holders" not in run(rpc, db, TOKEN)["metrics"]    # unreadable: no list, and the rule that needs it cannot fire
+
+
+# ---- forgetting old launches and unproven wallets changes no score -------------------------------------------------
+
+def test_forgetting_old_launches_and_unproven_wallets_changes_no_score_or_creator_number(db):
+    """Housekeeping forgets ungraduated launches after two weeks and unproven wallets after a dormant month.
+    The score of a fresh graduation, every creator's trust and launch count, the serial-launcher list, the
+    flagged-creator count, the launch total and the crowd's judgements read the same before and after."""
+    from wormhole import crowd as CR, server
+    from wormhole.db import launches_total, prune_launches
+    from wormhole.learn import creator_trust
+    rpc = FakeRpc(LATEST)
+    setup(db)
+    crowd(rpc, 100)
+    old, span = NOW - 40 * 86400, int(C.BACKFILL_HOURS * 3600 / C.BLOCK_TIME)
+    others = (addr(0x3001), addr(0x3002), addr(0x3003))
+    rows = [(addr(0x4000 + i), DEP, LB - 40 * 24 * BPH + i, old + i) for i in range(30)]           # DEP's old launches
+    rows += [(addr(0x4100 + i), DEP, LB - span + 10 + i, NOW - 200000) for i in range(4)]           # and four in the window
+    rows += [(addr(0x4200 + i), others[0], LB - 30 * 24 * BPH, old) for i in range(6)]              # a serial launcher, long ago
+    rows += [(addr(0x4300 + i), others[1], LB - 30 * 24 * BPH, old) for i in range(3)]
+    rows += [(addr(0x4400 + i), others[2], LB - BPH, NOW - 3600 - i) for i in range(7)]            # a serial launcher this week
+    for t, dep, block, ts in rows:
+        launch(db, t, addr(0x5000), dep, block, ts, None, None, graduated=0)
+    prior_token(db, 0, "flat")
+    prior_token(db, 1, "unknown")
+    rugged = addr(0x4500)
+    launch(db, rugged, addr(0x5001), others[1], LB - 20 * 24 * BPH, old, LB - 20 * 24 * BPH + 100, old + 3600)
+    db.x("INSERT INTO outcomes(token, verdict, outcome, resolved) VALUES(?,?,?,1)", (rugged, "looks healthy", "rugged"))
+    losing_records(db, [addr(0x1000 + i) for i in range(30)])                                          # judged, recent
+    db.many("INSERT INTO wallet_records(wallet,picks,good,grew,updated) VALUES(?,?,?,0,?)",
+            [(addr(0x1000 + i), 3, 0, old) for i in range(30, 40)]                                      # judged, dormant: kept
+            + [(addr(0x1000 + i), 2, 0, old) for i in range(40, 70)]                                    # unproven, dormant: forgotten
+            + [(addr(0x1000 + i), 1, 1, NOW) for i in range(70, 80)])                                   # unproven, recent: kept
+    buyers = {addr(0x1000 + i): 10**21 for i in range(100)}
+
+    def numbers():
+        r = run(rpc, db, TOKEN)
+        metrics = {k: v for k, v in r["metrics"].items() if k != "scored_in_s"}
+        return {"score": (r["score"], r["verdict"], r["fired"], metrics),
+                "trust": {d: creator_trust(db, d) for d in (DEP,) + others},
+                "trust_excluding": creator_trust(db, DEP, exclude_token=TOKEN),
+                "serial": server._serial(db, NOW), "flagged": server.creators_flagged(db), "total": launches_total(db),
+                "crowd": CR.read(db, buyers), "judged": {k: v for k, v in CR.summary(db).items() if k != "wallets"}}
+
+    before = numbers()
+    assert numbers() == before                                    # scoring twice is repeatable
+    assert prune_launches(db, pause=0) == 30 + 6 + 3
+    assert CR.prune(db, pause=0) == 30
+    assert numbers() == before
+    assert before["trust"][DEP][1]["launches"] == 1 + 30 + 4 + 2 and before["flagged"] == 4
+    assert before["score"][3]["creator_prev_launches"] == 4 + 2 and before["crowd"]["losing_buyers"] == 40
+    assert {s["deployer"] for s in before["serial"]} == {DEP, others[2]}

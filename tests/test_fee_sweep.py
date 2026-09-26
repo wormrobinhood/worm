@@ -5,6 +5,12 @@ from fakes import decode_tx
 
 TOKEN='0x'+'66'*20
 CURVE='0x'+'77'*20
+CANDIDATE=F.candidate
+
+
+@pytest.fixture(autouse=True)
+def fresh_memo(monkeypatch):
+    monkeypatch.setattr(F,'GRADUATED',None)     # a graduated curve seen in one test is not remembered in the next
 
 
 def swept(amount=10000000):
@@ -97,6 +103,23 @@ def test_candidate_rejects_wrong_identity_or_buyback(rpc,monkeypatch,key,value):
 def test_graduated_curve_skips(rpc,monkeypatch):
     vals=candidate_chain(rpc,monkeypatch);vals['graduated()']=True
     assert F.candidate(rpc) is None
+
+
+def test_a_graduated_curve_is_not_read_again(db,rpc,acct,live,monkeypatch):
+    configure(db,rpc,monkeypatch)
+    monkeypatch.setattr(F,'candidate',CANDIDATE)
+    vals=candidate_chain(rpc,monkeypatch);vals['graduated()']=True
+    reads=[]
+    monkeypatch.setattr(F,'call_fn',lambda r,c,s,*args:reads.append(s) or vals[s])
+    assert F.cycle(rpc,db,acct,0) and reads==['graduated()'] and db.meta_get('fee_sweep_graduated')==TOKEN
+    assert F.cycle(rpc,db,acct,0) and reads==['graduated()'] and not rpc.raw          # no factory or curve read
+    assert 'no unswept curve fees' in db.meta_get('fee_sweep_status')
+    monkeypatch.setattr(F,'GRADUATED',None)                       # a restart: the database remembers
+    assert F.cycle(rpc,db,acct,0) and reads==['graduated()']
+    vals['graduated()']=False                                     # a pending sweep is still reconciled first
+    db.x("INSERT INTO fee_sweeps(ts,token,curve,expected_usdg,tx,state) VALUES(0,?,?,10,?,'pending')",(TOKEN,CURVE,'0x'+'99'*32))
+    rpc.logs=[]
+    assert not F.cycle(rpc,db,acct,0)
 
 
 def test_pending_callback_failure_cannot_broadcast(db,rpc,acct,live,monkeypatch):

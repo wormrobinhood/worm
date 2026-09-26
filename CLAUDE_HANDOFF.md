@@ -541,3 +541,63 @@ The trading-readiness catch-up flag also accounts for the gap between the commit
 Operational follow-up: the recovery-only payment pause was removed after verifying the unchanged settled journal and recovered workers; trading remains off. Storage and chain-head freshness recovered: two final checks were 42 then 23 blocks behind the moving head, with healthy responses and fresh checkpoints. Historical scoring jobs remain queued and are being processed. Do not infer complete chain freshness from the completed startup phase alone. Synchronous token-metadata reads remain a latency limitation in the unchanged production code.
 
 Optional token metadata now uses a shared 15-second network budget and pair-symbol discovery 10 seconds, with at most five seconds per request and no retry amplification. Missing reads remain unknown and existing values are preserved. The bounded batch path accepts only eth_call and is not used for signing or receipt recovery. Timeout, rate-limit, partial-response and method-restriction checks are included in the test count above. This local fix has not been applied to the delayed production metadata path.
+
+## Disk growth, broadcast storm and lock contention (2026-09-26)
+
+Local branch only: not pushed or deployed. The money path (treasury.py, tx.py, claim_policy.py) and web/ are untouched.
+
+**Launches stop growing.** `prune_launches` only ever removed rows with `meta=0` whose creator had never graduated
+anything, but every live launch got metadata, so `launches` grew by about 7,400 rows a day (254,823 rows, most of the
+database). Now housekeeping forgets every ungraduated launch older than 14 days (never less than 8 days or
+BACKFILL_HOURS + 4 days, so the 7-day serial list and the scorer's 72-hour creator window stay whole). Kept: graduated
+launches, the worm's own token, rows without a timestamp or deployer, and every launch of a creator whose token is
+still waiting in `scan_jobs` (a backlog after an outage). What creator history needs from a forgotten launch is only its
+count, so the count per deployer moves to the new `launch_history` table (WITHOUT ROWID, about 55 bytes a creator) in
+the same transaction as the delete. `creator_trust`, the flagged-creator count and the launch total add it back:
+scores, trust and serial-launcher numbers read the same before and after (test_scorer's forgetting test runs a full
+score before and after). A forgotten launch that graduates late (none in the local sample: the slowest took 3.4 days)
+is read back from the factory and taken off the count, so it is not counted twice. One known difference: an operator
+rescan of a token launched more than about 11 days earlier sees fewer of its creator's launches in its 72-hour window.
+
+**Batched, bounded deletes.** Every housekeeping delete (`db.delete_batched`, `prune_launches`) runs 500 rows per
+transaction with a 50 ms pause between batches and at most 50,000 rows per table per hourly run, and housekeeping logs
+what it removed. On a synthetic 255k-launch database (146 MB) the first prune took three hourly runs of about 5 s,
+the longest lock hold was 85 ms and the WAL never passed 8.2 MB. No VACUUM: the database has `auto_vacuum=0`, and a
+VACUUM needs the file's size again in free space plus a long exclusive lock. So the file does not shrink on the first
+deploy; about half of the launches pages (~70 MB on the synthetic copy) go to the free list and are reused, and the
+file stops growing from launches. Afterwards launches hold about 104k rows; `launch_history` grows at most ~0.25 MB a
+day (one row per new creator) instead of ~4 MB a day. An offline VACUUM during a maintenance window with enough free
+space would return the free pages to the volume (see docs/TRADING-RECOVERY.md for the stop-all-writers procedure).
+
+**Fewer metadata reads.** A live launch now reads only name and symbol (2 calls instead of 5), for the newest 15 of a
+slice (what the ticker shows, was 40), and leaves `meta` alone; a graduation still reads the full record. This also
+fixes a latent bug: the ticker read used to set `meta=1`, so a graduation whose full read failed was never retried
+by `refetch_metadata` and kept a NULL creator tax.
+
+**Other growth.** `wallet_records` forgets wallets with fewer than 3 picks and no new pick for 30 days (`crowd.prune`):
+`crowd.read` and the judged/losing counts ignore such rows and 'needed' counts tokens, so no warning changes; only the
+"wallets on record" total shrinks, and a wallet returning after that long starts its record again. `code_cache` rows
+expire after 30 days (the chain is simply asked again). `posts` keeps every published entry; dropped drafts are
+deleted and the up-to-4 KB `packet` of an entry is cleared after 30 days (nothing reads it). `events_text` stays:
+treasury.py's hourly de-duplication (`WHERE text=?`) needs it and that file is not mine to change.
+
+**Websocket storm.** Every launch (~12 s), operations cycle and action forced a snapshot rebuild and a full ~485 KB
+state to every viewer. Now only a verdict forces one. `StatePush` sends a state only when it changed: anything outside
+the fast fields at the next 8 s look, and changes only to the clock, block number, launch ticker, 24h/total launch
+counters and dig at most once a minute (the scan messages carry the dig live; the page also polls every 20 s). An
+unchanged snapshot is never resent. The snapshot is serialized and gzipped once per build: `/api/state` serves the
+gzip body (a real snapshot compressed 285 KB to 53 KB) instead of re-encoding for each of the page's 20-second polls.
+`hub.act` events now reach the page as `{"type":"action"}` (its existing `applyAction`: "burning $WORM…", "claiming
+its fees…"), and a viewer connecting within two minutes of one is told of it.
+
+**Lock contention.** Page-only parts that scan whole tables are cached on the database object: the brain summary
+(parses every resolved outcome's checks) and crowd summary for 60 s, the 7-day serial list (~0.5 s over 250k launches)
+5 min, flagged creators (~0.3 s) 10 min. The trader's readiness gate in run.py still reads the brain fresh.
+
+**Fee sweep.** Once the worm's curve reads `graduated()`, the sweep stops reading the factory record and the curve
+every treasury cycle (remembered in memory and in `meta.fee_sweep_graduated`). Graduation is final and a graduated
+curve was never swept, so only the skipped reads change; pending sweeps are still reconciled first.
+
+Expected on first deploy: three hourly housekeeping runs forget ~150k launches, then the database file holds its size
+while launches, wallets and posts stay bounded; public-node metadata calls drop by ~22k a day; each open page receives
+roughly a tenth of the bytes. 826 offline tests pass.
