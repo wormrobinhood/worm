@@ -131,6 +131,23 @@ def test_a_look_the_breaker_turns_away_is_recorded_and_still_followed_by_the_lab
     assert db.one("SELECT COUNT(*) n FROM lab_cases WHERE token=?", (TOKEN,))["n"] == 1
 
 
+def test_an_entered_path_is_priced_from_its_pool_only(db, chain, monkeypatch):
+    lab.ensure_tables(db)
+    db.x("INSERT INTO lab_cases(token,symbol,t0,p0,status,source) VALUES(?,?,?,?,'active','api')", (TOKEN, "AAA", T0, 0.9))
+    db.x("INSERT INTO ticks(token,ts,price) VALUES(?,?,?)", (TOKEN, T0, 0.9))           # a verdict case from the price API
+    W.add(db, TOKEN, verdict(), "AAA", now=T0)
+    w = W.Watcher(None, db, P.Paper(db))
+    now = walk(w, chain, TOKEN, [1.0 + 0.002 * (i % 7) for i in range(31)])
+    c = db.one("SELECT t0, source, pair FROM lab_cases WHERE token=?", (TOKEN,))
+    assert c == {"t0": now - 60, "source": "pool", "pair": "USDG"}                      # the entry replaced it
+    assert db.one("SELECT MIN(ts) t FROM ticks WHERE token=?", (TOKEN,))["t"] == now - 60   # no API tick left in its path
+    walk(w, chain, TOKEN, [1.3, 1.31], start=now)
+    assert [r["price"] for r in db.q("SELECT price FROM ticks WHERE token=? ORDER BY ts", (TOKEN,))][-2:] == [1.3, 1.31]
+    monkeypatch.setattr(lab, "token_prices", lambda addrs: {a: {"price_usd": 99.0} for a in addrs})
+    lab.tick(db)                                                                        # the price API never writes into it
+    assert not db.one("SELECT 1 FROM ticks WHERE token=? AND price=99.0", (TOKEN,))
+
+
 def test_a_later_look_can_still_buy(db, chain):
     W.add(db, TOKEN, verdict(), "AAA", now=T0)
     w = W.Watcher(None, db, P.Paper(db))

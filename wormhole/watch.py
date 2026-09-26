@@ -353,15 +353,52 @@ def _sample(rpc, db, paper, now, on_entry=None):
 
 
 def _enroll(db, row, now, mid):
-    """The lab ranks exit rules on what the book really buys: a case from the entry, at the entry price."""
+    """The lab ranks exit rules on what the book really buys (or what a rule chose and the breaker turned away):
+    a case from the entry, at the pool's mid, priced from that pool from here on (sample_lab). A verdict case of
+    the same token, priced from the API, gives way to it: one path never mixes two price sources."""
     lab.ensure_tables(db)
     try:
         m = json.loads(row["metrics"] or "{}")
+        pk = json.loads(row.get("pool_key") or "null") or {}
     except ValueError:
-        m = {}
-    db.x("INSERT OR IGNORE INTO lab_cases(token,symbol,score,verdict,t0,p0,status,cost,misses) VALUES(?,?,?,?,?,?,?,?,0)",
-         (row["token"], row["symbol"], m.get("score"), m.get("verdict"), now, mid, "active", lab.token_cost(db, row["token"])))
+        m, pk = {}, {}
+    old = db.one("SELECT status, source FROM lab_cases WHERE token=?", (row["token"],))
+    if old and (old["status"] != "active" or old["source"] == "pool"):
+        return
+    if old:
+        db.x("DELETE FROM ticks WHERE token=?", (row["token"],))
+        db.x("DELETE FROM lab_cases WHERE token=?", (row["token"],))
+    held = db.one("SELECT gas_usd, size_usd FROM paper WHERE token=? AND status='open'", (row["token"],)) or {}
+    gas = held["gas_usd"] / held["size_usd"] if held.get("gas_usd") and held.get("size_usd") else None   # this entry's own
+    pair = "USDG" if pk.get("quote") == C.USDG else "ETH" if pk.get("quote") == C.ZERO else None
+    db.x("INSERT OR IGNORE INTO lab_cases(token,symbol,score,verdict,t0,p0,status,cost,misses,source,pool_key,pair,gas)"
+         " VALUES(?,?,?,?,?,?,?,?,0,'pool',?,?,?)",
+         (row["token"], row["symbol"], m.get("score"), m.get("verdict"), now, mid, "active", lab.token_cost(db, row["token"]),
+          json.dumps(pk) if pk else None, pair, gas))
     db.x("INSERT OR IGNORE INTO ticks(token,ts,price) VALUES(?,?,?)", (row["token"], now, mid))
+
+
+def sample_lab(rpc, db, now):
+    """One pool reading a minute for every active lab case that began at a paper entry: its whole path comes from
+    the pool it would have been sold into, never the price API (lab.tick samples the others)."""
+    if not db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_cases'"):
+        return
+    pools = {}
+    for c in db.q("SELECT token, pool_key FROM lab_cases WHERE status='active' AND source='pool' AND pool_key IS NOT NULL"):
+        try:
+            pk = json.loads(c["pool_key"])
+        except ValueError:
+            continue
+        if execution.verified(pk, c["token"], execution.PAPER_QUOTES) and "fee" in pk:
+            pools[c["token"]] = pk
+    if not pools:
+        return
+    try:
+        mids = poolstate.mids(rpc, pools, _eth())
+    except Exception as e:
+        log.info("lab pool sample failed: %s", e)
+        return                                     # a missed reading is a gap, never a guessed price
+    db.many("INSERT OR IGNORE INTO ticks(token,ts,price) VALUES(?,?,?)", [(t, now, p) for t, p in mids.items() if p])
 
 
 class Watcher:
@@ -411,6 +448,7 @@ class Watcher:
             self.sampled = now
             _resolve_pools(self.rpc, self.db)
             _sample(self.rpc, self.db, self.paper, now, self.on_entry)
+            sample_lab(self.rpc, self.db, now)
             self.db.x("DELETE FROM watch_ticks WHERE ts<?", (now - KEEP_TICKS_S,))
             self.db.x("DELETE FROM watch WHERE t0<? AND status!='watching'", (now - KEEP_TICKS_S,))
 

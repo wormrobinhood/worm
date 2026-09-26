@@ -406,13 +406,15 @@ def backtest_arm(db, name, policy, delay):
     lab.LEARNED[name] = policy
     rets, base = [], []
     try:
-        for c in db.q("SELECT token, t0, cost FROM lab_cases WHERE status='resolved'"):
+        gas_default = lab.paper_gas(db)
+        for c in db.q("SELECT token, t0, cost, gas FROM lab_cases WHERE status='resolved' AND COALESCE(source,'api')<>'mixed'"):
             path = [(r["ts"], r["price"]) for r in db.q("SELECT ts, price FROM ticks WHERE token=? ORDER BY ts", (c["token"],))]
             if len(path) < 3:
                 continue
             fee = c["cost"] if c.get("cost") is not None else lab.FEE
-            r = lab.simulate(f"{name}@{delay // 60}m", path, c["t0"], fee)
-            d = lab.simulate(lab.DEFAULT, path, c["t0"], fee)
+            sim = dict(gas_per_side=c["gas"] if c.get("gas") is not None else gas_default, max_gap_s=lab.MAX_GAP_S)
+            r = lab.simulate(f"{name}@{delay // 60}m", path, c["t0"], fee, **sim)
+            d = lab.simulate(lab.DEFAULT, path, c["t0"], fee, **sim)
             if r is None or d is None:
                 continue
             rets.append(r)

@@ -5,7 +5,14 @@ token at a second look (watch.py). Prices are sampled every mark cycle for 48 ho
 that token's own costs (creator tax + curve fee + slippage per side). Arms keep a running net return
 per dollar risked. Historical rankings nominate candidates. Promotion requires the separate fixed future cohort in
 strategy_validation; historical fit alone never promotes an arm. Exploration (a random arm on a share of new positions) is off by
-default: the lab already scores every arm on every case, so an explorer position teaches it nothing."""
+default: the lab already scores every arm on every case, so an explorer position teaches it nothing.
+
+Everything here is a simulation on sampled prices, and it is built to err low (SIM_VERSION 2): a take-profit fills
+at its level, never at a sample that jumped past it; stops and trails fill at the sample that crossed them; every
+leg pays the paper book's gas; a gain earned across a hole in the data is capped; and a path is priced from one
+source only (the pool on-chain for a paper entry, the price API for a verdict case). Version 1 did none of that and
+its rankings (fixed_40_25@0m at +34% with a spread of 2.1: impossible for a rule that sells everything at +40%)
+are kept aside in lab_arms_v1, never ranked."""
 import json
 import logging
 import math
@@ -13,6 +20,7 @@ import os
 import random
 import time
 
+from . import config as C
 from .prices import token_prices, usable_price, observed_at
 
 log = logging.getLogger("wormhole.lab")
@@ -27,6 +35,11 @@ LCB_Z = float(os.environ.get("WH_LAB_LCB_Z", "1.5"))          # standard errors 
 ENTRY_SLACK_S = 900                                            # an arm needs a tick within 15 min of its entry time
 STALE_TAIL_S = 2 * 3600                                        # a path whose last tick is older than this before the horizon is no case
 DEFAULT = "lock_20@0m"         # changing this voids every paper cohort (strategy_validation freezes it): deliberate, never casual
+SIM_VERSION = 2                # results of another version are never ranked with these
+GAS_PER_SIDE = 0.004           # gas per leg as a fraction of the position when the paper book has no measurement: about
+                               # $0.04 on its $10 (the quoted swap plus two approvals it charges, at recent chain prices)
+MAX_GAP_S = 900                # a position held across a longer silence in its path ...
+GAP_CAP = 1.0                  # ... is credited at most +100%: what happened in the hole is unknown
 
 # tp: list of (multiple, fraction of the initial tokens to sell); trail: drawdown from peak that sells the
 # rest; trail_from_start: trailing active before any take-profit; stop: loss that sells everything before
@@ -67,15 +80,34 @@ def all_arms():
 def ensure_tables(db):
     db.x("CREATE TABLE IF NOT EXISTS lab_cases(token TEXT PRIMARY KEY, symbol TEXT, score INTEGER, verdict TEXT, t0 INTEGER,"
          " p0 REAL, status TEXT, resolved_ts INTEGER, results TEXT, cost REAL, misses INTEGER DEFAULT 0)")
-    for col in ("cost REAL", "misses INTEGER DEFAULT 0"):
+    # source: where the path's prices come from ('api', 'pool', or 'mixed' for a v1 case that got a pool tick
+    # among API ticks: never ranked). gas: per-leg gas as a fraction of the position. sim: the SIM_VERSION of
+    # `results`. gap_s: the longest silence in the resolved path.
+    for col in ("cost REAL", "misses INTEGER DEFAULT 0", "source TEXT", "pool_key TEXT", "pair TEXT", "gas REAL",
+                "sim INTEGER", "gap_s INTEGER"):
         try:
             db.x(f"ALTER TABLE lab_cases ADD COLUMN {col}")
         except Exception:
             pass
     db.x("CREATE TABLE IF NOT EXISTS ticks(token TEXT, ts INTEGER, price REAL, PRIMARY KEY(token, ts))")
-    db.x("CREATE TABLE IF NOT EXISTS lab_arms(name TEXT PRIMARY KEY, n INTEGER DEFAULT 0, sum_ret REAL DEFAULT 0,"
-         " sum_sq REAL DEFAULT 0, wins INTEGER DEFAULT 0, updated INTEGER)")
-    db.many("INSERT OR IGNORE INTO lab_arms(name) VALUES(?)", [(a,) for a in ARMS])
+    for table in ("lab_arms", "lab_arms_usdg"):    # every case, and the USDG-pool cases only (what live could trade)
+        db.x(f"CREATE TABLE IF NOT EXISTS {table}(name TEXT PRIMARY KEY, n INTEGER DEFAULT 0, sum_ret REAL DEFAULT 0,"
+             " sum_sq REAL DEFAULT 0, wins INTEGER DEFAULT 0, updated INTEGER)")
+        db.many(f"INSERT OR IGNORE INTO {table}(name) VALUES(?)", [(a,) for a in ARMS])
+    if str(db.meta_get("lab_sim", "")) != str(SIM_VERSION):
+        with db.transaction():
+            # Once: v1 sums move aside; recent cases are re-simulated from their kept ticks (resimulate), older
+            # ones stay legacy. A case the book entered got a pool tick among API ticks: mixed, never ranked.
+            old = int(db.meta_get("lab_sim", "1") or 1)
+            if db.one("SELECT 1 FROM lab_arms WHERE n>0"):
+                db.x(f"DROP TABLE IF EXISTS lab_arms_v{old}")
+                db.x(f"CREATE TABLE lab_arms_v{old} AS SELECT * FROM lab_arms")
+            db.x("UPDATE lab_arms SET n=0, sum_ret=0, sum_sq=0, wins=0")
+            if "strategy" in {r["name"] for r in db.q("PRAGMA table_info(paper)")}:
+                db.x("UPDATE lab_cases SET source='mixed' WHERE source IS NULL AND token IN"
+                     " (SELECT token FROM paper WHERE strategy IS NOT NULL AND strategy<>'verdict-healthy-v1')")
+            db.x("UPDATE lab_cases SET source='api' WHERE source IS NULL")
+            db.meta_set("lab_sim", SIM_VERSION)
 
 
 def parse_arm(name):
@@ -143,11 +175,17 @@ def exit_step(policy, st, price, ts):
     return 0.0, None
 
 
-def simulate(arm, path, t0, fee=FEE, *, policy=None, delay=None, gas_per_side=0.0):
+def simulate(arm, path, t0, fee=FEE, *, policy=None, delay=None, gas_per_side=0.0, max_gap_s=None, notes=None):
     """Net return per 1 unit risked for `arm` on `path` [(ts, price), ...], scale-free: every cash leg is
     a fraction of the position times price/entry, so a 1e-5 token and a $100 token with the same shape
-    return the same number. `fee` is the per-side cost. None when the arm has no usable entry: the first
-    tick at or after its delay is missing, more than ENTRY_SLACK_S late, at a zero price, or the last."""
+    return the same number. `fee` is the per-side cost, `gas_per_side` each leg's gas as a fraction of the
+    position. None when the arm has no usable entry: the first tick at or after its delay is missing, more
+    than ENTRY_SLACK_S late, at a zero price, or the last.
+
+    Fills err low: a take-profit is a limit at its level, so a sample that jumped past it between readings
+    earns the level, not the jump; a stop or trail fills at the sample that crossed it (worse than the level
+    when the price gapped through). With `max_gap_s`, a gain made while holding across a longer silence in the
+    path is capped at GAP_CAP (`notes['capped']` says so): a hole in the data is never a windfall."""
     if policy is None:
         policy, delay = parse_arm(arm)
     entry_i = next((i for i, (ts, _) in enumerate(path) if ts >= t0 + delay), None)
@@ -159,17 +197,28 @@ def simulate(arm, path, t0, fee=FEE, *, policy=None, delay=None, gas_per_side=0.
     st = {"entry": e, "entry_ts": ets, "qty_left": 1.0, "tp_done": [], "peak": e, "trail_on": False}
     cash = -gas_per_side
     qty_scale = 1.0 / (1 + fee)          # the entry fee buys fewer tokens
+    held_across_gap, last_ts = False, ets
     for ts, p in path[entry_i + 1:]:
+        held_across_gap = held_across_gap or (max_gap_s is not None and ts - last_ts > max_gap_s)
+        last_ts = ts
         frac, why = exit_step(policy, st, p, ts)
         while frac > 0:
-            cash += frac * qty_scale * (p / e) * (1 - fee) - gas_per_side
+            fill = p
+            if why and why.startswith("take profit"):
+                fill = min(p, e * st["tp_done"][-1])
+            cash += frac * qty_scale * (fill / e) * (1 - fee) - gas_per_side
             st["qty_left"] -= frac
             frac, why = exit_step(policy, st, p, ts) if st["qty_left"] > 0 else (0, None)
         if st["qty_left"] <= 1e-9:
             break
     if st["qty_left"] > 1e-9:
         cash += st["qty_left"] * qty_scale * (path[-1][1] / e) * (1 - fee) - gas_per_side
-    return cash - 1.0                    # net return per 1 unit risked
+    ret = cash - 1.0                     # net return per 1 unit risked
+    if held_across_gap and ret > GAP_CAP:
+        ret = GAP_CAP
+        if notes is not None:
+            notes["capped"] = True
+    return ret
 
 
 # ---- the loop ---------------------------------------------------------------------------------
@@ -203,14 +252,17 @@ def tick(db):
     enroll(db)
     now = int(time.time())
     db.x("DELETE FROM ticks WHERE ts<? AND token IN (SELECT token FROM lab_cases WHERE status<>'active')", (now - 7 * 86400,))
+    # A path the paper book entered is priced from its pool on-chain by the watcher (watch.sample_lab); only the
+    # verdict cases are read from the price API. One source per path: two sources disagree by more than a stop.
     active = db.q("SELECT * FROM lab_cases WHERE status='active'")
     if not active:
+        resimulate(db)
         return
-    px = token_prices([c["token"] for c in active])
+    px = token_prices([c["token"] for c in active if c.get("source") != "pool"])
     now = int(time.time())
     for c in active:
         entry = px.get(c["token"]) or {}
-        p = usable_price(entry)
+        p = usable_price(entry) if c.get("source") != "pool" else None
         if p is not None:
             ts = observed_at(entry, now)
             if ts >= c['t0']:
@@ -218,6 +270,7 @@ def tick(db):
         # An API omission/outage is missing evidence, not a confirmed loss or an executable fill.
         if now - c["t0"] >= HORIZON_S:
             _resolve(db, c)
+    resimulate(db)
 
 
 def _resolve(db, c):
@@ -227,34 +280,88 @@ def _resolve(db, c):
             _resolve_once(db, current)
 
 
+def paper_gas(db):
+    """The paper book's own gas per leg, as a fraction of its position: the median over its recent quoted
+    positions (entry, exits and the approvals it charges, spread over two legs). GAS_PER_SIDE without any."""
+    try:
+        rows = db.q("SELECT gas_usd, size_usd FROM paper WHERE status='closed' AND execution_model IS NOT NULL"
+                    " AND gas_usd>0 AND size_usd>0 ORDER BY id DESC LIMIT 50")
+    except Exception:
+        return GAS_PER_SIDE
+    values = sorted(r["gas_usd"] / r["size_usd"] / 2 for r in rows)
+    return values[len(values) // 2] if values else GAS_PER_SIDE
+
+
+def case_pair(db, c):
+    """'USDG', 'ETH' or another asset's symbol: the case's own pool when it has one, else the token's launch pair."""
+    if c.get("pair"):
+        return c["pair"]
+    pool = db.one("SELECT quote FROM pools WHERE token=?", (c["token"],)) if db.one(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pools'") else None
+    if pool and pool.get("quote"):
+        return "USDG" if pool["quote"] == C.USDG else "ETH" if pool["quote"] == C.ZERO else pool["quote"]
+    launch = db.one("SELECT pair_symbol FROM launches WHERE token=?", (c["token"],)) or {}
+    return launch.get("pair_symbol")
+
+
 def _resolve_once(db, c):
     now = int(time.time())
     path = [(r["ts"], r["price"]) for r in db.q("SELECT ts, price FROM ticks WHERE token=? ORDER BY ts", (c["token"],))]
     if len(path) < 3 or path[-1][0] < c["t0"] + HORIZON_S - STALE_TAIL_S:
         # a path that went silent is not a fill at its last price: no arm learns from it
-        db.x("UPDATE lab_cases SET status='stale', resolved_ts=?, results=? WHERE token=?", (now, "{}", c["token"]))
+        db.x("UPDATE lab_cases SET status='stale', resolved_ts=?, results=?, sim=? WHERE token=?", (now, "{}", SIM_VERSION, c["token"]))
         db.add_event("lab", f"lab case ${c['symbol']} stale: {len(path)} ticks, last one {(now - path[-1][0]) // 3600 if path else '?'}h ago", c["token"])
         return
     fee = c["cost"] if c.get("cost") is not None else FEE
-    results = {}
+    gas = c["gas"] if c.get("gas") is not None else paper_gas(db)
+    pair = case_pair(db, c)
+    ranked = c.get("source") != "mixed"
+    gap = max((b[0] - a[0] for a, b in zip(path, path[1:]) if b[0] >= c["t0"]), default=0)
+    results, capped = {}, []
     for arm in all_arms():
-        r = simulate(arm, path, c["t0"], fee)
+        notes = {}
+        r = simulate(arm, path, c["t0"], fee, gas_per_side=gas, max_gap_s=MAX_GAP_S, notes=notes)
         if r is None:
             continue
         results[arm] = round(r, 4)
-        db.x("UPDATE lab_arms SET n=n+1, sum_ret=sum_ret+?, sum_sq=sum_sq+?, wins=wins+?, updated=? WHERE name=?",
-             (r, r * r, 1 if r > 0 else 0, now, arm))
-    db.x("UPDATE lab_cases SET status='resolved', resolved_ts=?, results=? WHERE token=?", (now, json.dumps(results), c["token"]))
-    if results:
-        best = max(results, key=results.get)
-        db.add_event("lab", f"lab case ${c['symbol']} resolved: best arm {best} {results[best] * 100:+.0f}%, hedge_2x@0m {results.get('hedge_2x@0m', 0) * 100:+.0f}%", c["token"])
+        if notes.get("capped"):
+            capped.append(arm)
+        if not ranked:
+            continue
+        for table in ("lab_arms",) + (("lab_arms_usdg",) if pair == "USDG" else ()):
+            db.x(f"INSERT OR IGNORE INTO {table}(name) VALUES(?)", (arm,))     # an arm the advisor added later
+            db.x(f"UPDATE {table} SET n=n+1, sum_ret=sum_ret+?, sum_sq=sum_sq+?, wins=wins+?, updated=? WHERE name=?",
+                 (r, r * r, 1 if r > 0 else 0, now, arm))
+    if capped:
+        results["_capped"] = capped
+    db.x("UPDATE lab_cases SET status='resolved', resolved_ts=?, results=?, sim=?, pair=?, gas=?, gap_s=? WHERE token=?",
+         (now, json.dumps(results), SIM_VERSION, pair, gas, gap, c["token"]))
+    arms = {a: v for a, v in results.items() if not a.startswith("_")}
+    if arms:
+        best = max(arms, key=arms.get)
+        db.add_event("lab", f"lab case ${c['symbol']} resolved (simulated{'' if ranked else ', mixed prices: not ranked'}):"
+                     f" best arm {best} {arms[best] * 100:+.0f}%, {DEFAULT} {arms.get(DEFAULT, 0) * 100:+.0f}%", c["token"])
 
 
-def ranking(db):
+def resimulate(db, limit=40):
+    """Resolved v1 cases whose ticks are still kept are simulated again under SIM_VERSION and ranked; the rest
+    (ticks pruned after a week) stay as they were, marked legacy (sim 1), and are never ranked."""
+    for c in db.q("SELECT * FROM lab_cases WHERE status='resolved' AND sim IS NULL LIMIT ?", (limit,)):
+        with db.transaction():
+            path = db.q("SELECT ts FROM ticks WHERE token=? ORDER BY ts", (c["token"],))
+            if len(path) < 3 or path[0]["ts"] > c["t0"] or path[-1]["ts"] < c["t0"] + HORIZON_S - STALE_TAIL_S:
+                db.x("UPDATE lab_cases SET sim=1 WHERE token=?", (c["token"],))      # legacy v1: not enough left to redo
+                continue
+            _resolve_once(db, c)
+            db.x("UPDATE lab_cases SET resolved_ts=? WHERE token=?", (c["resolved_ts"], c["token"]))
+
+
+def ranking(db, table="lab_arms"):
     """Arms with mean, population stdev and a lower confidence bound (mean - LCB_Z standard errors);
-    sorted by the bound among arms with LAB_MIN_N cases, the rest after them by case count."""
+    sorted by the bound among arms with LAB_MIN_N cases, the rest after them by case count. `table`:
+    lab_arms (every ranked case) or lab_arms_usdg (USDG-pool cases only)."""
     ensure_tables(db)
-    rows = db.q("SELECT * FROM lab_arms")
+    rows = db.q(f"SELECT * FROM {table}")
     out = []
     for r in rows:
         n = r["n"] or 0
@@ -270,8 +377,9 @@ def ranking(db):
 
 
 def research_policy(db):
-    """The arm in use: the best-bounded arm with enough cases whose lower bound is above zero and whose
-    mean beats the default's on the same table, else the default."""
+    """The arm the lab's own table would pick: the best-bounded arm with enough cases whose lower bound is above
+    zero and whose mean beats the default's on the same table, else the default. Research only: nothing that
+    opens a position calls it. Exits come from current_policy, which is DEFAULT until changed in code."""
     arms = ranking(db)
     base = next((a for a in arms if a["arm"] == DEFAULT), None)
     for a in arms:
@@ -306,7 +414,18 @@ def summary(db):
     from . import strategy_validation
     ensure_tables(db)
     cur, why = current_policy(db)
+    count = lambda where, *a: db.one(f"SELECT COUNT(*) n FROM lab_cases WHERE {where}", a)["n"]
     return {"in_use": cur, "why": why, "validation": strategy_validation.summary(db), "arms": ranking(db), "min_n": LAB_MIN_N, "cost_per_side": FEE, "explore": EXPLORE,
+            # USDG-pool cases only: the exits live could run. Both tables are simulations, never paper fills.
+            "arms_usdg": ranking(db, "lab_arms_usdg"), "simulated": True, "sim_version": SIM_VERSION,
+            "gas_per_side": round(paper_gas(db), 5), "max_gap_s": MAX_GAP_S, "gap_cap": GAP_CAP,
+            "method": ("simulated on sampled prices, not traded: take-profits fill at their level, stops and trails at the "
+                       "sample that crossed them, every leg pays the paper book's gas, a gain made across a silence of "
+                       f"more than {MAX_GAP_S // 60} min is capped at +{GAP_CAP * 100:.0f}%, one price source per path"),
+            "cases_ranked": count("status='resolved' AND sim=? AND COALESCE(source,'api')<>'mixed'", SIM_VERSION),
+            "cases_mixed": count("status='resolved' AND source='mixed'"),
+            "cases_legacy": count("status='resolved' AND (sim IS NULL OR sim<>?)", SIM_VERSION),
+            "cases_capped": count("status='resolved' AND sim=? AND results LIKE '%\"_capped\"%'", SIM_VERSION),
             "cases_active": db.one("SELECT COUNT(*) n FROM lab_cases WHERE status='active'")["n"],
             "cases_resolved": db.one("SELECT COUNT(*) n FROM lab_cases WHERE status='resolved'")["n"],
             "cases_stale": db.one("SELECT COUNT(*) n FROM lab_cases WHERE status='stale'")["n"],
