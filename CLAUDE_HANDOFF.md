@@ -731,7 +731,9 @@ per fix.
   `trader.candidates`). It buys nothing. Its members are the four rules' USDG entries whose recorded
   `entry-risk-shadow-v1` decision was keep. It gets its own cohort and its own k.
 - **Live parity**: `live_trading.pool_mid` passes the pool's fresh mid as the entry `reference`, for the quote
-  and for its refresh after approvals.
+  and for its refresh after approvals. For real money only, the mid must be within `MID_API_BAND` (15%) of a fresh
+  price-API reading when one exists, or the live entry is skipped (a thin pool can be pushed by one swap). Paper is
+  unchanged.
 - **Web**: the paper card shows "Could be traded for real · USDG pools" first, then "All pools, ETH included ·
   learning only", then a per-rule table. The lab is marked "simulated, not traded" and shows the USDG ranking
   first. Verified with Playwright on injected fields; the live snapshot does not have them yet.
