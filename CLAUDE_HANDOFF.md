@@ -669,3 +669,25 @@ No next-burn time is ever shown; planned marks are an even, unlabelled schedule 
 only with injected data. Derived client-side for now: "got it wrong" cards (from `brain.outcomes`, lessons
 and the feed), the base rate (readiness accuracy `base_rate_pct`), plain rule names (a map in `design.js`),
 the 1e9 supply and the stage floors. Motion choice persists in `localStorage['worm.motion']`.
+
+
+## Always-on burn rounds and burn gas accounting (2026-09-26, local, not deployed)
+
+The operator asked that burning be on whenever there is spare money above the 90-day reserve, and that the ETH the
+burn transactions pay be accounted for.
+
+- `burn_program.arm_auto` / `spare_usd`: with `WH_SURPLUS_BURN_AUTO=1` (default) and no running program, a round
+  `auto-<ts>` is armed for the USDG above `owed_total` and `reserve_usd()` once it reaches $25, over 7 days, and
+  released and burned in the existing small, jittered, impact-checked slices. A round runs to its end (`arm` returns it
+  unpaused while rounds are on); the next starts from new spare. Rounds never start while a manual program is
+  unfinished, paused or not. Status carries `auto` and a round-specific `reason`.
+- Gas: measured on chain from the ledger's own receipts: burn swap 177k–229k gas, approvals ~50k each, about
+  0.000017 ETH (~$0.05) per burn at 0.027 gwei, up to ~$0.11 when busy. `budget.GAS_USD_DAY` default 0.10 -> 0.35, so
+  the 90-day reserve is now (0.75 + 0.35) x 90 = $99 instead of $76.50. ETH itself is still topped up by
+  `gas_refill` from the operations USDG.
+- Ledger column `gas_eth`: `settle` adds each transaction's fee (gasUsed x effectiveGasPrice + l1Fee) to its row;
+  burn approvals' fees are carried in meta `burn_gas_carry` onto the next burn row. `treasury.burn_gas_eth` is the
+  public sum over burn and burn_failed rows (burns before this change count 0). The Treasury burn card shows it.
+- Tests: `tests/conftest.py` runs the suite with rounds off (`WH_SURPLUS_BURN_AUTO=0`); the new tests opt in. 872 pass.
+- On first deploy with the current treasury (~$661 USDG, ~$4 owed, $99 reserve) the first round would be about
+  $555 over 7 days.

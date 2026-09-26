@@ -23,6 +23,12 @@ Arming and idempotency. The program lives in the database (meta 'burn_program'),
   protected launch allocation and gas refills (treasury.owed_total), plus the 90-day runway reserve (budget).
   When the wallet is short the program waits and releases the rest later; it never borrows.
 
+Always-on rounds (WH_SURPLUS_BURN_AUTO, on by default). Whenever no program is running and the wallet's USDG above
+every reservation and the 90-day reserve reaches WH_SURPLUS_BURN_AUTO_MIN_USD (25), a round named 'auto-<start>'
+is armed for exactly that spare, over WH_SURPLUS_BURN_DAYS, and released like any program. A round runs to its
+end; the next one starts once new fees have built up spare again. A manual program still works and takes the
+wallet first; an automatic round never starts while a manual one is unfinished, paused or not.
+
 Releases happen at burn opportunities (treasury.burn_step, every WH_BURN_EVERY_MIN plus jitter) and at most once
 per WH_BURN_EVERY_MIN, not on every five-minute tick: the ledger gets one release row per burn instead of hundreds
 of cent-sized ones, and the public schedule (`scheduled_usd`) is exact to the second anyway."""
@@ -48,6 +54,20 @@ def settings():
     if not re.fullmatch(r'[A-Za-z0-9_.-]{1,40}', pid):
         raise ValueError('invalid WH_SURPLUS_BURN_ID')
     return amount, days, pid
+
+
+def auto_on():
+    """Always-on rounds: every spare dollar above the reserve goes to the burn, a week at a time."""
+    return os.environ.get('WH_SURPLUS_BURN_AUTO', '1').strip() == '1'
+
+
+def auto_min():
+    from .claim_policy import setting
+    return setting('WH_SURPLUS_BURN_AUTO_MIN_USD', '25', 2, 100_000)
+
+
+def is_auto(p):
+    return bool(p) and str(p.get('id', '')).startswith('auto-')
 
 
 def saved(db):
@@ -92,6 +112,8 @@ def arm(db, now=None):
     now = int(time.time() if now is None else now)
     amount, days, pid = settings()
     p = saved(db)
+    if is_auto(p) and not finished(db, p):
+        return p, not auto_on()          # an automatic round runs to its end; a manual program waits for it
     if p and p['id'] == pid:
         return p, amount <= 0
     if amount <= 0:
@@ -115,6 +137,33 @@ def arm(db, now=None):
     return new, False
 
 
+def spare_usd(rpc, db):
+    """USDG above every reservation and the 90-day reserve, to the cent below; None while a payment settles."""
+    T.ensure_tables(db)
+    if db.one("SELECT 1 FROM ledger WHERE kind LIKE '%_pending' AND tx IS NOT NULL"):
+        return None
+    room = T.usdg_balance(rpc, C.WALLET) - T.owed_total(db) - reserve_usd()
+    return math.floor(room * 100 + 1e-6) / 100 if math.isfinite(room) else None
+
+
+def arm_auto(rpc, db, now):
+    """Start an automatic round for the spare above the reserve, when there is at least auto_min() of it.
+    Returns the new program or None."""
+    _amount, days, _pid = settings()
+    spare = spare_usd(rpc, db)
+    if spare is None or spare < auto_min():
+        return None
+    now = int(now)
+    new = {'id': f'auto-{now}', 'total': spare, 'days': days, 'started_ts': now, 'ends_ts': now + int(days * 86400)}
+    spent = json.loads(db.meta_get(SPENT) or '[]')
+    with db.transaction():
+        db.meta_set(KEY, json.dumps(new))
+        db.meta_set(SPENT, json.dumps(spent + [new['id']]))
+    db.add_event('treasury', f'burn round started: ${spare:,.2f} of spare money above the 90-day reserve goes to the '
+                             f'burn over {days:g} days, in small buys a few times a day')
+    return new
+
+
 def reserve_usd():
     """The runway reserve a release may never touch: the planned costs of RESERVE_DAYS days."""
     from . import budget
@@ -126,6 +175,10 @@ def release(rpc, db, now=None):
     Returns the USDG released now (0.0 when nothing was). Never raises for an unarmed program."""
     now = time.time() if now is None else now
     p, paused = arm(db, now)
+    if (p is None or finished(db, p)) and auto_on():
+        started = arm_auto(rpc, db, now)
+        if started:
+            p, paused = started, False
     if not p or paused:
         return 0.0
     done = released_usd(db, p['id'])
@@ -171,8 +224,11 @@ def burns(db, pid, limit=500):
              'tx': r['tx']} for r in rows]
 
 
-def reason(days):
+def reason(days, auto=False):
     span = 'a week' if days == 7 else f'{days:g} days'
+    if auto:
+        return (f"Whenever the treasury holds more than its 90-day reserve needs, the extra is burned in small buys "
+                f"over {span}.")
     return (f"The treasury holds more than its 90-day reserve needs, so the extra is burned in small buys "
             f"over {span}.")
 
@@ -191,13 +247,15 @@ def status(db, now=None):
     if not p:
         return {'active': False, 'state': 'off', 'total_usd': 0.0, 'released_usd': 0.0, 'burned_usd': 0.0,
                 'burned_qty': 0.0, 'scheduled_usd': 0.0, 'started_ts': None, 'ends_ts': None, 'days': days,
-                'interval_s': interval, 'reason': None, 'burns': []}
+                'interval_s': interval, 'reason': None, 'auto': auto_on(), 'burns': []}
     released, burned = released_usd(db, p['id']), burned_usd(db, p['id'])
     try:
         amount, _days, pid = settings()
     except ValueError:
         amount, pid = 0, None
-    if pid != p['id']:
+    if is_auto(p):
+        amount = 1 if auto_on() else 0      # an automatic round pauses only when rounds are switched off
+    elif pid != p['id']:
         amount = 0          # another id is named: this program is paused (see arm)
     done = released >= p['total'] - DONE_EPS and burned >= p['total'] - DONE_EPS
     state = ('finished' if done else 'burning the rest' if released >= p['total'] - DONE_EPS
@@ -206,4 +264,4 @@ def status(db, now=None):
     return {'active': not done, 'state': state, 'total_usd': round(p['total'], 2), 'released_usd': round(released, 2),
             'burned_usd': round(burned, 2), 'burned_qty': round(sum(b['qty'] for b in listed), 2),
             'scheduled_usd': round(scheduled(p, now), 2), 'started_ts': p['started_ts'], 'ends_ts': p['ends_ts'],
-            'days': p['days'], 'interval_s': interval, 'reason': reason(p['days']), 'burns': listed}
+            'days': p['days'], 'interval_s': interval, 'reason': reason(p['days'], is_auto(p)), 'auto': is_auto(p), 'burns': listed}

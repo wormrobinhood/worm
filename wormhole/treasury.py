@@ -76,12 +76,30 @@ def ensure_tables(db):
     db.x("CREATE TABLE IF NOT EXISTS ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, asset TEXT,"
          " amount REAL, tx TEXT, note TEXT, qty REAL)")
     # tokens burned / bought; the recipient a transfer was sent to; the fee split a claim was made under; the
-    # surplus burn program a release or a burn belongs to, and how much of a burn was program money
+    # surplus burn program a release or a burn belongs to, and how much of a burn was program money; the ETH its
+    # transactions paid in gas (a burn's approvals included)
     for col in ("qty REAL", "to_addr TEXT", "authorization TEXT", "owner_share REAL", "burn_share REAL", "gold_share REAL",
-                "program TEXT", "program_usd REAL"):
+                "program TEXT", "program_usd REAL", "gas_eth REAL"):
         name = col.split()[0]
         if name not in {r['name'] for r in db.q('PRAGMA table_info(ledger)')}:
             db.x(f"ALTER TABLE ledger ADD COLUMN {col}")
+
+
+def tx_fee_eth(rc):
+    """ETH a mined transaction paid: gas used times the effective price, plus any L1 data fee. 0 when unknown."""
+    try:
+        fee = int(rc.get("gasUsed") or "0x0", 16) * int(rc.get("effectiveGasPrice") or "0x0", 16)
+        return (fee + int(rc.get("l1Fee") or "0x0", 16)) / 1e18
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
+
+
+def carry_burn_gas(db, rc):
+    """A burn approval's gas, kept until the burn row it belongs to is written (the approval can succeed and the
+    burn still wait), so every ETH a burn spent is booked on a burn row."""
+    fee = tx_fee_eth(rc) if rc else 0.0
+    if fee > 0:
+        db.meta_set("burn_gas_carry", repr(float(db.meta_get("burn_gas_carry") or 0) + fee))
 
 
 def pin_claim_shares(db):
@@ -353,7 +371,8 @@ def settle(db, row, rc, wallet, to=None):
         return row['kind'], row['amount']
     kind = base if ok else f"{base}_failed"
     note = ((row["note"] or "") + extra if extra else row["note"]) if ok else f"{row['note']} ({why})"
-    db.x("UPDATE ledger SET kind=?, amount=?, note=?, qty=? WHERE id=?", (kind, amount, note, qty, row["id"]))
+    db.x("UPDATE ledger SET kind=?, amount=?, note=?, qty=?, gas_eth=COALESCE(gas_eth,0)+? WHERE id=?",
+         (kind, amount, note, qty, tx_fee_eth(rc), row["id"]))
     _review(db, row["tx"])
     if ok:
         text = _event_text(kind, amount, dict(row, qty=qty))
@@ -457,6 +476,8 @@ def summary(rpc, db):
         elif r["kind"] == "trade_profit":
             out["trading_profit_to_burn"] = round(r["s"], 4)
     out["burned_qty"] = round(db.one("SELECT COALESCE(SUM(qty),0) q FROM ledger WHERE kind='burn'")["q"] or 0.0, 2)
+    # the ETH burns paid in gas (booked since the gas column exists; older burns count 0), failed tries included
+    out["burn_gas_eth"] = round(db.one("SELECT COALESCE(SUM(gas_eth),0) g FROM ledger WHERE kind IN ('burn','burn_failed')")["g"] or 0.0, 8)
     out["gold_qty"] = round(db.one("SELECT COALESCE(SUM(qty),0) q FROM ledger WHERE kind='gold'")["q"] or 0.0, 6)
     try:
         out["owed_to_owner"] = round(max(0.0, owed_to_owner(db)), 4)
@@ -581,6 +602,7 @@ def approve_for_router(rpc, db, acct, need):
     if a != need:
         data = selector("approve(address,uint256)") + encode(["address", "uint256"], [C.PERMIT2, need]).hex()
         h, rc = send_tx(rpc, acct, C.USDG, data)
+        carry_burn_gas(db, rc)
         if not rc or rc.get("status") != "0x1":
             raise RuntimeError(f"USDG approval for Permit2 reverted: {h}")
         log.info("approved USDG for Permit2 for a burn: %s", h)   # private: a public line would announce the swap
@@ -589,6 +611,7 @@ def approve_for_router(rpc, db, acct, need):
         data = selector("approve(address,address,uint160,uint48)") + encode(
             ["address", "address", "uint160", "uint48"], [C.USDG, C.UNIVERSAL_ROUTER, need, now + PERMIT_TTL_S]).hex()
         h, rc = send_tx(rpc, acct, C.PERMIT2, data)
+        carry_burn_gas(db, rc)
         if not rc or rc.get("status") != "0x1":
             raise RuntimeError(f"Permit2 approval for the router reverted: {h}")
         log.info("approved the Universal Router for a burn with a short expiry: %s", h)
@@ -729,8 +752,11 @@ def burn(rpc, db, acct):
     def pending(h):
         now = time.time()
         with db.transaction():
-            db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note,program,program_usd) VALUES(?,?,?,?,?,?,?,?)",
-                 (int(now), "burn_pending", "USDG", n / 1e6, h, note, pid if part > 0 else None, part or None))
+            carried = float(db.meta_get("burn_gas_carry") or 0)
+            db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note,program,program_usd,gas_eth) VALUES(?,?,?,?,?,?,?,?,?)",
+                 (int(now), "burn_pending", "USDG", n / 1e6, h, note, pid if part > 0 else None, part or None,
+                  carried or None))
+            db.meta_set("burn_gas_carry", "0")
             db.meta_set("burn_next_at", repr(next_burn_at(now)))
         watch("burn", f"buying $WORM with {n / 1e6:.2f} USDG on its pool and sending it to the burn address", h)
 

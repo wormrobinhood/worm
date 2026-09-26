@@ -88,7 +88,7 @@ def test_release_never_takes_usdg_below_the_reserve(db, rpc, armed, monkeypatch)
     chain(rpc, usdg=250)
     BP.release(rpc, db, T0)
     reserve = BP.reserve_usd()
-    assert reserve == pytest.approx((0.75 + 0.10) * 90)
+    assert reserve == pytest.approx((0.75 + 0.35) * 90)            # compute and gas, burns' gas included
     got = BP.release(rpc, db, T0 + 7 * DAY)                        # all 530 due, 250 in the wallet
     assert got == pytest.approx(250 - 90 - reserve, abs=0.01)
     assert 250 - T.owed_total(db) >= reserve - 1e-9               # the reserve is intact
@@ -376,3 +376,94 @@ def test_a_settling_payment_holds_the_release_and_says_so(db, rpc, monkeypatch):
          (T0 + 10, 'forward_pending', 'USDG', 5.0, '0x' + 'ab' * 32, 'to the creator'))
     assert BP.release(rpc, db, T0 + 3 * DAY) == 0.0
     assert any(e['text'] == 'burn program waits: a payment is still settling' for e in db.q("SELECT text FROM events"))
+
+
+# ---- always-on rounds: every spare dollar above the reserve, a week at a time ------------------------------------
+
+@pytest.fixture
+def auto(monkeypatch):
+    monkeypatch.setenv('WH_SURPLUS_BURN_AUTO', '1')
+    monkeypatch.delenv('WH_SURPLUS_BURN_USD', raising=False)
+    monkeypatch.delenv('WH_SURPLUS_BURN_ID', raising=False)
+
+
+def test_rounds_are_on_by_default_in_production_settings(monkeypatch):
+    monkeypatch.delenv('WH_SURPLUS_BURN_AUTO', raising=False)
+    assert BP.auto_on() and BP.auto_min() == 25
+
+
+def test_a_round_starts_for_exactly_the_spare_above_the_reserve(db, rpc, auto):
+    ledger(db, 'claim', 100.0)                                      # 80 owed: creator, burn, gold
+    chain(rpc, usdg=700)
+    assert BP.release(rpc, db, T0) == 0.0                          # armed now, nothing due yet
+    p = BP.saved(db)
+    spare = 700 - T.owed_total(db) - BP.reserve_usd()
+    assert p['id'] == f'auto-{T0}' and p['total'] == pytest.approx(spare, abs=0.01) and p['days'] == 7
+    assert 'burn round started' in db.one("SELECT text FROM events ORDER BY id DESC LIMIT 1")['text']
+    assert BP.release(rpc, db, T0 + DAY) == pytest.approx(spare / 7, abs=0.01)
+    st = BP.status(db, T0 + DAY)
+    assert st['auto'] is True and st['state'] == 'releasing' and 'Whenever' in st['reason']
+
+
+def test_no_round_below_the_minimum_spare(db, rpc, auto):
+    chain(rpc, usdg=BP.reserve_usd() + 24)
+    assert BP.release(rpc, db, T0) == 0.0 and BP.saved(db) is None
+
+
+def test_a_round_runs_to_its_end_and_the_next_starts_from_new_spare(db, rpc, auto):
+    chain(rpc, usdg=500)
+    BP.release(rpc, db, T0)
+    first = BP.saved(db)
+    chain(rpc, usdg=5000)                                           # fees arrive mid-round: the round keeps its size
+    BP.release(rpc, db, T0 + 3 * DAY)
+    assert BP.saved(db)['id'] == first['id'] and BP.saved(db)['total'] == first['total']
+    BP.release(rpc, db, T0 + 7 * DAY)                               # released in full
+    settled_burn(db, first['total'], first['total'], pid=first['id'])   # and burned
+    BP.release(rpc, db, T0 + 8 * DAY)
+    nxt = BP.saved(db)
+    assert nxt['id'] == f'auto-{T0 + 8 * DAY}' and nxt['total'] > 0
+
+
+def test_no_round_while_a_manual_program_is_unfinished_even_paused(db, rpc, armed, monkeypatch):
+    chain(rpc, usdg=5000)
+    BP.release(rpc, db, T0)                                         # the manual program is armed
+    monkeypatch.setenv('WH_SURPLUS_BURN_USD', '0')                  # and paused
+    monkeypatch.setenv('WH_SURPLUS_BURN_AUTO', '1')
+    assert BP.release(rpc, db, T0 + DAY) == 0.0 and BP.saved(db)['id'] == 'surplus-1'
+
+
+def test_switching_rounds_off_pauses_a_running_round(db, rpc, auto, monkeypatch):
+    chain(rpc, usdg=500)
+    BP.release(rpc, db, T0)
+    monkeypatch.setenv('WH_SURPLUS_BURN_AUTO', '0')
+    assert BP.release(rpc, db, T0 + DAY) == 0.0 and BP.status(db, T0 + DAY)['state'] == 'paused'
+    monkeypatch.setenv('WH_SURPLUS_BURN_AUTO', '1')
+    assert BP.release(rpc, db, T0 + 2 * DAY) > 0
+
+
+# ---- the ETH a burn pays in gas ------------------------------------------------------------------------------------
+
+def test_a_burn_books_the_gas_of_its_approvals_and_its_swap(db, rpc, acct, live, monkeypatch):
+    burn_setup(db, rpc, monkeypatch)
+    plain = rpc.receipt_for
+
+    def with_gas(h):
+        rc = plain(h)
+        if rc:
+            rc = dict(rc, gasUsed=hex(100_000), effectiveGasPrice=hex(50_000_000))   # 0.000005 ETH each
+        return rc
+    rpc.receipt_for = with_gas
+    assert T.burn(rpc, db, acct)
+    b = rows(db, 'burn')[0]
+    assert b['gas_eth'] == pytest.approx(3 * 0.000005)                # two approvals and the swap
+    assert float(db.meta_get('burn_gas_carry')) == 0.0
+    assert T.summary(rpc, db)['burn_gas_eth'] == pytest.approx(0.000015)
+
+
+def test_approval_gas_waits_for_the_burn_it_belongs_to(db):
+    T.ensure_tables(db)
+    T.carry_burn_gas(db, {'gasUsed': hex(50_000), 'effectiveGasPrice': hex(40_000_000)})
+    T.carry_burn_gas(db, None)
+    assert float(db.meta_get('burn_gas_carry')) == pytest.approx(0.000002)
+    assert T.tx_fee_eth({'gasUsed': '0x10', 'effectiveGasPrice': '0x2', 'l1Fee': '0x4'}) == pytest.approx(36 / 1e18)
+    assert T.tx_fee_eth({}) == 0.0 and T.tx_fee_eth(None) == 0.0

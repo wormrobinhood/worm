@@ -181,6 +181,17 @@ Posting to X is manual on purpose: entries sit on the site with a copy button.
 
 ## Surplus burn program
 
+**Always on by default.** Whenever no program is running and the wallet holds at least $25
+(`WH_SURPLUS_BURN_AUTO_MIN_USD`) of USDG above every reservation and the 90-day reserve, the treasury starts a round
+named `auto-<start time>` for exactly that spare, over `WH_SURPLUS_BURN_DAYS` (7), released and burned like the program
+below. A round keeps its size to the end even if fees arrive meanwhile; the next round starts from whatever spare has
+built up since. `WH_SURPLUS_BURN_AUTO=0` switches rounds off (a running one pauses). The reserve includes gas for the
+burns: `WH_GAS_USD_DAY` is 0.35 (a burn's two approvals and swap measured about 0.000017 ETH, about $0.05, on
+2026-09-26), and every burn row records the ETH it paid (`gas_eth`, approvals included), summed publicly as
+`treasury.burn_gas_eth`.
+
+A manual program still works and takes the wallet first:
+
 The operator can send part of the treasury's surplus to the burn over a week instead of in one buy (one $249 buy
 moved the WORM/USDG pool about 14%). Set `WH_SURPLUS_BURN_USD=530` (and optionally `WH_SURPLUS_BURN_DAYS=7`) and
 redeploy. The first treasury cycle records the program in the database: its id (`WH_SURPLUS_BURN_ID`, default
