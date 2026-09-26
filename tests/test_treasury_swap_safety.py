@@ -8,7 +8,7 @@ from eth_abi import decode
 from wormhole import config as C, treasury as T, trader, tx, outbox
 from fakes import decode_tx, tx_hash, uint_result, word
 from test_treasury import (TOKEN, ALLOWANCE, P2_ALLOWANCE, QUOTE_SEL, QUOTE_V3_SEL,
-                           ledger, rows, pool, burn_chain, burn_receipts,
+                           ledger, rows, pool, burn_chain, burn_receipts, quoted_in,
                            gold_chain, gold_receipts, approval_reads)
 
 
@@ -71,11 +71,14 @@ def test_swap_uses_quote_refreshed_after_approval(kind, db, rpc, acct, live, mon
     observations = []
     def quote(params):
         observations.append(len(rpc.raw))
+        if kind == 'burn':      # the pool pays half as much once the approvals are mined, for any amount
+            per = 10**18 if not rpc.raw else 5*10**17
+            return uint_result(per * quoted_in(params) // 6_000_000, 100_000)
         amount = 10**18 if len(observations) == 1 else 5*10**17
-        return uint_result(amount, 100_000) if kind == 'burn' else uint_result(amount, 0, 0, 100_000)
+        return uint_result(amount, 0, 0, 100_000)
     rpc.eth_calls[QUOTE_SEL if kind == 'burn' else QUOTE_V3_SEL] = quote
     assert action(rpc, db, acct)
-    assert observations[0] == 0 and observations[1] > 0
+    assert observations[0] == 0 and observations[-1] > 0     # quoted before the approvals, and again after them
     data = decode_tx(rpc.raw[-1])['data']
     if kind == 'burn':
         _, inputs, deadline = decode(['bytes', 'bytes[]', 'uint256'], data[4:])
@@ -98,9 +101,9 @@ def test_refresh_failure_leaves_share_owed_without_swap(kind, failure, db, rpc, 
     monkeypatch.setattr(time, 'time', lambda: clock[0])
     calls = []
     def quote(params):
-        calls.append(1)
-        amount = 10**18
-        if len(calls) == 2:
+        amount = 10**18 * quoted_in(params) // 6_000_000 if kind == 'burn' else 10**18
+        if rpc.raw and not calls:           # the first quote after the approvals: the refresh
+            calls.append(1)
             if failure == 'rpc_error':
                 raise RuntimeError('private-provider-detail')
             if failure == 'zero': amount = 0

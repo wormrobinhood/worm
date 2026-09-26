@@ -149,10 +149,11 @@ def submit(rpc, db, acct, token, symbol, side, usd, quote, snapshot, approval_ex
 
 
 def _journaled_calldata():
-    """{keccak(calldata): hash} for every transaction in the private journal sent to the router."""
+    """{keccak(calldata): hash} for every transaction in the private journal sent to the router, leaving out
+    those the journal proves never executed (abandoned before broadcast, dropped for a used nonce)."""
     out = {}
     with outbox.journal() as j:
-        rows = j.execute('SELECT hash, raw FROM intents').fetchall()
+        rows = j.execute("SELECT hash, raw FROM intents WHERE state NOT IN ('abandoned','dropped')").fetchall()
     for r in rows:
         try:
             fields = rlp.decode(bytes.fromhex(r['raw'][2:]))

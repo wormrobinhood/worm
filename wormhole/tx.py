@@ -102,25 +102,118 @@ def wait_receipt(rpc, h, say, *, approval=False, poll_s=None):
     raise ReceiptPending(f"no settled receipt for {h} after {RECEIPT_WAIT_S}s; retained pending")
 
 
-def recover(rpc):
-    """Resume only durably prepared submissions. Unknown preparation blocks for operator review."""
+def recover(rpc, db=None):
+    """Settle, resend or resolve every unsettled intent from chain evidence (wormhole/intents.py), under the
+    sender lock. Returns True when nothing is left unsettled.
+
+    A 'ready' intent the node has never seen is resent as the same signed bytes. An intent the evidence
+    proves will never execute (abandoned before broadcast, or dropped because our own settled transaction
+    used its nonce) is closed, and its caller's bookkeeping is released by the caller's own reconcile. One
+    the evidence cannot settle is parked: it keeps blocking new sends and carries a note that private health
+    shows. A resend the node refuses is parked the same way instead of raising on every cycle; the way out is
+    the operator's cancel (scripts/resolve-intent.py --cancel). Without the bookkeeping database (db=None:
+    the launch paths) an interrupted preparation still stops everything, as before."""
+    from . import intents
     with sender_lock():
         finality.audit(rpc)
         unresolved = False
         for item in outbox.pending():
-            if item['state'] == 'preparing':
+            h = item['hash']
+            if item['state'] == 'preparing' and db is None:
                 raise RuntimeError('transaction preparation interrupted; inspect private outbox before continuing')
-            rc = finality.receipt(rpc, item['hash'], approval=item['receipt_mode']=='approval')
-            if rc:
-                outbox.state(item['hash'], 'settled')
-            else:
-                unresolved = True
-                mined = rpc.call('eth_getTransactionReceipt', [item['hash']])
-                if C.LIVE and not mined and not (C.DATA_DIR / 'payments.paused').exists():
-                    if item['sender'] != C.WALLET.lower():
-                        raise RuntimeError('outbox signer differs from configured wallet; operator review required')
-                    broadcast(rpc, item['raw'], item['hash'], log.info)
+            verdict, why = intents.assess(rpc, item, db)
+            if verdict == 'settled':
+                outbox.state(h, 'settled')
+                continue
+            if verdict in ('abandoned', 'dropped'):
+                if outbox.resolve(h, verdict, why):
+                    log.warning('transaction %s %s: %s', h, verdict, why)
+                continue
+            unresolved = True
+            if verdict == 'review':
+                if item['note'] != why:
+                    log.error('transaction %s parked for operator review: %s', h, why)
+                outbox.note(h, why)
+                continue
+            if verdict == 'mined' or not C.LIVE or (C.DATA_DIR / 'payments.paused').exists():
+                if item['note'] and verdict == 'mined':
+                    outbox.note(h, '')
+                continue
+            if item['sender'] != C.WALLET.lower():
+                raise RuntimeError('outbox signer differs from configured wallet; operator review required')
+            try:
+                broadcast(rpc, item['raw'], h, log.info)
+                if item['note']:
+                    outbox.note(h, '')
+            except RpcError as e:
+                # The node refused these exact bytes (nonce taken, underpriced, out of gas money). Resending
+                # them every cycle cannot help: keep the intent, say why, and wait for evidence or the operator.
+                why = 'resend refused by the node: ' + _refusal(str(e))
+                if item['note'] != why:
+                    log.error('transaction %s parked: %s', h, why)
+                outbox.note(h, why)
         return not unresolved
+
+
+def _refusal(msg):
+    """A short, secret-free name for a node's refusal: provider URLs and keys never reach the journal note."""
+    m = msg.lower()
+    for key, text in (('nonce already used', 'nonce already used by another transaction'),
+                      ('nonce too low', 'nonce too low'), ('underpriced', 'gas price too low to replace or enter the pool'),
+                      ('fee cap', 'gas price below the base fee'), ('base fee', 'gas price below the base fee'),
+                      ('insufficient funds', 'insufficient ETH for gas'), ('unconfirmed after', 'no answer from the node')):
+        if key in m:
+            return text
+    return 'rejected (see private logs)'
+
+
+def cancel(rpc, acct, h, say=None):
+    """Operator-only (scripts/resolve-intent.py --cancel): replace an unsettled intent that cannot go through
+    (refused resend, stuck under the base fee) with a zero-value transfer to our own wallet at the same nonce,
+    priced above both the original and the current gas price. Whichever of the two is mined, recovery then
+    proves the other never can be (its nonce used by our own known transaction) and closes it; the caller's
+    bookkeeping follows from the receipt. Refuses whenever the original may still be settled normally."""
+    say = say or log.info
+    if not C.LIVE:
+        raise RuntimeError("WH_LIVE=0: refusing to sign. Set WH_LIVE=1 to arm real transactions.")
+    if (C.DATA_DIR / 'payments.paused').exists():
+        raise RuntimeError('payments paused by operator')
+    frm = acct.address
+    with sender_lock():
+        finality.audit(rpc)
+        item = outbox.get(h)
+        if not item or item['state'] in outbox.DONE:
+            raise RuntimeError('no unsettled intent with that hash')
+        if item['sender'] != frm.lower() or frm.lower() != C.WALLET.lower():
+            raise RuntimeError('intent signer differs from this key or the configured wallet')
+        if rpc.call('eth_getTransactionReceipt', [h]):
+            raise RuntimeError('already mined: recovery settles it from its receipt')
+        nonce, old_price = outbox.fields(item['raw'])
+        if int(rpc.call('eth_getTransactionCount', [frm, 'latest']), 16) > nonce:
+            raise RuntimeError('its nonce is already used: recovery resolves it from the evidence')
+        if any(o['hash'] != h and o['state'] not in outbox.DONE and outbox.fields(o['raw'])[0] == nonce
+               and o['sender'] == frm.lower() for o in outbox.pending()):
+            raise RuntimeError('a replacement for this nonce is already in flight')
+        # A replacement must outbid the original by at least 10% to enter a node's pool.
+        gas_price = max(int(int(rpc.call("eth_gasPrice", []), 16) * 1.25), math.ceil(old_price * 1.25) + 1)
+        est = int(rpc.call("eth_estimateGas", [{"from": frm, "to": frm, "value": "0x0", "data": "0x"}]), 16)
+        gas = int(est * 1.3)
+        fee = gas * gas_price / 1e18
+        max_fee = float(os.environ.get('WH_MAX_TX_FEE_ETH', '0.002'))
+        daily_fee = float(os.environ.get('WH_MAX_DAILY_FEE_ETH', '0.01'))
+        if not (math.isfinite(fee) and 0 < max_fee <= daily_fee and fee <= max_fee and outbox.fees_today() + fee <= daily_fee):
+            raise RuntimeError('transaction exceeds configured ETH fee/value limits')
+        if int(rpc.call("eth_getBalance", [frm, "latest"]), 16) < gas * gas_price:
+            raise RuntimeError('insufficient ETH for the cancel')
+        signed = acct.sign_transaction({"to": to_checksum_address(frm), "value": 0, "data": "0x", "nonce": nonce,
+                                        "gasPrice": gas_price, "gas": gas, "chainId": C.CHAIN_ID})
+        raw, h2 = _hex(signed.raw_transaction), _hex(signed.hash)
+        mode = 'included' if finality.policy() == 'included' else 'finalized'
+        outbox.record(h2, frm, raw, fee, mode)
+        outbox.note(h2, f'cancels {h}')
+        outbox.state(h2, 'ready')
+        say(f"cancel {h2} for {h}: nonce {nonce} @ {gas_price / 1e9:.3f} gwei")
+        return broadcast(rpc, raw, h2, say)
 
 
 def send_tx(rpc, acct, to, data="0x", value=0, gas=None, gas_floor=None, wait=True, say=None, on_broadcast=None, min_remaining_eth=0.0, fee_limit_eth=None, valid_until=None, poll_s=None):

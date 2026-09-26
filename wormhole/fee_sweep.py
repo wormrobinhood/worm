@@ -74,8 +74,14 @@ def settle(db, row, receipt):
 
 def reconcile(rpc, db):
     ensure(db)
+    from . import outbox
     for row in db.q("SELECT * FROM fee_sweeps WHERE state='pending'"):
-        if not settle(db, row, finality.receipt(rpc, row['tx'])):
+        receipt = finality.receipt(rpc, row['tx'])
+        if not receipt and outbox.gone(row['tx']):
+            # The journal proves it never executes (tx.recover, from chain evidence): nothing was swept.
+            db.x("UPDATE fee_sweeps SET state='reverted' WHERE id=? AND state='pending'", (row['id'],))
+            continue
+        if not settle(db, row, receipt):
             return False
     return True
 

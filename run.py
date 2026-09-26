@@ -22,7 +22,7 @@ from wormhole import treasury as T
 from wormhole import voice, trader, compute, lab, advisor
 from wormhole import launch as L
 from wormhole.budget import projection
-from wormhole import readiness, tx, launch_schedule, runtime_health
+from wormhole import readiness, tx, launch_schedule, runtime_health, outbox
 from wormhole import watch as second_look
 from wormhole import crowd, linked
 import os
@@ -237,7 +237,10 @@ def main():
 
             # exits and bookkeeping run before entries; every stage is isolated so one failure cannot skip the rest
             try:
-                payments_ready = tx.recover(rpc)
+                payments_ready = tx.recover(rpc, db)
+                if not payments_ready and outbox.parked():
+                    # Parked, not failing: loud once an hour here, the detail in /api/ops/health.
+                    T._say_hourly(db, 'error', 'payments paused: a transaction needs operator review (scripts/resolve-intent.py)')
             except Exception as e:
                 payments_ready = False
                 log.error('payments paused: %s', e)
