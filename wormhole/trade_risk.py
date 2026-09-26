@@ -11,12 +11,18 @@ def loss_limit():
     return value
 
 
-def check(db, book='live', marks=None, *, latch=True):
+def check(db, book='live', marks=None, *, latch=True, scope=None):
+    """scope='usdg' (paper only): the breaker live would run, over the paper positions live could have held (a
+    USDG pool, not opened during an earlier pause), with its own pause. Second-look USDG entries answer to it so
+    that losses in ETH pools, which live never trades, do not pause the evidence live is judged on."""
     now = int(time.time())
-    key = 'loss_pause_until_' + book
+    key = 'loss_pause_until_' + book + ('_' + scope if scope else '')
     limit = loss_limit()
-    rows = (db.q("SELECT size_usd,realized_usd,qty_left,last_usd,entry_usd,status,closed_ts,execution_model,liquidation_usd,marked_ts FROM paper")
-            if book == 'paper' else db.q("SELECT size_usd,realized_usd,qty_left,entry_usd,status,closed_ts,token FROM positions WHERE mode=?", (book,)))
+    rows = (db.q("SELECT * FROM paper") if book == 'paper'
+            else db.q("SELECT size_usd,realized_usd,qty_left,entry_usd,status,closed_ts,token FROM positions WHERE mode=?", (book,)))
+    if scope == 'usdg':
+        from . import paper
+        rows = [r for r in rows if paper.live_comparable(r, strategy=False)]
     losses, unknown = 0.0, False
     for row in rows:
         if row['status'] != 'open' and (row['closed_ts'] or 0) < now - 86400:

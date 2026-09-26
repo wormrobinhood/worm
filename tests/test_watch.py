@@ -118,6 +118,19 @@ def test_a_failed_look_buys_nothing_and_says_why(db, chain, prices, metrics, why
     assert row["status"] == "watching" and why in row["note"] and json.loads(row["looks_done"]) == [30]
 
 
+def test_a_look_the_breaker_turns_away_is_recorded_and_still_followed_by_the_lab(db, chain):
+    import time
+    W.add(db, TOKEN, verdict(), "AAA", now=T0)
+    w = W.Watcher(None, db, P.Paper(db))
+    db.meta_set("loss_pause_until_paper_usdg", int(time.time()) + 3600)     # the USDG breaker live would run
+    walk(w, chain, TOKEN, [1.0 + 0.002 * (i % 7) for i in range(31)])
+    assert db.one("SELECT COUNT(*) n FROM paper")["n"] == 0
+    row = db.one("SELECT status, note FROM watch")
+    assert row["status"] == "watching" and "loss breaker paused entries" in row["note"]
+    assert db.one("SELECT strategy, pair, reason FROM paper_skips") == {"strategy": RULE["name"], "pair": "USDG", "reason": "loss breaker"}
+    assert db.one("SELECT COUNT(*) n FROM lab_cases WHERE token=?", (TOKEN,))["n"] == 1
+
+
 def test_a_later_look_can_still_buy(db, chain):
     W.add(db, TOKEN, verdict(), "AAA", now=T0)
     w = W.Watcher(None, db, P.Paper(db))

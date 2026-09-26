@@ -330,8 +330,13 @@ def _sample(rpc, db, paper, now, on_entry=None):
                 if ok:
                     entered = paper.enter(r["token"], r["symbol"], mid, rule["name"],
                                           f"{rule['name']} at {look} min: {f['ret_p0'] * 100:+.0f}% since the verdict",
-                                          features={k: (round(v, 6) if isinstance(v, float) else v) for k, v in f.items()})
-                    why = f"{rule['name']} entered" if entered else "book full or quote unavailable"
+                                          features={k: (round(v, 6) if isinstance(v, float) else v) for k, v in f.items()},
+                                          pool=pools[r["token"]])
+                    skipped = getattr(paper, "last_skip", None)
+                    why = (f"{rule['name']} entered" if entered else f"{rule['name']} passed; {skipped} paused entries"
+                           if skipped else "book full or quote unavailable")
+                    if skipped:
+                        _enroll(db, r, now, mid)   # what a turned-away candidate would have done stays measured (in the lab)
                     break
             db.x("UPDATE watch SET looks_done=?, status=?, note=? WHERE token=?",
                  (json.dumps(done), "entered" if entered else r["status"], f"look {look}: {why}", r["token"]))

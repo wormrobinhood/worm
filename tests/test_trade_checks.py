@@ -140,7 +140,7 @@ def semantic_code():
 # Re-pin ONLY after deciding the change leaves every fill, feature and exit exactly as it was. Otherwise bump
 # trade_checks.SEMANTICS (which voids every cohort in progress) and then re-pin. ast.dump output is stable within
 # one Python minor version: 3.11, as in the Dockerfile and CI; moving Python means re-pinning once.
-PINNED = {'semantics': 'paper-evidence-3', 'digest': 'a34f31a1afa727bfd98265e0d1bf53ea'}
+PINNED = {'semantics': 'paper-evidence-3', 'digest': 'f4e4e8cce23dbc3b0be4bc6f8d80a2b3'}
 
 
 def test_the_code_that_makes_evidence_is_pinned_to_its_semantics_version():

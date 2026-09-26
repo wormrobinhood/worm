@@ -417,3 +417,75 @@ def test_entry_shadow_is_frozen_without_vetoing_control_book(db, feed):
     decision = json.loads(p['entry_shadow'])
     assert p['status'] == 'open' and decision['decision'] == 'skip'
     assert decision['version'] == P.paper_research.FILTER_VERSION
+
+
+# ---- the loss breaker on second-look entries --------------------------------------------------------
+
+def pool_of(token, quote):
+    return {'token': token, 'c0': quote, 'c1': token, 'fee': 0, 'tick_spacing': 200, 'hooks': C.HOOK, 'quote': quote}
+
+
+def lost(db, token, quote, pnl, strategy='rule-a', closed=None, opened=None):
+    """A closed quoted position in a `quote` pool that lost `pnl`."""
+    import json
+    closed = closed or int(time.time()) - 60
+    db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,closed_ts,pnl_usd,realized_usd,execution_model,pool_key,strategy)"
+         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+         (token, 'L', opened or closed - 600, 1.0, 10.0, 10.0, 'closed', closed, pnl, 10.0 + pnl, 'quoted-pool-v2',
+          json.dumps(pool_of(token, quote)), strategy))
+
+
+def test_a_paused_breaker_turns_second_look_entries_away_and_records_them(db, feed):
+    pb = book(db)
+    db.meta_set('loss_pause_until_paper', int(time.time()) + 3600)
+    assert not pb.enter(TOKEN, 'AAA', 1.0, 'rule-a', 'second look', features={'snipe_pct': 1})
+    assert pb.last_skip == 'loss breaker'
+    assert db.one('SELECT COUNT(*) n FROM paper')['n'] == 0
+    skip = db.one('SELECT token,strategy,reason,reference FROM paper_skips')
+    assert skip == {'token': TOKEN, 'strategy': 'rule-a', 'reason': 'loss breaker', 'reference': 1.0}
+    db.meta_set('loss_pause_until_paper', 0)
+    assert pb.enter(TOKEN, 'AAA', 1.0, 'rule-a', 'second look') and pb.last_skip is None
+
+
+def test_eth_losses_do_not_pause_usdg_candidates_but_usdg_losses_do(db, feed):
+    pb = book(db)
+    lost(db, '0x' + 'e1' * 20, C.ZERO, -12.0)                 # the whole book is over its limit, in an ETH pool
+    assert not pb.enter(OTHER, 'BBB', 1.0, 'rule-a', 'eth candidate', pool=pool_of(OTHER, C.ZERO))
+    assert pb.enter(TOKEN, 'AAA', 1.0, 'rule-a', 'usdg candidate', pool=pool_of(TOKEN, C.USDG))   # live never saw that loss
+    lost(db, '0x' + 'e2' * 20, C.USDG, -11.0)
+    third = '0x' + 'cc' * 20
+    db.x("INSERT INTO launches(token,symbol) VALUES(?,?)", (third, 'CCC'))
+    feed[third] = 1.0
+    assert not pb.enter(third, 'CCC', 1.0, 'rule-a', 'usdg candidate', pool=pool_of(third, C.USDG))
+    assert [r['pair'] for r in db.q('SELECT pair FROM paper_skips ORDER BY id')] == ['ETH', 'USDG']
+
+
+def test_positions_opened_during_a_past_pause_are_flagged_not_deleted(db):
+    import json
+    now = int(time.time())
+    P.Paper(db)
+    db.meta_set('paper_pause_flags', '')                                     # a book from before the flag existed
+    lost(db, '0x' + 'e1' * 20, C.USDG, -6.0, closed=now - 20 * 3600)
+    lost(db, '0x' + 'e2' * 20, C.USDG, -5.0, closed=now - 19 * 3600)   # the day's losses reach $10 here
+    for i, opened in enumerate((now - 19.5 * 3600, now - 10 * 3600)):
+        token = '0x' + f'{i + 1:02x}' * 20
+        db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,execution_model,pool_key,strategy) VALUES(?,?,?,?,?,?,?,?,?,?)",
+             (token, 'X', int(opened), 1.0, 10.0, 10.0, 'open', 'quoted-pool-v2', json.dumps(pool_of(token, C.USDG)), 'rule-a'))
+    P.Paper(db)
+    flags = {r['token'][:4]: r['opened_in_pause'] for r in db.q("SELECT token,opened_in_pause FROM paper WHERE symbol='X'")}
+    assert flags == {'0x01': 0, '0x02': 1}
+    assert db.one("SELECT COUNT(*) n FROM paper")['n'] == 4                  # nothing deleted
+    row = db.one("SELECT * FROM paper WHERE token=?", ('0x' + '02' * 20,))
+    assert not P.live_comparable(row) and P.pair(row) == 'USDG'
+    db.x("UPDATE paper SET opened_in_pause=0 WHERE token=?", (row['token'],))
+    P.Paper(db)                                                              # the migration runs once
+    assert P.live_comparable(db.one("SELECT * FROM paper WHERE token=?", (row['token'],)))
+
+
+def test_the_rebuilt_pause_lasts_a_day_after_losses_fall_back():
+    from wormhole.db import DB
+    import tempfile, pathlib
+    db = DB(pathlib.Path(tempfile.mkdtemp()) / 't.db')
+    P.Paper(db)
+    lost(db, '0x' + 'e1' * 20, C.ZERO, -11.0, closed=1000)
+    assert P.pause_windows(db, 10.0) == [(1000, 1000 + 2 * 86400)]         # over the limit for a day, paused a day more
