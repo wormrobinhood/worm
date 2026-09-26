@@ -198,7 +198,7 @@ function renderPulse(s){
   el.dataset.built='1';
   const embers=Array.from({length:10},(_,k)=>`<i style="--a:${k*36+8}deg;--r:${46+(k%3)*3}%;--d:${(k*.17).toFixed(2)}s"></i>`).join('');
   el.innerHTML=`<div class="burn__main">
- <div class="orb" aria-hidden="true">
+ <div class="burn-orb" aria-hidden="true">
   <svg viewBox="0 0 200 200"><defs><linearGradient id="fire" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#ff6a2b"/><stop offset=".6" stop-color="#ffb25b"/><stop offset="1" stop-color="#ffe29a"/></linearGradient></defs>
    <circle cx="100" cy="100" r="88" class="orb__track"/><circle cx="100" cy="100" r="88" class="orb__arc" transform="rotate(-90 100 100)"/></svg>
   <div class="orb__embers">${embers}</div><div class="orb__burst"></div>
