@@ -115,13 +115,47 @@ def test_claim_amount_comes_from_the_escrow_log_then_the_share_is_forwarded(db, 
     assert texts == ["claimed 5.25 USDG of creator fees", f"forwarded {5.25 * S:.2f} USDG ({int(round(S * 100))}%) to the creator"]
 
 
-def test_claim_without_event_keeps_funds_reserved(db, rpc, acct, live):
+def test_claim_that_moved_no_usdg_is_closed_not_left_pending(db, rpc, acct, live):
+    """Status 0x1 with neither ClaimedToken nor any USDG Transfer to the wallet: a USDG balance cannot change
+    without a Transfer log, so nothing was paid. The row closes as claim_failed instead of blocking every cycle."""
     chain(rpc, claimable=5.0, usdg=50)
-    auto_receipts(rpc, C.WALLET)                             # status 0x1, no ClaimedToken log
+    auto_receipts(rpc, C.WALLET)                             # status 0x1, no ClaimedToken log, no transfer
     T.cycle(rpc, db, acct)
-    assert rows(db, 'claim') == []
-    assert len(rows(db, 'claim_pending')) == 1
-    assert T.free_usd(db, 50) == 0
+    assert rows(db, 'claim') == [] and rows(db, 'claim_pending') == []
+    failed = rows(db, 'claim_failed')
+    assert len(failed) == 1 and "the escrow paid nothing" in failed[0]["note"]
+    assert T.free_usd(db, 50) == 50.0 and abs(T.owed_to_owner(db)) < 1e-9
+    assert not db.meta_get("payment_review") or db.meta_get("payment_review") == "{}"
+
+
+def test_claim_without_event_is_settled_from_the_escrows_usdg_transfer(db, rpc, acct, live):
+    h = "0x" + "b1" * 32
+    ledger(db, "claim_pending", 5.0, tx=h, note="creator fees claimed from pons escrow")
+    rpc.receipts[h] = {"status": "0x1", "blockNumber": "0x10",
+                       "logs": [transfer_log(C.USDG, C.FEE_ESCROW, C.WALLET, 5_100_000)]}
+    chain(rpc, claimable=0, usdg=50)
+    auto_receipts(rpc, C.WALLET)
+    T.cycle(rpc, db, acct)
+    c = rows(db, "claim")
+    assert len(c) == 1 and c[0]["amount"] == 5.1 and "emitted no ClaimedToken" in c[0]["note"]
+    assert c[0]["owner_share"] == C.OWNER_SHARE                  # the split saved before submission is kept
+    assert transfer_in(rpc.raw[0]) == (OWNER, T.units(5.1 * S))  # and the cycle goes on: the creator is paid
+
+
+def test_claim_with_usdg_from_elsewhere_stays_reserved_and_is_surfaced(db, rpc, acct, live):
+    from types import SimpleNamespace
+    from wormhole import ops_health
+    h = "0x" + "b2" * 32
+    ledger(db, "claim_pending", 5.0, tx=h, note="creator fees claimed from pons escrow")
+    rpc.receipts[h] = {"status": "0x1", "blockNumber": "0x10",
+                       "logs": [transfer_log(C.USDG, "0x" + "99" * 20, C.WALLET, 5_000_000)]}
+    chain(rpc, claimable=0, usdg=50)
+    T.cycle(rpc, db, acct)
+    assert len(rows(db, "claim_pending")) == 1 and rows(db, "claim") == [] and rpc.raw == []
+    assert T.free_usd(db, 50) == 0                             # unknown claims still block spendable funds
+    st = ops_health.check(rpc, db, SimpleNamespace(), now=time.time())
+    assert "payment_evidence_incomplete" in {a["code"] for a in st["alerts"]}
+    assert [s["hash"] for s in st["stalled"]] == [h] and "another address" in st["stalled"][0]["reason"]
 
 
 def test_a_transfer_needs_its_transfer_log(db, rpc, acct, live):
@@ -247,9 +281,26 @@ def pool(db):
          (TOKEN, C.USDG, TOKEN, 10000, 200, C.HOOK, C.USDG))
 
 
+def quoted_in(params):
+    """The exact input of a v4 quoter call."""
+    return decode([trader.QUOTE_T], bytes.fromhex(params[0]["data"][10:]))[0][2]
+
+
+def linear_quote(out_tokens, per_units=6_000_000, impact=0.0):
+    """A quoter that pays out_tokens per 6 USDG: output in proportion to the input, like a deep pool (impact 0),
+    or with the slice's own price impact growing linearly with its size (impact at 6 USDG)."""
+    def quote(params):
+        n = quoted_in(params)
+        out = out_tokens * 10 ** 18 * n // per_units
+        if impact:
+            out = int(out * (1 - impact * n / per_units))
+        return uint_result(out, 100_000)
+    return quote
+
+
 def burn_chain(rpc, usdg=50.0, out_tokens=12_345, approved=False):
     chain(rpc, claimable=0, usdg=usdg)
-    rpc.eth_calls[QUOTE_SEL] = uint_result(out_tokens * 10 ** 18, 100_000)
+    rpc.eth_calls[QUOTE_SEL] = linear_quote(out_tokens)
     approval_reads(rpc, 6_000_000 if approved else 0,
                    6_000_000 if approved else 0, int(time.time()) + T.PERMIT_TTL_S if approved else 0)
 
@@ -457,13 +508,15 @@ def test_a_forward_is_reconciled_against_the_wallet_it_went_to(db, rpc, acct, li
     assert [r["kind"] for r in db.q("SELECT kind FROM ledger")] == ["forward"]
 
 
-def test_finish_rebuilds_a_row_the_broadcast_callback_failed_to_write(db, rpc, acct, live):
+def test_finish_never_invents_a_row(db, rpc, acct, live):
+    """send_tx broadcasts only after the pending row was written, so finish without one means the row was settled
+    elsewhere. The old fallback wrote a claim without its fee split and could reserve a payment twice; it is gone."""
     T.ensure_tables(db)
     h = "0x" + "dd" * 32
     rc = {"transactionHash": h, "status": "0x1", "blockNumber": "0x10", "logs": [transfer_log(C.USDG, C.WALLET, OWNER, 3_000_000)]}
-    kind, amount = T.finish(db, h, rc, C.WALLET, to=OWNER, fallback={"kind": "forward_pending", "amount": 3.0, "note": "n", "to_addr": OWNER})
-    assert kind == "forward" and amount == 3.0 and rows(db, "forward")[0]["tx"] == h
-    assert "rebuilt from the receipt" in db.one("SELECT text FROM events WHERE kind='error'")["text"]
+    assert T.finish(db, h, rc, C.WALLET, to=OWNER) == (None, None)
+    assert db.q("SELECT * FROM ledger") == []
+    assert "no pending ledger row" in db.one("SELECT text FROM events WHERE kind='error'")["text"]
 
 
 def test_owed_to_gold_accumulates_and_waits_for_the_minimum(db, rpc, acct, live):

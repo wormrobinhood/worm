@@ -173,9 +173,35 @@ Selected settings:
 | `WH_RESCAN_TOKEN` | lets a remote caller use `/api/rescan/<token>` by sending the header `X-Rescan-Token`; unset, only loopback clients may rescan (the queue is capped at 100 and an address is not queued twice within 10 minutes) |
 | `WH_MAX_POSITION_USD`, `WH_MAX_OPEN`, `WH_MAX_DAILY_USD` | trader limits (10, 5, 30); `WH_BUY_MIN_SCORE` (70) only applies to the legacy verdict-time paper entry |
 | `WH_OWNER_SHARE`, `WH_GOLD_SHARE`, `WH_BURN_SHARE` | of every claim of creator fees: forwarded to the creator (0.50), spent on tokenized gold kept as a reserve (0.10), spent buying $WORM on its pool and sending it to the burn address (0.20); the rest is operations |
+| `WH_BURN_MAX_USD`, `WH_BURN_EVERY_MIN`, `WH_MIN_BURN_USD` | burns are small and spaced: at most $25 a buy, at least 180 minutes plus a private random 0-50% between buys, nothing under $2 (25, 180, 2). Each buy is quoted first and shrunk until its own price impact is at most `WH_BURN_MAX_IMPACT` (0.02); it reverts below the quote minus `WH_BURN_SLIPPAGE` (0.02) |
+| `WH_SURPLUS_BURN_USD`, `WH_SURPLUS_BURN_DAYS`, `WH_SURPLUS_BURN_ID` | the surplus burn program (off: 0; 7 days; `surplus-1`): that many USDG of surplus released to the burn linearly over the days, never below the 90-day reserve and what is owed, frozen in the database once armed. See "Surplus burn program" below |
 | `WH_TRADING` | real-trading switch, off by default (0): the worm learns on paper until a strategy is proven there; on, the readiness gate, the paper cohort, the budget and the sell release gate still apply |
 
 Posting to X is manual on purpose: entries sit on the site with a copy button.
+
+## Surplus burn program
+
+The operator can send part of the treasury's surplus to the burn over a week instead of in one buy (one $249 buy
+moved the WORM/USDG pool about 14%). Set `WH_SURPLUS_BURN_USD=530` (and optionally `WH_SURPLUS_BURN_DAYS=7`) and
+redeploy. The first treasury cycle records the program in the database: its id (`WH_SURPLUS_BURN_ID`, default
+`surplus-1`), the amount, the length and the start. From then on:
+
+- At each burn opportunity the program releases `total x elapsed / days` minus what it already released, as a
+  `surplus_burn` ledger row that the burn owes; burns spend program money first and record how much of each buy
+  it was, so released, burned and still-owed are exact ledger sums.
+- A release never takes the wallet's USDG below every owed bucket and pending spend, the protected launch
+  allocation, gas refills and the 90-day runway reserve. When the wallet is short the program waits.
+- A restart or redeploy never restarts or re-counts it; editing the amount or the length does not change a
+  running program and never re-runs a finished one. `WH_SURPLUS_BURN_USD=0` pauses releases (released money is
+  still burned); setting it again resumes on the original schedule. A second program needs a new
+  `WH_SURPLUS_BURN_ID` and starts only after the first has released and burned everything.
+- The public snapshot shows `treasury.burn_program` (active, state, total, released, burned, the program's own
+  burns, the configured `interval_s`, start and end) and `treasury.burn_history` (the last 200 burns). It never
+  shows when the next burn or claim happens.
+
+With $530 over 7 days, about $75.71 is released a day. Burns come every 3 to 4.5 hours (about six a day), so a
+typical buy is $10-14 of program money plus the regular 20% share, never more than $25: roughly 45 buys over
+the week, each moving the ~$3.6k pool well under 1%.
 
 ## Roadmap
 

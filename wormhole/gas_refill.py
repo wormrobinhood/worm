@@ -81,7 +81,12 @@ def settle(db, row, rc):
 def reconcile(rpc, db):
     ensure(db)
     for row in db.q("SELECT * FROM gas_refills WHERE state='pending'"):
-        if not settle(db, row, finality.receipt(rpc, row['tx'])):
+        rc = finality.receipt(rpc, row['tx'])
+        if not rc and outbox.gone(row['tx']):
+            # The journal proves it never executes (tx.recover, from chain evidence): no USDG left for gas.
+            db.x("UPDATE gas_refills SET state='reverted' WHERE id=? AND state='pending'", (row['id'],))
+            continue
+        if not settle(db, row, rc):
             return False
     return True
 

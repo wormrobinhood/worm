@@ -601,3 +601,50 @@ curve was never swept, so only the skipped reads change; pending sweeps are stil
 Expected on first deploy: three hourly housekeeping runs forget ~150k launches, then the database file holds its size
 while launches, wallets and posts stay bounded; public-node metadata calls drop by ~22k a day; each open page receives
 roughly a tenth of the bytes. 826 offline tests pass.
+
+## September 26, 2026: surplus burn program, small spaced burns, stuck-payment recovery
+
+Local branch only; nothing pushed, deployed, signed or sent. Operator decisions implemented:
+
+- **Surplus burn program** (`wormhole/burn_program.py`). `WH_SURPLUS_BURN_USD` (0 = off), `WH_SURPLUS_BURN_DAYS`
+  (7), `WH_SURPLUS_BURN_ID` (`surplus-1`). Armed on the first treasury cycle that sees an amount: id, total, days
+  and start go to meta `burn_program` and are frozen. Releases are `surplus_burn` ledger rows tagged with the
+  program id, which `owed_to_burn` counts (the `trade_profit` pattern); burns spend program money first and
+  record it in the new ledger columns `program`, `program_usd`. Idempotency: restart/redeploy never restarts
+  or re-counts; an edited amount/length never changes a running program or re-runs a finished one; 0 pauses
+  releases, any amount resumes on the original schedule; an id is used once (meta `burn_program_ids`), and a new
+  id waits for the running program to be released and burned in full. A release never takes USDG below
+  `owed_total` (owed buckets, pending spends, launch allocation, gas refills) plus the 90-day runway reserve; when
+  short it waits. Releases happen at burn opportunities (one ledger row per burn instead of one per 5-minute tick).
+- **Small and often.** `burn_step` gates every burn on meta `burn_next_at` (private): `WH_BURN_EVERY_MIN` (180)
+  times 1-1.5, drawn per burn with `SystemRandom`, written with the pending row. `WH_BURN_MAX_USD` (25) caps a
+  slice, `WH_MIN_BURN_USD` default is now 2. Each slice is quoted against a reference buy of 1% of it (fees and tax
+  cancel) and shrunk until its impact is at most `WH_BURN_MAX_IMPACT` (0.02), else it waits; the refreshed quote
+  after the approvals is checked again. `BURN_SLIPPAGE` 3% -> 2% (`WH_BURN_SLIPPAGE`): the quote already includes
+  the hook fee and creator tax (the quoted round trip rises with the tax, 2026-09-19 section) and the slice's own
+  impact, so the tolerance only covers other swaps in the <=30 s between quote and signing; 2% of $25 caps a bad
+  fill at $0.50. Invalid burn knobs stop the process at start.
+- **Approvals unchanged, on purpose.** A standing Permit2 grant would make each burn one transaction, but the
+  existing, tested model is exact-amount approvals at both layers with a ten-minute Permit2 expiry, reducing
+  legacy grants. Keeping it costs two cheap approval transactions per burn (about 45 burns over the week).
+- **Public snapshot.** `treasury.claim_policy` no longer carries `next_claim_after` or `balance_since`;
+  `burn_state` says "burns a few times a day, in buys of at most $25". New: `burn_max_usd`, `burn_program`
+  {active, state, total_usd, released_usd, burned_usd, burned_qty, scheduled_usd, started_ts, ends_ts, days,
+  interval_s (configured spacing, not the next moment), reason, burns [{ts, usd, qty, tx}] (program part of each
+  slice)}, and `burn_history` (last 200 burns, oldest first). `web/docs.html` burn paragraph updated; the Live
+  page itself was not touched (another branch is redesigning it).
+- **Stuck payments** (`wormhole/intents.py`, `tx.recover(rpc, db)`, `scripts/resolve-intent.py`): (a) an intent
+  left `preparing` by a crash between the bookkeeping write and `ready` is closed as `abandoned` when the node
+  does not hold it; (b) an intent whose nonce was used by our own settled transaction is `dropped`; both release
+  their ledger/fee-sweep/gas-refill row as failed (owed again). A refused resend, a nonce used outside the journal
+  or a contradiction is parked (note in the journal, `transaction_parked` + `stalled` in `/api/ops/health`, an
+  hourly generic event) instead of raising every cycle. Operator: dry-run report, `--apply`, `--accept HASH`,
+  `--cancel HASH` (zero-value self-transfer at the nonce, `tx.cancel`). Launch/trade-owned intents are never
+  closed automatically; launch paths still stop on `preparing` (they pass no db). (c) A successful claim without
+  `ClaimedToken` settles from the escrow's USDG Transfer, or closes as `claim_failed` when no USDG reached the
+  wallet; USDG from elsewhere stays pending and raises `payment_evidence_incomplete`. (d) `finish`'s fallback
+  insert is removed (unreachable: the pending row is written before any broadcast).
+
+To arm the 7-day program: set `WH_SURPLUS_BURN_USD=530` (optionally `WH_SURPLUS_BURN_DAYS=7`) and redeploy.
+Tests: 845 offline (was 811); fixture quoters now scale with the input like the real quoter. Not verified
+against the chain: the quoter/hook-fee claim above rests on the 2026-09-19 measurements, not a new read.

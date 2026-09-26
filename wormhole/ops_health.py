@@ -10,7 +10,7 @@ log = logging.getLogger('wormhole.ops')
 
 def check(rpc, db, hub, now=None):
     now = time.time() if now is None else now
-    alerts = []
+    alerts, stalled = [], []
     def add(code, message):
         alerts.append({'code':code, 'message':message})
     from . import runtime_health
@@ -28,6 +28,13 @@ def check(rpc, db, hub, now=None):
         if outbox.finality_value('incident'):
             add('finality_changed','Accepted chain evidence changed. Payments require private operator review.')
         if any(r['state']=='preparing' or r['ts']<now-3600 for r in outbox.pending()):add('transaction_unresolved','A transaction needs reconciliation. Keep one signer and inspect its private journal.')
+        # What recovery could not settle from chain evidence, and why: parked transactions (tx.recover) and
+        # payments whose receipt lacks the evidence their bookkeeping needs (treasury.settle).
+        parked=outbox.parked()
+        if parked:add('transaction_parked','A transaction is parked for operator review. Run scripts/resolve-intent.py (dry run) for the evidence.')
+        review=json.loads(db.meta_get('payment_review') or '{}')
+        if review:add('payment_evidence_incomplete','A payment receipt lacks the evidence its bookkeeping needs; its funds stay reserved.')
+        stalled=[dict(p,source='journal') for p in parked]+[{'hash':h,'state':'pending','reason':v.get('reason',''),'since':v.get('since'),'source':'ledger'} for h,v in review.items()]
         if db.one("SELECT 1 FROM ledger WHERE kind LIKE '%_pending' AND ts<?", (now-3600,)):
             add('payment_unresolved','A payment has not settled within 60 minutes. Review its chain/provider evidence.')
         if db.one("SELECT 1 FROM fee_sweeps WHERE state='pending' AND ts<?", (now-3600,)) or db.one("SELECT 1 FROM gas_refills WHERE state='pending' AND ts<?", (now-3600,)):
@@ -52,7 +59,7 @@ def check(rpc, db, hub, now=None):
             add('operations_stale','The operations loop heartbeat is stale.')
     except Exception:
         add('health_unavailable','Operational status could not be verified. Inspect the service privately.')
-    return {'ok':not alerts,'checked_at':int(now),'alerts':alerts,'live':C.LIVE,'trading':C.TRADING}
+    return {'ok':not alerts,'checked_at':int(now),'alerts':alerts,'stalled':stalled,'live':C.LIVE,'trading':C.TRADING}
 
 
 def record(db, status):
