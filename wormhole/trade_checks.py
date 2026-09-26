@@ -2,10 +2,16 @@
 
 Quotes are observations, not guaranteed fills. No function in this module signs or sends.
 """
+import ast
+import copy
+import hashlib
 import json
 import math
 import os
+import sys
 import time
+from functools import lru_cache
+from pathlib import Path
 
 from . import config as C
 from .prices import eth_usd, eth_usd_cached, token_prices, usable_price
@@ -36,6 +42,58 @@ SEMANTICS = 'paper-evidence-3'
 GAS_UNITS_MARGIN = 1.3          # the swap's estimated gas units, padded
 APPROVAL_GAS_UNITS = 240_000    # two bounded approvals, charged on every swap even when an allowance could be reused
 GAS_PRICE_MARGIN = 1.25         # the node's gas price, padded
+
+
+@lru_cache(maxsize=None)
+def _tree(module):
+    return ast.parse((Path(__file__).parent / f'{module}.py').read_text())
+
+
+def _named(tree, name):
+    """The top-level function, `Class.method` or top-level assignment called `name`, or None."""
+    scope, _, attr = name.rpartition('.')
+    body = tree.body
+    if scope:
+        cls = next((n for n in body if isinstance(n, ast.ClassDef) and n.name == scope), None)
+        body = cls.body if cls else []
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == attr:
+            return node
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == attr for t in node.targets):
+            return node
+    return None
+
+
+def source_digest(tree, names):
+    """sha256 (128 bits) over the syntax of `names` in a parsed module, docstrings removed: blind to comments,
+    blank lines and wording, changed by any edit to what the code does (a renamed variable included)."""
+    h = hashlib.sha256(('python %d.%d' % sys.version_info[:2]).encode())   # ast.dump differs between Python versions
+    for name in names:
+        node = _named(tree, name)
+        if node is None:
+            raise ValueError(f'{name} not found: the evidence code list is out of date')
+        node = copy.deepcopy(node)
+        for n in ast.walk(node):
+            body = getattr(n, 'body', None)
+            if (isinstance(body, list) and body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str)):
+                n.body = body[1:] or [ast.Pass()]
+        h.update(name.encode() + b'\0' + ast.dump(node).encode())
+    return h.hexdigest()[:32]
+
+
+def code_digest(parts):
+    """source_digest of {module: names} read from the package's own files, never from the live objects, so a test
+    double or a runtime patch cannot change it. Computed at run time: nobody pins it by hand."""
+    return _code_digest(tuple(sorted((m, tuple(n)) for m, n in parts.items())))
+
+
+@lru_cache(maxsize=None)
+def _code_digest(parts):
+    h = hashlib.sha256()
+    for module, names in parts:
+        h.update(module.encode() + source_digest(_tree(module), names).encode())
+    return h.hexdigest()[:32]
 
 
 def evidence_spec():

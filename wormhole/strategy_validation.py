@@ -51,8 +51,21 @@ def frozen(rule):
         # A filtered rule freezes the rules it draws from and the filter's own thresholds: editing either voids it.
         rule = {**rule, 'bases': [r for r in watch.STRATEGIES if r['name'] in rule['of']],
                 'limits': [list(x) for x in paper_research.LIMITS], 'filter_version': paper_research.FILTER_VERSION}
-    return json.dumps({'entry': rule, 'exit': policy, 'arm': lab.DEFAULT,
+    return json.dumps({'entry': rule, 'exit': policy, 'arm': lab.DEFAULT, 'gate': gate_spec(),
                        'execution': execution.evidence_spec()}, sort_keys=True)
+
+
+# The code that decides membership, results, the bar and the verdict. Frozen with every trial: an edit to the gate
+# itself (a smaller cohort, a looser alpha, a different settlement) voids the cohorts it would judge, exactly like
+# an edit to the strategy, and costs their attempts once they were seen.
+GATE_CODE = {'strategy_validation': ('frozen', 'gate_spec', 'rules', '_sources', '_seen', 'attempt', 'stage', '_fresh',
+                                     'admit', 'settle', 'bound', 'evaluate', 'tick', '_view', 'summary'),
+             'watch': ('filtered_member',)}
+
+
+def gate_spec():
+    return {'cohort_n': COHORT_N, 'total_alpha': TOTAL_ALPHA, 'settlement_grace_s': SETTLEMENT_GRACE_S,
+            'valid_for': VALID_FOR, 'code': execution.code_digest(GATE_CODE)}
 
 
 def rules():

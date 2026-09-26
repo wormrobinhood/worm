@@ -257,6 +257,39 @@ def test_old_trials_migrate_without_passing_or_freeing_anything_seen(db):
     assert db.one("SELECT k FROM strategy_trials WHERE status='collecting'")['k'] == 3
 
 
+def test_an_edit_to_the_gate_itself_voids_the_cohort_it_would_judge(db, monkeypatch):
+    V.tick(db)
+    for i in range(30):
+        position(db, i, .5 + .001 * i)                       # 30 winners on the page
+    for i in range(30, 50):
+        position(db, i)                                      # 20 still open
+    V.tick(db)
+    spec = V.frozen(RULE)
+    for name, value in (('COHORT_N', 30), ('TOTAL_ALPHA', .5), ('SETTLEMENT_GRACE_S', 10 ** 6), ('VALID_FOR', 10 ** 9)):
+        with monkeypatch.context() as m:
+            m.setattr(V, name, value)
+            assert V.frozen(RULE) != spec, name
+    monkeypatch.setattr(V, 'COHORT_N', 30)                   # lower the bar after peeking ...
+    monkeypatch.setattr(V, 'TOTAL_ALPHA', .5)
+    V.tick(db)
+    rows = db.q("SELECT status,k,counted FROM strategy_trials ORDER BY id")
+    assert rows[0] == {'status': 'voided', 'k': 1, 'counted': 1}               # ... voids it, and the attempt stays spent
+    assert rows[1]['status'] == 'collecting' and rows[1]['k'] == 2 and not V.summary(db)['passed']
+
+
+def test_the_gate_code_is_in_the_frozen_spec():
+    from wormhole import trade_checks
+    import ast
+    src = (trade_checks.Path(V.__file__)).read_text()
+    names = V.GATE_CODE['strategy_validation']
+    base = trade_checks.source_digest(ast.parse(src), names)
+    commented = src.replace("def bound(values, z):\n", "def bound(values, z):\n    # a comment changes nothing\n")
+    assert commented != src and trade_checks.source_digest(ast.parse(commented), names) == base
+    looser = src.replace("passed = out['lcb'] > 0", "passed = out['lcb'] > -0.05")
+    assert looser != src and trade_checks.source_digest(ast.parse(looser), names) != base
+    assert json.loads(V.frozen(RULE))['gate']['code'] == trade_checks.code_digest(V.GATE_CODE)
+
+
 # ---- a filtered rule: another rule's entries that the frozen shadow filter kept ----------------------
 
 KEEP = {"name": "keep-a", "of": ["rule-a"], "filter": "entry-risk-shadow-v1", "decision": "keep"}
