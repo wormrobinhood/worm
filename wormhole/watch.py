@@ -74,8 +74,36 @@ STRATEGIES = [
                             {"feature": "moves_15m", "op": ">=", "value": 1}]},
 ]
 STRATEGY = STRATEGIES[0]           # the rule the summaries name first
+# Filtered rules buy nothing themselves: their members are the positions the rules named in `of` open whose entry
+# decision by a frozen shadow filter, recorded on the row before any outcome, was `decision`. They leave the rules
+# above exactly as they are (same entries, same cohorts) and get a cohort of their own under the same gate.
+#   shadow-keep-v1   (2026-09-26) any rule's entry that entry-risk-shadow-v1 (paper_research.LIMITS) would keep. Out of
+#            sample so far the 5 entries it kept all won (+$23.48) and the 18 it would skip lost $14.84; p about 0.01,
+#            but 5 trades and only 1 in a USDG pool. A hypothesis to be proven on 50 new USDG positions, nothing more.
+FILTERED = [{"name": "shadow-keep-v1", "of": ["quiet-v1", "runner-v1", "clean-crowd-v1", "holders-v1"],
+             "filter": "entry-risk-shadow-v1", "decision": "keep"}]
+
+
+def filtered_member(rule, row):
+    """Does the paper row (strategy, entry_shadow) belong to the filtered rule? Only a decision recorded at entry
+    by exactly this filter version counts; a row without one never does."""
+    if row.get("strategy") not in rule["of"]:
+        return False
+    try:
+        shadow = json.loads(row.get("entry_shadow") or "null") or {}
+    except (ValueError, TypeError):
+        return False
+    return shadow.get("version") == rule["filter"] and shadow.get("decision") == rule["decision"]
 SUPPLY = 1_000_000_000             # every Pons token: fully diluted value = price * supply
 OPS = {">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b}
+
+
+def evidence_constants():
+    """What decides when a look happens, what it measures and how often exits are checked: part of every paper
+    position's evidence spec (trade_checks.evidence_spec), so changing one voids the cohorts it affects."""
+    return {'fast_every_s': FAST_EVERY_S, 'sample_every_s': SAMPLE_EVERY_S, 'dead_below': DEAD_BELOW,
+            'dead_after_s': DEAD_AFTER_S, 'flow_retry_s': FLOW_RETRY_S, 'flow_window_s': FLOW_WINDOW_S,
+            'flow_cap': FLOW_CAP, 'max_tries': MAX_TRIES, 'supply': SUPPLY}
 
 
 def ensure_tables(db):
@@ -322,8 +350,13 @@ def _sample(rpc, db, paper, now, on_entry=None):
                 if ok:
                     entered = paper.enter(r["token"], r["symbol"], mid, rule["name"],
                                           f"{rule['name']} at {look} min: {f['ret_p0'] * 100:+.0f}% since the verdict",
-                                          features={k: (round(v, 6) if isinstance(v, float) else v) for k, v in f.items()})
-                    why = f"{rule['name']} entered" if entered else "book full or quote unavailable"
+                                          features={k: (round(v, 6) if isinstance(v, float) else v) for k, v in f.items()},
+                                          pool=pools[r["token"]])
+                    skipped = getattr(paper, "last_skip", None)
+                    why = (f"{rule['name']} entered" if entered else f"{rule['name']} passed; {skipped} paused entries"
+                           if skipped else "book full or quote unavailable")
+                    if skipped:
+                        _enroll(db, r, now, mid)   # what a turned-away candidate would have done stays measured (in the lab)
                     break
             db.x("UPDATE watch SET looks_done=?, status=?, note=? WHERE token=?",
                  (json.dumps(done), "entered" if entered else r["status"], f"look {look}: {why}", r["token"]))
@@ -340,15 +373,51 @@ def _sample(rpc, db, paper, now, on_entry=None):
 
 
 def _enroll(db, row, now, mid):
-    """The lab ranks exit rules on what the book really buys: a case from the entry, at the entry price."""
+    """The lab ranks exit rules on what the book really buys (or what a rule chose and the breaker turned away):
+    a case of its own from the entry (key token + lab.ENTRY), at the pool's mid, priced from that pool from here on
+    (sample_lab). The token's verdict case, priced from the API, is left exactly as it is and keeps being ranked:
+    removing the cases a rule picked would remove them by how they were doing."""
     lab.ensure_tables(db)
     try:
         m = json.loads(row["metrics"] or "{}")
+        pk = json.loads(row.get("pool_key") or "null") or {}
     except ValueError:
-        m = {}
-    db.x("INSERT OR IGNORE INTO lab_cases(token,symbol,score,verdict,t0,p0,status,cost,misses) VALUES(?,?,?,?,?,?,?,?,0)",
-         (row["token"], row["symbol"], m.get("score"), m.get("verdict"), now, mid, "active", lab.token_cost(db, row["token"])))
-    db.x("INSERT OR IGNORE INTO ticks(token,ts,price) VALUES(?,?,?)", (row["token"], now, mid))
+        m, pk = {}, {}
+    key = row["token"] + lab.ENTRY
+    if db.one("SELECT 1 FROM lab_cases WHERE token=?", (key,)):
+        return
+    held = db.one("SELECT gas_usd, size_usd FROM paper WHERE token=? AND status='open'", (row["token"],)) or {}
+    gas = held["gas_usd"] / held["size_usd"] if held.get("gas_usd") and held.get("size_usd") else None   # this entry's own
+    pair = "USDG" if pk.get("quote") == C.USDG else "ETH" if pk.get("quote") == C.ZERO else None
+    db.x("INSERT OR IGNORE INTO lab_cases(token,symbol,score,verdict,t0,p0,status,cost,misses,source,pool_key,pair,gas)"
+         " VALUES(?,?,?,?,?,?,?,?,0,'pool',?,?,?)",
+         (key, row["symbol"], m.get("score"), m.get("verdict"), now, mid, "active", lab.token_cost(db, row["token"]),
+          json.dumps(pk) if pk else None, pair, gas))
+    db.x("INSERT OR IGNORE INTO ticks(token,ts,price,src) VALUES(?,?,?,'pool')", (key, now, mid))
+
+
+def sample_lab(rpc, db, now):
+    """One pool reading a minute for every active lab case that began at a paper entry: its whole path comes from
+    the pool it would have been sold into, never the price API (lab.tick samples the others)."""
+    if not db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_cases'"):
+        return
+    pools, keys = {}, {}
+    for c in db.q("SELECT token, pool_key FROM lab_cases WHERE status='active' AND source='pool' AND pool_key IS NOT NULL"):
+        token = lab.case_token(c["token"])
+        try:
+            pk = json.loads(c["pool_key"])
+        except ValueError:
+            continue
+        if execution.verified(pk, token, execution.PAPER_QUOTES) and "fee" in pk:
+            pools[token], keys[token] = pk, c["token"]
+    if not pools:
+        return
+    try:
+        mids = poolstate.mids(rpc, pools, _eth())
+    except Exception as e:
+        log.info("lab pool sample failed: %s", e)
+        return                                     # a missed reading is a gap, never a guessed price
+    db.many("INSERT OR IGNORE INTO ticks(token,ts,price,src) VALUES(?,?,?,'pool')", [(keys[t], now, p) for t, p in mids.items() if p])
 
 
 class Watcher:
@@ -398,6 +467,7 @@ class Watcher:
             self.sampled = now
             _resolve_pools(self.rpc, self.db)
             _sample(self.rpc, self.db, self.paper, now, self.on_entry)
+            sample_lab(self.rpc, self.db, now)
             self.db.x("DELETE FROM watch_ticks WHERE ts<?", (now - KEEP_TICKS_S,))
             self.db.x("DELETE FROM watch WHERE t0<? AND status!='watching'", (now - KEEP_TICKS_S,))
 
@@ -407,6 +477,7 @@ def summary(db):
     day = int(time.time()) - 86400
     counts = {r["status"]: r["n"] for r in db.q("SELECT status, COUNT(*) n FROM watch WHERE t0>=? GROUP BY status", (day,))}
     return {"strategies": [{"name": rule["name"], "looks_min": rule["looks"]} for rule in STRATEGIES],
+            "filtered": [{"name": r["name"], "of": r["of"], "filter": r["filter"], "decision": r["decision"]} for r in FILTERED],
             "watching": counts.get("watching", 0) + counts.get("new", 0),
             "entered_24h": counts.get("entered", 0), "passed_over_24h": counts.get("done", 0),
             "unsupported_24h": counts.get("unsupported", 0),

@@ -99,7 +99,7 @@ def test_a_token_that_held_up_is_bought_once_with_quoted_acquisition_cost(db, ch
     assert row["status"] == "open" and row["strategy"] == W.STRATEGY["name"] and row["entry_usd"] == pytest.approx(prices[-1] * 1.02)
     assert row["policy"] == lab.DEFAULT
     assert db.one("SELECT status FROM watch")["status"] == "entered"
-    assert db.one("SELECT t0, p0 FROM lab_cases WHERE token=?", (TOKEN,)) == {"t0": now - 60, "p0": prices[-1]}
+    assert db.one("SELECT t0, p0 FROM lab_cases WHERE token=?", (TOKEN + lab.ENTRY,)) == {"t0": now - 60, "p0": prices[-1]}
     walk(w, chain, TOKEN, [1.0] * 40, start=now)                      # later looks never buy it again
     assert db.one("SELECT COUNT(*) n FROM paper")["n"] == 1
 
@@ -116,6 +116,40 @@ def test_a_failed_look_buys_nothing_and_says_why(db, chain, prices, metrics, why
     assert db.one("SELECT COUNT(*) n FROM paper")["n"] == 0
     row = db.one("SELECT status, note, looks_done FROM watch")
     assert row["status"] == "watching" and why in row["note"] and json.loads(row["looks_done"]) == [30]
+
+
+def test_a_look_the_breaker_turns_away_is_recorded_and_still_followed_by_the_lab(db, chain):
+    import time
+    W.add(db, TOKEN, verdict(), "AAA", now=T0)
+    w = W.Watcher(None, db, P.Paper(db))
+    db.meta_set("loss_pause_until_paper_usdg", int(time.time()) + 3600)     # the USDG breaker live would run
+    walk(w, chain, TOKEN, [1.0 + 0.002 * (i % 7) for i in range(31)])
+    assert db.one("SELECT COUNT(*) n FROM paper")["n"] == 0
+    row = db.one("SELECT status, note FROM watch")
+    assert row["status"] == "watching" and "loss breaker paused entries" in row["note"]
+    assert db.one("SELECT strategy, pair, reason FROM paper_skips") == {"strategy": RULE["name"], "pair": "USDG", "reason": "loss breaker"}
+    assert db.one("SELECT COUNT(*) n FROM lab_cases WHERE token=?", (TOKEN + lab.ENTRY,))["n"] == 1
+
+
+def test_an_entered_path_is_priced_from_its_pool_only(db, chain, monkeypatch):
+    lab.ensure_tables(db)
+    db.x("INSERT INTO lab_cases(token,symbol,t0,p0,status,source) VALUES(?,?,?,?,'active','api')", (TOKEN, "AAA", T0, 0.9))
+    db.x("INSERT INTO ticks(token,ts,price) VALUES(?,?,?)", (TOKEN, T0, 0.9))           # a verdict case from the price API
+    W.add(db, TOKEN, verdict(), "AAA", now=T0)
+    w = W.Watcher(None, db, P.Paper(db))
+    now = walk(w, chain, TOKEN, [1.0 + 0.002 * (i % 7) for i in range(31)])
+    entry = TOKEN + lab.ENTRY
+    c = db.one("SELECT t0, source, pair FROM lab_cases WHERE token=?", (entry,))
+    assert c == {"t0": now - 60, "source": "pool", "pair": "USDG"}                      # a case of its own ...
+    assert db.one("SELECT t0, source, status FROM lab_cases WHERE token=?", (TOKEN,)) == {"t0": T0, "source": "api", "status": "active"}
+    assert db.one("SELECT price FROM ticks WHERE token=? AND ts=?", (TOKEN, T0))["price"] == 0.9   # ... beside the verdict case, untouched
+    walk(w, chain, TOKEN, [1.3, 1.31], start=now)
+    assert [r["price"] for r in db.q("SELECT price FROM ticks WHERE token=? ORDER BY ts", (entry,))][-2:] == [1.3, 1.31]
+    assert not db.one("SELECT 1 FROM ticks WHERE token=? AND COALESCE(src,'')<>'pool'", (entry,))
+    assert not db.one("SELECT 1 FROM ticks WHERE token=? AND src='pool'", (TOKEN,))       # no pool reading in the API path
+    monkeypatch.setattr(lab, "token_prices", lambda addrs: {a: {"price_usd": 99.0} for a in addrs})
+    lab.tick(db)                                                                        # the price API never writes into it
+    assert not db.one("SELECT 1 FROM ticks WHERE token=? AND price=99.0", (entry,))
 
 
 def test_a_later_look_can_still_buy(db, chain):

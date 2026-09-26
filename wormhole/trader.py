@@ -227,15 +227,21 @@ def candidates(db, rules, limit=3):
         return []
     if "strategy" not in {r["name"] for r in db.q("PRAGMA table_info(paper)")}:
         return []
+    from . import watch
     now = int(time.time())
-    marks = ",".join("?" for _ in rules)
-    return [r for r in db.q("SELECT p.token, p.symbol, p.opened_ts, p.strategy FROM paper p"
+    # A filtered rule (watch.FILTERED) that passed admits its source rules' positions whose entry decision matched.
+    filtered = [f for f in watch.FILTERED if f["name"] in rules]
+    names = sorted(set(rules) | {n for f in filtered for n in f["of"]})
+    marks = ",".join("?" for _ in names)
+    rows = db.q("SELECT p.token, p.symbol, p.opened_ts, p.strategy, p.entry_shadow FROM paper p"
                 f" WHERE p.status='open' AND p.strategy IN ({marks}) AND p.opened_ts>=?"
                 " AND p.token NOT IN (SELECT token FROM positions)"
                 " AND p.token NOT IN (SELECT token FROM trades WHERE note IN ('PENDING','REVIEW') AND token IS NOT NULL)"
                 " AND p.token NOT IN (SELECT token FROM trade_intents WHERE status IS NOT NULL OR COALESCE(blocked_until,0)>?)"
-                " ORDER BY p.opened_ts DESC LIMIT ?", (*rules, now - live_trading.ENTRY_MAX_AGE_S, now, limit))
-            if not (C.TOKEN and r["token"].lower() == C.TOKEN)]          # never its own token
+                " ORDER BY p.opened_ts DESC", (*names, now - live_trading.ENTRY_MAX_AGE_S, now))
+    return [r for r in rows
+            if (r["strategy"] in rules or any(watch.filtered_member(f, r) for f in filtered))
+            and not (C.TOKEN and r["token"].lower() == C.TOKEN)][:limit]          # never its own token
 
 
 def remember_gate(runway, ready):

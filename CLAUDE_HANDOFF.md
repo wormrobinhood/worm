@@ -691,3 +691,75 @@ burn transactions pay be accounted for.
 - Tests: `tests/conftest.py` runs the suite with rounds off (`WH_SURPLUS_BURN_AUTO=0`); the new tests opt in. 872 pass.
 - On first deploy with the current treasury (~$661 USDG, ~$4 owed, $99 reserve) the first round would be about
   $555 over 7 days.
+
+
+## Honest paper evidence (2026-09-26, local branch, not deployed)
+
+Goal: make the paper evidence honest and able to reach a verdict. The gate is unchanged: 50 positions, the
+error budget and the lower-bound rule. Trading is also unchanged: WH_TRADING, LIVE_SELL_READY and the budget
+were not touched. The full write-up is in docs/PAPER-RESEARCH.md under "Honest evidence". There is one commit
+per fix.
+
+- **Live-comparable numbers** (`paper.pair`, `paper.live_comparable`, `Paper.summary`). A row is
+  live-comparable when it has a USDG pool, a second-look rule, quoted fills and `opened_in_pause=0`. The new
+  snapshot fields are `paper.live_comparable`, `paper.all_pools` (each with realized, count, wins, win_rate,
+  open_count and by_rule), `paper.filtered`, `paper.skipped`, `paper.risk_live_comparable`, and `pair` and
+  `live_comparable` on every open or closed row. The old top-level totals are unchanged.
+- **Fingerprint and attempts** (`trade_checks.evidence_spec`, `SEMANTICS='paper-evidence-3'`,
+  `watch.evidence_constants`, `strategy_validation.attempt/_seen/stage`, column `strategy_trials.counted`).
+  - The spec holds values, not file hashes, plus run-time digests of the code's syntax (comment- and
+    docstring-blind, read from the source files): `trade_checks.EVIDENCE_CODE` in `evidence_spec()['code']` and
+    `strategy_validation.GATE_CODE` in `frozen()['gate']` with the gate constants. Nothing is pinned by hand.
+    Keep both lists complete when adding code that picks, prices or judges positions.
+  - Why the new attempt rule cannot be gamed: a void costs its k once anything of the cohort was visible (a
+    member, or any position of its rule since the cutoff). A void before that returns the k. Counted
+    attempts keep distinct k values, so the budget still sums to at most 0.10.
+- **Breaker** (`Paper.enter(..., pool=)`, `trade_risk.check(scope='usdg')`, meta key
+  `loss_pause_until_paper_usdg`, table `paper_skips`, column `paper.opened_in_pause`, `paper.pause_windows`).
+  - USDG candidates answer to the USDG-scoped breaker. Others answer to the whole book's.
+  - Skips are recorded and the lab follows them. They are not cohort members: the pause is decided before
+    the candidate exists, so it cannot select on outcome.
+  - The pause flag is rebuilt once, on startup, from the whole-book breaker (meta `paper_pause_flags=v1`).
+- **Lab** (`lab.SIM_VERSION=2`, columns `lab_cases.source/pool_key/pair/gas/sim/gap_s`, tables
+  `lab_arms_usdg`, `lab_arms_v1`, `lab.resimulate`, `lab.paper_gas`, `watch.sample_lab`).
+  - Take-profits fill at their level. Every leg pays gas. A gain across a gap of more than 15 minutes is
+    capped at +100%.
+  - Paper-entry cases are priced from their pool every minute by the watcher, one batched storage read.
+  - Entry cases are keyed `token:entry` beside the untouched verdict case (no deletes). A v1 verdict case's entry-time pool tick is labelled `ticks.src='pool'` and excluded from its path; only unclear ones are 'mixed'. The advisor backtest uses the same path, gas and gap rule.
+  - `research_policy` is research only. `current_policy` is still the code default until a cohort passes.
+- **shadow-keep-v1** (`watch.FILTERED`, `watch.filtered_member`, `strategy_validation._sources`,
+  `trader.candidates`). It buys nothing. Its members are the four rules' USDG entries whose recorded
+  `entry-risk-shadow-v1` decision was keep. It gets its own cohort and its own k.
+- **Live parity**: `live_trading.pool_mid` passes the pool's fresh mid as the entry `reference`, for the quote
+  and for its refresh after approvals. For real money only, the mid must be within `MID_API_BAND` (15%) of a fresh
+  price-API reading when one exists, or the live entry is skipped (a thin pool can be pushed by one swap). Paper is
+  unchanged.
+- **Web**: the paper card shows "Could be traded for real · USDG pools" first, then "All pools, ETH included ·
+  learning only", then a per-rule table. The lab is marked "simulated, not traded" and shows the USDG ranking
+  first. Verified with Playwright on injected fields; the live snapshot does not have them yet.
+
+What the first deploy will do:
+- All four collecting trials are voided, because their frozen spec format changed:
+  - quiet-v1 had 2 members and keeps its k.
+  - The others keep theirs only if their rule opened positions since their cutoff (likely ETH ones).
+- New cohorts take the smallest free k. shadow-keep-v1 starts its first cohort.
+- Positions opened in past pauses are flagged. On the public snapshot, 20 of the last 30 closed trades
+  (including DURR, the only kept USDG trade) fall inside rebuilt whole-book pause windows.
+- The lab's v1 table moves aside and recent cases are re-simulated, 40 per tick.
+
+Honest numbers from the public snapshot's last 30 closed trades (older rows are not in the snapshot):
+- All pools: 30 closed, +$4.72, 40% won.
+- Live-comparable: 2 closed (WIF +$0.79, CDS -$2.93), -$2.14.
+- DURR (+$2.85, USDG) is excluded as opened in a pause. Under the USDG-scoped rule used from now on it would
+  count: 3 closed, +$0.71.
+- shadow-keep-v1 on history: 5 kept, all won, +$23.48, none live-comparable.
+- Whole book: -$45.09 over 117.
+
+Risks and open points:
+- The USDG breaker is new, so USDG entries continue while ETH losses pause ETH entries. Throughput for the
+  USDG cohort is still only 3 of the last 30 trades, so a verdict needs many weeks.
+- The historical pause flag and the forward breaker use different scopes. The historical flag is the stricter
+  one, on purpose.
+- The code digests depend on the Python minor version (3.11 in the Dockerfile and CI): moving Python voids
+  every cohort once.
+- Tests: 903 pass (872 before).

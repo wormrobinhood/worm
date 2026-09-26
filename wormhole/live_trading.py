@@ -15,9 +15,10 @@ from decimal import Decimal
 import rlp
 from eth_abi import encode
 from eth_utils import keccak
-from . import config as C, finality, lab, outbox, strategy_validation, trade_checks as execution, trade_risk
+from . import config as C, finality, lab, outbox, poolstate, strategy_validation, trade_checks as execution, trade_risk
 from .chain import call_fn, selector, addr_from_topic
 from .pons import TRANSFER
+from .prices import token_prices, usable_price
 from .tx import send_tx
 
 ENTRY_MAX_AGE_S = 120         # a paper entry older than this is no longer the same trade
@@ -25,6 +26,7 @@ TRADE_POLL_S = 1.0            # receipts of trading transactions are polled this
 EXIT_APPROVAL_S = 49 * 3600   # a position's standing sell approval outlives the longest holding period
 UNSENT_AFTER_S = 60           # an order with no stored hash is matched against the journal after this long
 RETRY_UNSENT_S = 20           # a sell that was refused before signing is tried again after this long
+MID_API_BAND = 0.15           # a live entry's pool mid must sit within this of the price API's, when it has one
 
 
 def budget_usd():
@@ -200,6 +202,24 @@ def liquidation_marks(rpc, db):
     return marks
 
 
+def pool_mid(rpc, pk, token):
+    """The pool's mid at the latest block (poolstate: one storage read), the reference the paper book's entry
+    used. Raises when the node does not answer: no order is measured against a guess. For real money the pool is
+    also checked against an independent reading: when the price API has a fresh price and the two disagree by
+    more than MID_API_BAND, the pool may be mid-manipulation (one swap moves a thin pool) and nothing is bought.
+    No API price is no veto: the pool's own quote still has to pass every check in trade_checks.entry."""
+    mid = poolstate.mids(rpc, {token: pk}, None).get(token)     # a USDG pool: no ETH price needed
+    if not mid:
+        raise ValueError('pool price unavailable')
+    try:
+        api = usable_price(token_prices([token]).get(token))
+    except Exception:
+        api = None
+    if api and abs(mid / api - 1) > MID_API_BAND:
+        raise ValueError('pool price and price API disagree')
+    return mid
+
+
 def decide(rpc, db, runway, acct, ready):
     """Buy what the paper book has just bought, when every gate is open: the policy switch, the sell release
     gate, readiness, a fresh paper-cohort pass for that entry rule, real surplus, no unresolved order, the
@@ -221,21 +241,24 @@ def decide(rpc, db, runway, acct, ready):
     policy, _ = lab.parse_arm(validation['arm'])
     for r in trader.candidates(db, validation.get('passed_rules') or []):
         try:
-            execution.pool(rpc, db, r['token'])
+            pk = execution.pool(rpc, db, r['token'])
         except Exception:
             # Not a verified USDG pool: outside the pilot, and not worth a line in the log every cycle.
             db.x("INSERT OR REPLACE INTO trade_intents(token,arm,scored_at,status) VALUES(?,?,?,'unsupported')",
                  (r['token'], validation['arm'], r['opened_ts']))
             continue
         try:
-            quote = execution.entry(rpc, db, r['token'], size)
+            # The impact check measures against the pool's own mid, read now, as the paper entry it follows did;
+            # the price API lags a thin pool and would judge the same quote differently.
+            quote = execution.entry(rpc, db, r['token'], size, reference=pool_mid(rpc, pk, r['token']))
             balance = call_fn(rpc, C.USDG, 'balanceOf(address)', ['uint256'], ['address'], [C.WALLET])[0]
             if balance < quote['amount_raw']:
                 continue
             attempt = db.insert('INSERT INTO trade_attempts(ts,token,side,gas_usd) VALUES(?,?,?,?)',
                                 (int(time.time()), r['token'], 'buy', quote['gas_usd']))
             expiry = approve_exact(rpc, acct, C.USDG, quote['amount_raw'])
-            quote = execution.entry(rpc, db, r['token'], size)  # approvals may take time; refresh both directions
+            # approvals may take time; refresh both directions, and the mid they are measured against
+            quote = execution.entry(rpc, db, r['token'], size, reference=pool_mid(rpc, pk, r['token']))
             tid = submit(rpc, db, acct, r['token'], r['symbol'], 'buy', size, quote,
                    {'arm': validation['arm'], 'policy': policy, 'rule': r['strategy']}, expiry)
             db.x('UPDATE trade_attempts SET trade_id=? WHERE id=?', (tid, attempt))

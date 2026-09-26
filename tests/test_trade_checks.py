@@ -1,3 +1,6 @@
+import ast
+import json
+import pathlib
 import time
 import pytest
 from wormhole import config as C, trade_checks as E, trader
@@ -102,3 +105,73 @@ def test_cached_paper_exit_uses_no_price_refresh_and_charges_gas(db, quotes, mon
     monkeypatch.setattr(E, 'eth_usd_cached', lambda: None)
     with pytest.raises(ValueError, match='cached'):
         E.exit_quote(Gas(), pk, token, 10**21, cached_prices=True)
+
+
+# ---- the evidence fingerprint -------------------------------------------------------------------
+
+def source(module):
+    return (pathlib.Path(E.__file__).parent / f'{module}.py').read_text()
+
+
+@pytest.mark.parametrize('module,name,comment_at,logic_from,logic_to', [
+    ('paper', 'Paper.enter', "            arm = lab.pick_arm(self.db)\n",
+     "risk = trade_risk.check(self.db, 'paper', scope='usdg' if usdg else None)", "risk = {'allowed': True}"),
+    ('trade_risk', 'check', "    losses, unknown = 0.0, False\n", "losses < limit and now >= until", "losses <= limit and now >= until"),
+    ('paper_research', 'LIMITS', None, "('fleet_pct', '<=', 20)", "('fleet_pct', '<=', 25)"),
+    ('trade_checks', 'entry', "    minimum = out * 9700 // 10000\n", "minimum = out * 9700 // 10000", "minimum = out * 9600 // 10000"),
+])
+def test_a_comment_leaves_the_evidence_digest_alone_and_a_logic_edit_moves_it(module, name, comment_at, logic_from, logic_to):
+    src = source(module)
+    assert name in E.EVIDENCE_CODE[module]
+    base = E.source_digest(ast.parse(src), E.EVIDENCE_CODE[module])
+    if comment_at:
+        assert comment_at in src
+        commented = src.replace(comment_at, comment_at + comment_at[:len(comment_at) - len(comment_at.lstrip())] + '# only a comment\n', 1)
+        assert E.source_digest(ast.parse(commented), E.EVIDENCE_CODE[module]) == base
+    assert logic_from in src
+    assert E.source_digest(ast.parse(src.replace(logic_from, logic_to, 1)), E.EVIDENCE_CODE[module]) != base
+
+
+def test_a_docstring_edit_leaves_the_digest_alone():
+    src = source('trade_checks')
+    old = '"""The shared paper/live exit reference. Gas is accounted for separately in cashflows."""'
+    assert old in src
+    assert E.source_digest(ast.parse(src.replace(old, '"""Reworded."""')), ('entry_basis',)) == \
+        E.source_digest(ast.parse(src), ('entry_basis',))
+
+
+def test_the_evidence_spec_carries_the_code_digest_and_ignores_runtime_patches(monkeypatch):
+    from wormhole import paper, trade_risk
+    spec = E.evidence_spec()
+    assert spec['code'] == E.code_digest(E.EVIDENCE_CODE) and len(spec['code']) == 32
+    assert spec['exit_tolerance_retry'] == E.EXIT_TOLERANCE_RETRY and spec['paper_quotes'] == list(E.PAPER_QUOTES)
+    monkeypatch.setattr(E, 'entry', lambda *a, **k: {})                 # a test double is not an edit
+    monkeypatch.setattr(trade_risk, 'check', lambda *a, **k: {'allowed': True})
+    monkeypatch.setattr(paper.Paper, 'enter', lambda *a, **k: True)
+    assert E.evidence_spec() == spec
+    with pytest.raises(ValueError, match='out of date'):
+        E.code_digest({'paper': ('Paper.no_such_method',)})
+
+
+def test_the_evidence_spec_moves_with_every_parameter(monkeypatch):
+    from wormhole import lab, strategy_validation as V, watch
+    rule = watch.STRATEGIES[0]
+    frozen = V.frozen(rule)
+    assert V.frozen(rule) == frozen and json.loads(frozen)['execution'] == E.evidence_spec()
+    for obj, name, value in ((E, 'PAPER_FILL', .02), (E, 'APPROVAL_GAS_UNITS', 250_000), (E, 'SEMANTICS', 'x'),
+                             (E, 'EXIT_TOLERANCE_RETRY', .2), (E, 'PAPER_QUOTES', (C.USDG,)),
+                             (watch, 'FLOW_WINDOW_S', 600), (watch, 'FAST_EVERY_S', 30), (C, 'PAPER_SIZE_USD', 20.0)):
+        with monkeypatch.context() as m:
+            m.setattr(obj, name, value)
+            assert V.frozen(rule) != frozen, name
+    with monkeypatch.context() as m:
+        m.setenv('WH_MAX_DAILY_LOSS_USD', '20')
+        assert V.frozen(rule) != frozen
+    with monkeypatch.context() as m:
+        m.setitem(lab.POLICIES, lab.DEFAULT.split('@')[0], {**lab.parse_arm(lab.DEFAULT)[0], 'stop': -.25})
+        assert V.frozen(rule) != frozen
+    changed = {**rule, 'conditions': [dict(c) for c in rule['conditions']]}
+    changed['conditions'][0]['value'] += 1
+    assert V.frozen(changed) != frozen
+
+
