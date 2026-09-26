@@ -541,3 +541,24 @@ The trading-readiness catch-up flag also accounts for the gap between the commit
 Operational follow-up: the recovery-only payment pause was removed after verifying the unchanged settled journal and recovered workers; trading remains off. Storage and chain-head freshness recovered: two final checks were 42 then 23 blocks behind the moving head, with healthy responses and fresh checkpoints. Historical scoring jobs remain queued and are being processed. Do not infer complete chain freshness from the completed startup phase alone. Synchronous token-metadata reads remain a latency limitation in the unchanged production code.
 
 Optional token metadata now uses a shared 15-second network budget and pair-symbol discovery 10 seconds, with at most five seconds per request and no retry amplification. Missing reads remain unknown and existing values are preserved. The bounded batch path accepts only eth_call and is not used for signing or receipt recovery. Timeout, rate-limit, partial-response and method-restriction checks are included in the test count above. This local fix has not been applied to the delayed production metadata path.
+
+## September 26, 2026: web revamp (local, not deployed)
+
+Front end only; no Python changed. `web/design.css` is now the one stylesheet (cascade layers: tokens, base,
+layout, components, views, motion, utilities; the prototype's tokens verbatim; `!important` only in the
+motion-off rule and `[hidden]`). The inline style in `index.html` is gone. `index.html` holds the markup
+(header, bottom tab bar under 768 px, four `<section class="view">` containers switched by the hash, honesty
+footer) and the engine script (worm, rain, scout, live dig, vision chart, `load()`/`connect()`). `design.js`
+holds one `render(state)` that draws every view with key-guarded, build-once renderers, plus the router
+(`#learning/report`, `#treasury/burn`, `#learning/paper` sub-anchors), count-ups, reveals, reading-position
+preservation, the brain (built once, moved between Live and Learning), the burn band and the surplus-burn
+week. The docs page links `design.css` for the shared header; its own styles sit in `@layer docs` between
+base and layout.
+
+Surplus-burn week: renders from `treasury.burn_program` (`active`, `total_usd`, `released_usd`,
+`burned_usd`, `burned_qty`, `started_ts`, `ends_ts`, `days`, `interval_s`, `reason`, `burns[]`),
+`treasury.burn_max_usd` and `treasury.burn_history[]` when present; otherwise the regular "next burn" meter.
+No next-burn time is ever shown; planned marks are an even, unlabelled schedule from `interval_s`. Verified
+only with injected data. Derived client-side for now: "got it wrong" cards (from `brain.outcomes`, lessons
+and the feed), the base rate (readiness accuracy `base_rate_pct`), plain rule names (a map in `design.js`),
+the 1e9 supply and the stage floors. Motion choice persists in `localStorage['worm.motion']`.
