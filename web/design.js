@@ -166,7 +166,7 @@ function detectEvents(s){
 function toast(html,where){const host=where||$('#toasts'),t=document.createElement('div');t.className='toast';t.innerHTML=html;host.append(t);setTimeout(()=>{t.classList.add('is-out');setTimeout(()=>t.remove(),400)},6000)}
 function burnLanded(s,delta){
  const last=allBurns(s).pop(),url=last&&txUrl(s,last.tx);
- const msg=`<span class="toast__fire" aria-hidden="true"></span><span>+${fmt.qty(delta)} $WORM burned${last&&last.usd?' for '+fmt.usd(last.usd,{cents:true}):''}</span>${url?`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">tx ↗</a>`:''}`;
+ const msg=`<span class="toast__fire" aria-hidden="true"></span><span>+${fmt.qty(delta)} $WORM burned${last&&last.usd?' for '+fmt.usd(last.usd,{cents:true}):''}</span>${url?`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">tx</a>`:''}`;
  const band=$('#pulse');
  if(view==='overview'&&band&&band.dataset.built)toast(msg,band.querySelector('.burn__toasts'));else toast(msg);
  hood.ember=performance.now();
@@ -209,7 +209,7 @@ function renderPulse(s){
   <h2 class="burn__num" id="pulse-title"><b data-n="qty">0</b> <em>$WORM</em></h2>
   <p class="burn__lede">bought back with <b data-n="usd">$0</b> of the fees it earned, and sent where no one can ever touch it.<span class="burn__owed" data-t="owed"></span></p>
   <div class="burn__slot"></div>
-  <p class="burn__last" hidden><span></span> <a class="hit" target="_blank" rel="noopener noreferrer">see the transaction ↗</a></p>
+  <p class="burn__last" hidden><span></span> <a class="hit" target="_blank" rel="noopener noreferrer">see the transaction</a></p>
   <div class="burn__toasts" role="status" aria-live="polite"></div>
  </div>
 </div>
@@ -218,7 +218,7 @@ function renderPulse(s){
  <div class="w-stat"><span class="label">Gold reserve</span><span class="w-stat__value" data-n="gold">$0</span><span class="w-stat__note">10% of every claim, held</span></div>
  <div class="w-stat"><span class="label">Runway</span><span class="w-stat__value"><span data-n="days">0</span><small>days</small></span><span class="w-stat__note" data-t="runway"></span></div>
  <div class="w-stat"><span class="label">Trading</span><span class="w-stat__value w-stat__value--word" data-t="trade">Paper only</span><span class="w-meter w-meter--quiet"><i data-m="ready"></i></span><span class="w-stat__note" data-t="tradeNote"></span></div>
- <a class="burn__more" href="#treasury">Where every dollar goes <span aria-hidden="true">→</span></a>
+ <a class="burn__more" href="#treasury">Where every dollar goes</a>
 </div>`;
  }
  const q=k=>el.querySelector(`[data-n="${k}"]`),t=k=>el.querySelector(`[data-t="${k}"]`);
@@ -265,7 +265,7 @@ function weekTrack(id,s,bp,o){
  const perDay=big?Array.from({length:days},(_,d)=>burns.filter(b=>b.ts>=start+d*86400&&b.ts<start+(d+1)*86400).reduce((a,b)=>a+b.usd,0)):null;
  const summary=`Surplus burn week: ${burns.length} small burns so far, ${fmt.usd(bp.burned_usd)} of ${fmt.usd(bp.total_usd)} burned, ${active?'ends':'ended'} ${fmt.utc(end)}. Use the arrow keys to read each burn.`;
  const head=active?`<span class="week__title">Surplus burn week</span><span><b>${fmt.usd(bp.burned_usd)}</b> of ${fmt.usd(bp.total_usd)} burned · day ${day} of ${days}</span>`
-  :`<span class="week__title">Surplus burn week complete</span><span><b>${fmt.usd(bp.burned_usd||bp.total_usd)}</b> → ${fmt.qty(burnedQty)} $WORM</span>`;
+  :`<span class="week__title">Surplus burn week complete</span><span><b>${fmt.usd(bp.burned_usd||bp.total_usd)}</b> burned ${fmt.qty(burnedQty)} $WORM</span>`;
  return `<div class="week${big?' week--big':''}">
  ${o.noHead?'':`<div class="week__head">${head}</div>`}
  <div class="week__wrap"><div class="week__track" id="${id}" tabindex="0" role="group" aria-roledescription="burn timeline" aria-label="${esc(summary)}">
@@ -287,7 +287,7 @@ function historyTrack(id,s,burns){
 /* the tooltip: hover, tap or arrow keys pick the nearest burn */
 function tipShow(track,i){const d=trackData[track.id];if(!d||!d.burns.length)return;i=Math.max(0,Math.min(d.burns.length-1,i));track._i=i;const b=d.burns[i],tip=track.parentElement.querySelector('.spark-tip'),u=txUrl(lastState||{},b.tx);
  track.querySelectorAll('.spark.is-on').forEach(x=>x.classList.remove('is-on'));const sp=track.querySelector(`.spark[data-i="${i}"]`);if(sp)sp.classList.add('is-on');
- tip.innerHTML=`<b>${fmt.utc(b.ts)}</b><span>${fmt.usd(b.usd,{cents:true})}${b.qty?` → ${fmt.qty(b.qty)} $WORM`:''}</span>${u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">tx ↗</a>`:''}`;
+ tip.innerHTML=`<b>${fmt.utc(b.ts)}</b><span>${fmt.usd(b.usd,{cents:true})}${b.qty?` for ${fmt.qty(b.qty)} $WORM`:''}</span>${u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">tx</a>`:''}`;
  tip.hidden=false;const W=track.clientWidth,left=Math.max(0,Math.min(W-tip.offsetWidth,W*(b.ts-d.start)/d.span-tip.offsetWidth/2));tip.style.left=left+'px'}
 function tipHide(track){const tip=track.parentElement.querySelector('.spark-tip');if(tip&&!tip.matches(':hover'))tip.hidden=true;track.querySelectorAll('.spark.is-on').forEach(x=>x.classList.remove('is-on'))}
 function nearest(track,clientX){const d=trackData[track.id];if(!d||!d.burns.length)return -1;const r=track.getBoundingClientRect(),ts=d.start+d.span*(clientX-r.left)/r.width;let best=0;d.burns.forEach((b,i)=>{if(Math.abs(b.ts-ts)<Math.abs(d.burns[best].ts-ts))best=i});
@@ -357,7 +357,7 @@ function renderMindLive(s){
  <div class="w-stat w-stat--l"><span class="label">Warnings that came true</span><span class="w-stat__value"><span data-n="called">0</span><small data-t="checked"></small></span><span class="w-stat__note" data-t="calledNote"></span></div>
  <div class="w-stat w-stat--l"><span class="label">Healthy calls that went wrong</span><span class="w-stat__value neg"><span data-n="missed">0</span><small data-t="hc"></small></span><span class="w-stat__note">shown on purpose: the misses count as much as the hits</span></div>
  <div class="w-stat w-stat--l"><span class="label">Trading</span><span class="w-stat__value w-stat__value--word" data-t="trade">Paper only</span><span class="w-meter"><i data-m="ready"></i></span><span class="w-stat__note" data-t="readyNote"></span></div>
- <a class="w-btn w-btn--secondary" href="#learning">See how it learns <span aria-hidden="true">→</span></a>`}
+ <a class="w-btn w-btn--secondary" href="#learning">See how it learns</a>`}
  setNum(el.querySelector('[data-n="called"]'),sc.called,fmt.int);setNum(el.querySelector('[data-n="missed"]'),sc.missed,fmt.int);
  el.querySelector('[data-t="checked"]').textContent=sc.checked_warnings?'of '+fmt.int(sc.checked_warnings):'';
  el.querySelector('[data-t="hc"]').textContent=hc?`of ${fmt.int(hc)} checked`:'';
@@ -376,7 +376,7 @@ function learningInspector(s,id){
   learn:['03 / Learn','Learn from the outcome','Each checked outcome nudges the rules. The record keeps the misses next to the hits.',b.resolved,'verdicts checked',pair('Warnings that came true',sc.called)+pair('Warnings checked',sc.checked_warnings)+pair('Healthy calls that went wrong',sc.missed)+pair('Rules moved from where they started',moving.length),'#learning/lessons','Read the latest lessons'],
   ready:['04 / Readiness','Earn the next step','Readiness combines the strategy lab, how often warnings came true, runway and surplus. Trading stays paper-only until it passes.',rd.score,`readiness out of 100 · ${nz(rd.ready_at)||80} needed`,pair('Resolved strategy cases',lab.cases_resolved)+pair('Trading',(s.trader||{}).enabled?'On, within limits':'Paper only'),'#learning/paper','See paper trading']}[id];
  const parts=id==='ready'?`<div class="inspector__parts">${(rd.parts||[]).map(p=>`<div><span>${esc(cap(p.label))}</span><b>${num(p.score)}</b><span class="w-meter"><i style="--w:${Math.max(0,Math.min(100,nz(p.score)))}%"></i></span></div>`).join('')}</div><p class="w-note">Next: ${esc(rd.next||'waiting for enough evidence')}</p>`:'';
- return `<span class="label">${c[0]}</span><h3 class="inspector__title">${c[1]}</h3><p class="inspector__lede">${c[2]}</p><div class="w-stat w-stat--l"><span class="w-stat__value">${isNum(c[3])?fmt.int(c[3]):'…'}</span><span class="w-stat__note">${c[4]}</span></div><dl class="facts">${c[5]}</dl>${parts}<a class="w-btn w-btn--secondary" href="${c[6]}">${c[7]} <span aria-hidden="true">→</span></a>`}
+ return `<span class="label">${c[0]}</span><h3 class="inspector__title">${c[1]}</h3><p class="inspector__lede">${c[2]}</p><div class="w-stat w-stat--l"><span class="w-stat__value">${isNum(c[3])?fmt.int(c[3]):'…'}</span><span class="w-stat__note">${c[4]}</span></div><dl class="facts">${c[5]}</dl>${parts}<a class="w-btn w-btn--secondary" href="${c[6]}">${c[7]}</a>`}
 function renderInspector(s){
  if(changed('inspector',[learningFocus,s.stats&&[s.stats.launches_24h,s.stats.grads_24h,s.stats.queued,s.stats.scored,s.stats.verdicts,s.stats.last_block],s.scout,s.readiness,(s.brain||{}).resolved,(s.lab||{}).cases_resolved,((s.brain||{}).rules||[]).map(r=>r.weight)])){
   const focused=document.activeElement&&$('#learning-inspector').contains(document.activeElement);$('#learning-inspector').innerHTML=learningInspector(s,learningFocus);if(focused)$('#learning-inspector a')?.focus({preventScroll:true})}
@@ -448,8 +448,8 @@ function renderLessons(s){
 function renderMoving(s){
  const rules=(s.brain||{}).rules||[];if(!changed('moving',rules.map(r=>[r.id,r.weight,r.hits,r.misses])))return;
  const mv=rules.filter(r=>Math.abs(r.weight-1)>0.001).sort((a,b)=>Math.abs(b.weight-1)-Math.abs(a.weight-1)).slice(0,6);
- $('#moving').innerHTML=mv.length?mv.map(r=>`<li class="w-row w-row--static w-row--rule" title="${esc(r.about||'')}"><span class="w-row__main"><span class="w-row__title">${esc(cap(ruleName(r.id)))}</span><span class="w-row__sub">right ${fmt.int(r.hits)} · wrong ${fmt.int(r.misses)}</span></span><span class="w-row__value"><span class="w-row__delta ${r.weight>1?'pos':'neg'}">${r.weight>1?'▲ trusts more':'▼ trusts less'} ${Number(r.weight).toFixed(2)}×</span></span></li>`).join(''):'<li class="w-empty">No rule has moved yet.</li>';
- const a=$('#moving-card .w-card__action');if(a)a.textContent=`All ${rules.length} rules →`;
+ $('#moving').innerHTML=mv.length?mv.map(r=>`<li class="w-row w-row--static w-row--rule" title="${esc(r.about||'')}"><span class="w-row__main"><span class="w-row__title">${esc(cap(ruleName(r.id)))}</span><span class="w-row__sub">right ${fmt.int(r.hits)} · wrong ${fmt.int(r.misses)}</span></span><span class="w-row__value"><span class="w-row__delta ${r.weight>1?'pos':'neg'}">${r.weight>1?'trusts more':'trusts less'} ${Number(r.weight).toFixed(2)}×</span></span></li>`).join(''):'<li class="w-empty">No rule has moved yet.</li>';
+ const a=$('#moving-card .w-card__action');if(a)a.textContent=`All ${rules.length} rules`;
 }
 function renderPaper(s){
  const p=s.paper||{},lab=s.lab||{},val=lab.validation||{},rd=s.readiness||{};
@@ -476,7 +476,7 @@ function renderVoice(s){
 const tableWrap=(label,html)=>`<div class="table-scroll" role="region" aria-label="${esc(label)}" tabindex="0">${html}</div>`;
 function btText(b){b=b||{};if(b.n_fired==null)return '';return `${num(b.n_fired)} fired · median ${b.median_fired!=null?pct(b.median_fired):'…'} vs ${b.median_other!=null?pct(b.median_other):'…'} for the rest${b.p!=null?` · chance ${Math.round(b.p*100)} in 100`:''}`}
 function armText(p){p=p||{};const tp=(p.tp||[]).map(t=>`${t[0]}x sell ${Math.round(t[1]*100)}%`).join(', ');return [tp&&`take profit ${tp}`,p.trail!=null&&`trail ${Math.round(p.trail*100)}%`,p.stop!=null&&`stop ${Math.round(p.stop*100)}%`,p.max_age&&`≤ ${Math.round(p.max_age/3600)}h`,p.delay_min!=null&&`enter +${p.delay_min}m`].filter(Boolean).join(' · ')}
-function specText(x){const sp=x.spec||{};if(x.kind==='rule'){const c=(sp.conditions||[]).map(c=>`${c.metric} ${c.op} ${c.value}`).join(' and ');return `${c||'?'} → ${sp.points>0?'+':''}${num(sp.points)}`}return `${sp.name||'?'}: ${armText(sp)}`}
+function specText(x){const sp=x.spec||{};if(x.kind==='rule'){const c=(sp.conditions||[]).map(c=>`${c.metric} ${c.op} ${c.value}`).join(' and ');return `${c||'?'}: ${sp.points>0?'+':''}${num(sp.points)}`}return `${sp.name||'?'}: ${armText(sp)}`}
 function renderLearningDetails(s){
  const rd=s.readiness||{},b=s.brain||{},rules=b.rules||[],cnt=b.counts||{},lb=s.lab||{},arms=lb.arms||[],ad=s.advisor||{},lr=ad.last_run;
  if(changed('dReady',rd))$('#ready').innerHTML=`<div class="parts">${(rd.parts||[]).map(pt=>`<div class="part"><div class="part__head"><span>${esc(cap(pt.label))}</span><b>${num(pt.score||0)} / 100</b></div><span class="w-meter"><i style="--w:${Math.max(0,Math.min(100,nz(pt.score)))}%"></i></span><p class="w-note">${Math.round(nz((rd.weights||{})[pt.id])*100)}% of the score · ${esc(pt.detail||'')}</p></div>`).join('')}</div><p class="w-note">Readiness ${num(rd.score??0)} of ${num(rd.ready_at||80)} needed. ${esc(rd.gate||'')}</p>`;
@@ -517,7 +517,7 @@ function scanRow(t,isNew){
   ${scored.length?`<p class="label">Why</p>${reasonList(scored,'reasons reasons--pts')}`:''}
   <div class="w-chips">${chips.slice(0,6).map(chip).join('')}</div>
   <details class="w-details w-details--inline"><summary>All measurements (${chips.length+plain.length})</summary><div class="w-details__body"><div class="w-chips">${chips.map(chip).join('')}</div>${plain.length?`<ul class="reasons">${plain.map(r=>`<li>${esc(r.text)}</li>`).join('')}</ul>`:''}</div></details>
-  <div class="scan-links">${links.map(([u,l])=>`<a class="w-btn w-btn--ghost w-btn--sm" href="${esc(u)}" target="_blank" rel="noopener noreferrer">${l} ↗</a>`).join('')}</div>
+  <div class="scan-links">${links.map(([u,l])=>`<a class="w-btn w-btn--ghost w-btn--sm" href="${esc(u)}" target="_blank" rel="noopener noreferrer">${l}</a>`).join('')}</div>
   <div class="scan-addr"><code>${esc(t.token)}</code>${copyBtn(t.token,'Copy address')}</div></div>`}
  return html+'</li>'}
 function renderScans(s,force){
@@ -540,7 +540,7 @@ $('#sort-chips').addEventListener('click',e=>{const b=e.target.closest('[data-so
 $('#feed').addEventListener('click',e=>{const b=e.target.closest('.w-row');if(!b||!$('#feed').contains(b))return;const t=b.closest('.scan').dataset.key;expanded.has(t)?expanded.delete(t):expanded.add(t);if(lastState)preserveReadingPosition(()=>renderScans(lastState,true))});
 function renderCreators(s){
  const ser=(s.bad_actors||{}).serial||[],n=more.serial;if(!changed('serial',[ser,n,Math.floor(Date.now()/60000)]))return;
- $('#serial').innerHTML=ser.length?ser.slice(0,n).map(x=>`<li data-key="c${esc(x.deployer)}"><a class="w-row ${x.trust<35?'avoid':''}" href="${EXPLORER}address/${esc(x.deployer)}" target="_blank" rel="noopener noreferrer"><span class="w-row__lead w-row__lead--num">${num(x.trust)}</span><span class="w-row__main"><span class="w-row__title mono">${short(x.deployer)}</span><span class="w-row__sub">${fmt.int(x.launches)} launches · ${fmt.int(x.grads||0)} graduated · ${fmt.int(x.rugged||0)} rugged · last seen ${ago(x.last_ts)}</span></span><span class="w-row__value"><span class="w-chip ${x.trust<35?'warn':x.trust>=65?'good':''}">trust ${num(x.trust)}</span></span><span class="w-row__chev" aria-hidden="true">↗</span></a></li>`).join(''):'<li class="w-empty">None in the window.</li>';
+ $('#serial').innerHTML=ser.length?ser.slice(0,n).map(x=>`<li data-key="c${esc(x.deployer)}"><a class="w-row ${x.trust<35?'avoid':''}" href="${EXPLORER}address/${esc(x.deployer)}" target="_blank" rel="noopener noreferrer"><span class="w-row__lead w-row__lead--num">${num(x.trust)}</span><span class="w-row__main"><span class="w-row__title mono">${short(x.deployer)}</span><span class="w-row__sub">${fmt.int(x.launches)} launches · ${fmt.int(x.grads||0)} graduated · ${fmt.int(x.rugged||0)} rugged · last seen ${ago(x.last_ts)}</span></span><span class="w-row__value"><span class="w-chip ${x.trust<35?'warn':x.trust>=65?'good':''}">trust ${num(x.trust)}</span></span></a></li>`).join(''):'<li class="w-empty">None in the window.</li>';
  const b=$('#serial-more');b.dataset.total=ser.length;moreButton(b,ser.length,n,5,'Show all','serial');
 }
 
@@ -569,7 +569,7 @@ function renderBurnCard(s){
  const prog=bp?`<div class="burn-prog"><p class="burn-prog__reason">${esc(bp.reason||'The treasury holds more than its 90-day reserve needs, so the surplus is burned over a week in small buys that do not move the price.')}</p>
   <div class="w-stats w-stats--3"><div class="w-stat w-stat--s"><span class="label">Program</span><span class="w-stat__value">${fmt.usd(bp.total_usd)}</span></div><div class="w-stat w-stat--s"><span class="label">Burned so far</span><span class="w-stat__value">${fmt.usd(bp.burned_usd)}</span></div><div class="w-stat w-stat--s"><span class="label">$WORM burned this week</span><span class="w-stat__value">${fmt.qty(bp.burned_qty!=null?bp.burned_qty:(bp.burns||[]).reduce((a,b)=>a+nz(b.qty),0))}</span></div></div>
   ${weekTrack('wk-treasury',s,bp,{big:true})}</div>`:'';
- el.innerHTML=`<div class="w-card__head"><div><span class="label">The burn</span><h2 class="w-card__title" id="burncard-title">${fmt.qty(qty)} $WORM burned forever</h2></div><a class="w-card__action" href="${EXPLORER}token/${esc(tr.token)}" target="_blank" rel="noopener noreferrer">See the token ↗</a></div>
+ el.innerHTML=`<div class="w-card__head"><div><span class="label">The burn</span><h2 class="w-card__title" id="burncard-title">${fmt.qty(qty)} $WORM burned forever</h2></div><a class="w-card__action" href="${EXPLORER}token/${esc(tr.token)}" target="_blank" rel="noopener noreferrer">See the token</a></div>
  <div class="w-stats w-stats--4"><div class="w-stat"><span class="label">Share of supply</span><span class="w-stat__value">${share.toFixed(2)}%</span><span class="w-stat__note">of 1 billion $WORM</span></div><div class="w-stat"><span class="label">Spent on burns</span><span class="w-stat__value">${fmt.usd(tr.burned_total)}</span><span class="w-stat__note">${nz(tr.owed_to_burn)>0?`+ ${fmt.usd(tr.owed_to_burn,{cents:true})} waiting`:'nothing waiting'}</span></div><div class="w-stat"><span class="label">Burns</span><span class="w-stat__value">${fmt.int(burns.length)}</span><span class="w-stat__note">${burns.length?'last '+ago(burns[burns.length-1].ts):'none yet'}</span></div><div class="w-stat"><span class="label">Share of fees</span><span class="w-stat__value">${Math.round(nz(tr.burn_share)*100)}%</span><span class="w-stat__note">of every claim buys $WORM to burn</span></div></div>
  ${prog}
  ${burns.length?`<div class="burn-hist"><span class="label">Every burn since launch</span>${historyTrack('hist-treasury',s,burns)}</div>`:''}
@@ -607,10 +607,10 @@ function renderWallet(s){
  const token=la&&isAddr(la.token)?la.token:isAddr(tr.token)?tr.token:null,launched=la&&la.state==='launched';
  $('#wallet').innerHTML=`<div class="w-card__head"><div><span class="label">Money in the open</span><h2 class="w-card__title" id="wallet-title">Wallet</h2></div></div>
  ${tr.accounting_error?'<p class="notice">Payment accounting needs operator review. Available funds cannot be verified.</p>':''}
- ${tr.wallet?`<div class="addr-row"><code>${esc(tr.wallet)}</code>${copyBtn(tr.wallet,'Copy')}<a class="w-btn w-btn--ghost w-btn--sm" href="${EXPLORER}address/${esc(tr.wallet)}" target="_blank" rel="noopener noreferrer">Explorer ↗</a></div>
+ ${tr.wallet?`<div class="addr-row"><code>${esc(tr.wallet)}</code>${copyBtn(tr.wallet,'Copy')}<a class="w-btn w-btn--ghost w-btn--sm" href="${EXPLORER}address/${esc(tr.wallet)}" target="_blank" rel="noopener noreferrer">Explorer</a></div>
  <div class="w-stats w-stats--2">${bal(tr.usdg,'USDG','on Robinhood Chain')}${bal(tr.eth,'ETH','for gas',4)}${bal(tr.claimable_usdg,'USDG claimable','fees waiting in escrow')}<div class="w-stat w-stat--s"><span class="w-stat__value">${fmt.usd(cp.balance_usd,{cents:true})}<small>AI credit</small></span><span class="w-stat__note">${cp.provider==='aisurplus'?'AI Surplus · separate from the wallet':'separate from the wallet'}</span></div></div>
  <p class="w-note">${s.live?'Claims, burns and gold buys run on-chain from this wallet.':'Payments are paused.'}</p>`:'<p>The wallet is not connected yet. Once it is, its balances and every fee movement appear here.</p>'}
- ${token?`<div class="fact-row"><span>$WORM ${launched&&la.at?`launched ${fmt.date(la.at)}`:'token'}</span><a class="w-btn w-btn--ghost w-btn--sm" href="https://www.ponsfamily.com/launchpad/${esc(token)}" target="_blank" rel="noopener noreferrer">View token ↗</a></div>`:''}`;
+ ${token?`<div class="fact-row"><span>$WORM ${launched&&la.at?`launched ${fmt.date(la.at)}`:'token'}</span><a class="w-btn w-btn--ghost w-btn--sm" href="https://www.ponsfamily.com/launchpad/${esc(token)}" target="_blank" rel="noopener noreferrer">View token</a></div>`:''}`;
 }
 function renderTrading(s){
  const td=s.trader||{},rd=s.readiness||{},rw=s.runway||{},tr=s.treasury||{},off=td.enabled!==true;
@@ -619,17 +619,17 @@ function renderTrading(s){
  $('#trades').innerHTML=`<div class="w-card__head"><div><span class="label">Honest status</span><h2 class="w-card__title" id="trades-title">${off?'Trading: paper only':'Trading: on, within limits'}</h2></div></div>
  <p>${off?'The worm studies outcomes and trades on paper while real trading stays off. Only the operator can turn it on, and the checks below still apply then.':'Every check below must pass before a trade.'}</p>
  <ul class="checklist">${item(!off,'Operator permission',off?'Off':'On')}${item(nz(rd.score)>=nz(rd.ready_at||80),'Readiness',`${num(rd.score??0)} / ${num(rd.ready_at??80)}`)}${item(!!rw.can_invest&&!tr.accounting_error,'Reserve surplus',tr.accounting_error?'Needs review':rw.can_invest?'Available':'Not yet')}${item(!!td.live_sell_ready,'Live exits',td.live_sell_ready?'Supported':'Not enabled')}</ul>
- <a class="w-card__action" href="#learning/paper">See paper trading →</a>`;
+ <a class="w-card__action" href="#learning/paper">See paper trading</a>`;
 }
 function renderTreasuryDetails(s){
  const tr=s.treasury||{},rw=s.runway||{},cp=s.compute||{},td=s.trader||{},money=v=>fmt.usd(v,{cents:true}),row=(l,v)=>`<div><dt>${l}</dt><dd>${v}</dd></div>`;
- const link=(a,l)=>isAddr(a)?`<a href="${EXPLORER}address/${a}" target="_blank" rel="noopener noreferrer">${l} ↗</a>`:'';
+ const link=(a,l)=>isAddr(a)?`<a href="${EXPLORER}address/${a}" target="_blank" rel="noopener noreferrer">${l}</a>`:'';
  if(changed('dSettle',[tr.claimed_total,tr.forwarded_total,tr.owed_to_owner,tr.burned_total,tr.burned_qty,tr.owed_to_burn,tr.gold_total,tr.gold_held,tr.gold_usd,tr.owed_to_gold,tr.burn_state,tr.gold_state,tr.claim_policy,tr.fee_sweep,tr.gas_refill]))
   $('#settle').innerHTML=`<dl class="facts">${row('Claimed fees',money(tr.claimed_total))}${row('Sent to creator',money(tr.forwarded_total))}${row('Still owed to creator',money(tr.owed_to_owner))}${row('Spent on $WORM burns',money(tr.burned_total))}${row('$WORM burned',fmt.int(tr.burned_qty))}${row('Waiting for the next burn',money(tr.owed_to_burn))}${row('Spent on gold',money(tr.gold_total))}${row('Gold held',(isNum(tr.gold_held)?Number(tr.gold_held).toFixed(6):'—')+' GLD')}${row('Gold valuation',money(tr.gold_usd))}${row('Waiting for the next gold buy',money(tr.owed_to_gold))}</dl>
-  <p>${esc(tr.burn_state||'')} · ${esc(tr.gold_state||'')}</p>${tr.claim_policy&&tr.claim_policy.reason?`<p>Claim check: ${esc(tr.claim_policy.reason)}</p>`:''}${tr.fee_sweep&&tr.fee_sweep.reason?`<p>Curve fees: ${esc(tr.fee_sweep.reason)}</p>`:''}${tr.gas_refill&&tr.gas_refill.reason?`<p>Gas refill: ${esc(tr.gas_refill.reason)}</p>`:''}<p class="links-row">${link(tr.owner,'Creator wallet')}${isAddr(tr.token)?`<a href="https://www.ponsfamily.com/launchpad/${tr.token}" target="_blank" rel="noopener noreferrer">$WORM on pons ↗</a>`:''}</p>`;
+  <p>${esc(tr.burn_state||'')} · ${esc(tr.gold_state||'')}</p>${tr.claim_policy&&tr.claim_policy.reason?`<p>Claim check: ${esc(tr.claim_policy.reason)}</p>`:''}${tr.fee_sweep&&tr.fee_sweep.reason?`<p>Curve fees: ${esc(tr.fee_sweep.reason)}</p>`:''}${tr.gas_refill&&tr.gas_refill.reason?`<p>Gas refill: ${esc(tr.gas_refill.reason)}</p>`:''}<p class="links-row">${link(tr.owner,'Creator wallet')}${isAddr(tr.token)?`<a href="https://www.ponsfamily.com/launchpad/${tr.token}" target="_blank" rel="noopener noreferrer">$WORM on pons</a>`:''}</p>`;
  const led=tr.ledger||[];
  if(changed('dLedger',[led.map(l=>l.id),Math.floor(Date.now()/60000)])){$('#d-ledger summary').textContent='Payment history'+(led.length?` · last ${led.length}`:'');
-  $('#ledger').innerHTML=led.length?`<ul class="w-list">${led.slice(0,30).map(l=>{const u=txUrl(s,l.tx);return `<li class="w-row w-row--static"><span class="w-row__main"><span class="w-row__title">${esc(cap(String(l.kind||'').replaceAll('_',' ')))}</span><span class="w-row__sub">${esc(l.note||'')} · ${fmt.utc(l.ts)}</span></span><span class="w-row__value"><span class="w-row__delta">${isNum(l.amount)?Number(l.amount).toLocaleString('en-US',{maximumFractionDigits:4}):'—'} ${esc(l.asset||'')}</span>${u?`<a class="w-row__time" href="${esc(u)}" target="_blank" rel="noopener noreferrer">tx ↗</a>`:''}</span></li>`}).join('')}</ul>`:'<p>No fee movements yet.</p>'}
+  $('#ledger').innerHTML=led.length?`<ul class="w-list">${led.slice(0,30).map(l=>{const u=txUrl(s,l.tx);return `<li class="w-row w-row--static"><span class="w-row__main"><span class="w-row__title">${esc(cap(String(l.kind||'').replaceAll('_',' ')))}</span><span class="w-row__sub">${esc(l.note||'')} · ${fmt.utc(l.ts)}</span></span><span class="w-row__value"><span class="w-row__delta">${isNum(l.amount)?Number(l.amount).toLocaleString('en-US',{maximumFractionDigits:4}):'—'} ${esc(l.asset||'')}</span>${u?`<a class="w-row__time" href="${esc(u)}" target="_blank" rel="noopener noreferrer">tx</a>`:''}</span></li>`}).join('')}</ul>`:'<p>No fee movements yet.</p>'}
  if(changed('dProj',rw.scenarios)){const sc=Object.entries(rw.scenarios||{});$('#projection').innerHTML=sc.length?tableWrap('90-day projection',`<table><thead><tr><th>scenario</th><th class="r">ending balance</th><th class="r">funds last</th></tr></thead><tbody>${sc.map(([n,v])=>`<tr><td>${esc(n==='current income'&&!rw.income_measured?'income baseline (unmeasured)':n)}</td><td class="r ${v.end_balance_usd<0?'neg':''}">${money(v.end_balance_usd)}</td><td class="r">${v.runs_out_day!=null?'day '+fmt.int(v.runs_out_day):'beyond 90 days'}</td></tr>`).join('')}</tbody></table>`)+'<p>Scenarios use planned costs and the claim history. A negative balance means a shortfall, not money already spent.</p>':'<p>No projection yet.</p>'}
  if(changed('dCosts',[rw.cost_parts,rw.compute_budget_per_day_usd,rw.surplus_usd,rw.claims_per_day_usd,rw.rule,cp.topup_usd,cp.topup_below_usd,cp.pays_with])){const c=rw.cost_parts||{};
   $('#costs').innerHTML=`<dl class="facts">${row('Compute / day',money(c.compute))}${row('Gas / day',money(c.gas))}${row('Bridge / day',money(c.bridge))}${row('Compute budget / day',money(rw.compute_budget_per_day_usd))}${row('Surplus above the reserve',money(rw.surplus_usd))}${row('Claims / day',rw.income_measured?money(rw.claims_per_day_usd):'not measured')}${row('AI credit top-up',money(cp.topup_usd))}${row('Top up below',money(cp.topup_below_usd))}${row('Pays with',esc(cp.pays_with||'not configured'))}</dl><p>${esc(rw.rule||'')} Funding the reserve does not enable trading.</p>`}
