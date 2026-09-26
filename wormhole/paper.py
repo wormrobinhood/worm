@@ -351,14 +351,37 @@ class Paper:
             unreal += p["pnl_usd"] or 0
         for p in closed:
             p["change_pct"] = ((p["exit_usd"] / p["entry_usd"]) - 1) * 100 if p.get("exit_usd") else 0.0
+        for p in opens + closed:
+            p["pair"], p["live_comparable"] = pair(p), live_comparable(p)
         tot = self.db.one("SELECT COALESCE(SUM(pnl_usd),0) s, COALESCE(SUM(pnl_usd>0),0) w, COUNT(*) n FROM paper WHERE status='closed'")
         cur, why = lab.current_policy(self.db)
         unpriced = sum(p['valuation_stale'] for p in opens)
+        every = self.db.q("SELECT status,pnl_usd,strategy,pool_key,execution_model,opened_in_pause FROM paper")
+        skips = self.db.q("SELECT strategy, pair, reason, COUNT(*) n FROM paper_skips GROUP BY strategy, pair, reason ORDER BY strategy")
         return {"open": opens, "closed": closed, "realized_usd": round(tot["s"], 2),
+                # The headline for anything that stands in for live: USDG pools only (live buys nowhere else), second-
+                # look rules only, never a position opened while the breaker was paused. all_pools is the whole book.
+                "live_comparable": _book(every, live_comparable), "all_pools": _book(every, lambda r: True),
+                "live_comparable_means": "a USDG pool, bought by a second-look rule at quoted fills, not while the loss breaker was paused",
+                "skipped": skips,
+                "risk_live_comparable": trade_risk.check(self.db, 'paper', latch=False, scope='usdg'),
                 "unrealized_usd": None if unpriced else round(unreal, 2), "priced_unrealized_usd": round(unreal, 2),
                 "closed_count": tot["n"], "win_rate": round(100.0 * tot["w"] / tot["n"]) if tot["n"] else None,
                 "size_usd": C.PAPER_SIZE_USD, "min_score": execution.MIN_SCORE,
                 "unpriced_count": unpriced,
                 "risk": trade_risk.check(self.db, 'paper', latch=False), "execution_model": execution.MODEL,
                 "entry": entry_text(),
-                "rules": f"exits by the strategy lab, in use: {cur} ({why}); fills need the token's own Pons pool (USDG or ETH) and a round-trip quote, and are booked at the quote less {execution.PAPER_FILL * 100:.0f}% a side plus gas; exit checks target a 15-second cadence; valuation quotes refresh separately and can become stale; legacy rows retain their original cost model"}
+                "rules": f"exits by the strategy lab, in use: {cur} ({why}); fills need the token's own Pons pool (USDG or ETH) and a round-trip quote, and are booked at the quote less {execution.PAPER_FILL * 100:.0f}% a side plus gas; live would buy from USDG pools only, so ETH-pool trades are learning data and only USDG-pool trades count as could-be-real; exit checks target a 15-second cadence; valuation quotes refresh separately and can become stale; legacy rows retain their original cost model"}
+
+
+def _book(rows, keep):
+    """Closed results of the rows `keep` accepts: totals, and per rule (verdict-time rows under their label)."""
+    def tally(rs):
+        closed = [r for r in rs if r['status'] == 'closed' and r['pnl_usd'] is not None]
+        wins = sum(r['pnl_usd'] > 0 for r in closed)
+        return {"closed_count": len(closed), "realized_usd": round(sum(r['pnl_usd'] for r in closed), 2), "wins": wins,
+                "win_rate": round(100.0 * wins / len(closed)) if closed else None,
+                "open_count": sum(r['status'] == 'open' for r in rs)}
+    kept = [r for r in rows if keep(r)]
+    names = sorted({r['strategy'] or VERDICT_ENTRY for r in kept})
+    return {**tally(kept), "by_rule": [{"rule": n, **tally([r for r in kept if (r['strategy'] or VERDICT_ENTRY) == n])} for n in names]}

@@ -482,6 +482,26 @@ def test_positions_opened_during_a_past_pause_are_flagged_not_deleted(db):
     assert P.live_comparable(db.one("SELECT * FROM paper WHERE token=?", (row['token'],)))
 
 
+def test_the_summary_puts_what_live_could_trade_next_to_the_whole_book(db, feed):
+    pb = book(db)
+    now = int(time.time()) - 3 * 86400                        # old enough not to trip the breaker
+    lost(db, '0x' + 'e1' * 20, C.ZERO, 8.0, closed=now, strategy='rule-a')      # an ETH winner
+    lost(db, '0x' + 'e2' * 20, C.USDG, -2.0, closed=now, strategy='rule-a')     # a USDG loser
+    lost(db, '0x' + 'e3' * 20, C.USDG, 3.0, closed=now, strategy='rule-b')      # a USDG winner ...
+    lost(db, '0x' + 'e4' * 20, C.USDG, 5.0, closed=now, strategy='rule-b')      # ... and one opened in a pause
+    db.x("UPDATE paper SET opened_in_pause=1 WHERE token=?", ('0x' + 'e4' * 20,))
+    lost(db, '0x' + 'e5' * 20, C.USDG, 4.0, closed=now, strategy=P.VERDICT_ENTRY)   # bought at the verdict: live never follows
+    s = pb.summary()
+    assert s['realized_usd'] == 18.0 and s['all_pools']['closed_count'] == 5 and s['all_pools']['win_rate'] == 80
+    lc = s['live_comparable']
+    assert (lc['closed_count'], lc['realized_usd'], lc['wins'], lc['win_rate']) == (2, 1.0, 1, 50)
+    assert {r['rule']: (r['closed_count'], r['realized_usd']) for r in lc['by_rule']} == {'rule-a': (1, -2.0), 'rule-b': (1, 3.0)}
+    assert {r['rule']: r['closed_count'] for r in s['all_pools']['by_rule']} == {'rule-a': 2, 'rule-b': 2, P.VERDICT_ENTRY: 1}
+    pairs = {p['token'][:4]: (p['pair'], p['live_comparable']) for p in s['closed']}
+    assert pairs['0xe1'] == ('ETH', False) and pairs['0xe2'] == ('USDG', True) and pairs['0xe4'] == ('USDG', False)
+    assert s['risk_live_comparable']['allowed'] and s['skipped'] == []
+
+
 def test_the_rebuilt_pause_lasts_a_day_after_losses_fall_back():
     from wormhole.db import DB
     import tempfile, pathlib
