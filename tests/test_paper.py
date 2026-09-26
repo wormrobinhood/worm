@@ -460,6 +460,19 @@ def test_eth_losses_do_not_pause_usdg_candidates_but_usdg_losses_do(db, feed):
     assert [r['pair'] for r in db.q('SELECT pair FROM paper_skips ORDER BY id')] == ['ETH', 'USDG']
 
 
+def test_an_underwater_position_flagged_as_opened_in_a_pause_still_counts_against_the_usdg_breaker(db, feed):
+    import json
+    pb = book(db)
+    token = '0x' + 'e7' * 20
+    db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,execution_model,pool_key,strategy,"
+         "liquidation_usd,marked_ts,realized_usd,opened_in_pause) VALUES(?,?,?,?,?,?,'open','quoted-pool-v2',?,'rule-a',?,?,0,1)",
+         (token, 'U', int(time.time()) - 600, 1.0, 10.0, 10.0, json.dumps(pool_of(token, C.USDG)), 1.0, int(time.time())))
+    risk = P.trade_risk.check(db, 'paper', latch=False, scope='usdg')
+    assert risk['loss_usd'] == 9.0 and risk['allowed']                     # out of the evidence, not out of the losses
+    lost(db, '0x' + 'e8' * 20, C.USDG, -2.0)
+    assert not pb.enter(TOKEN, 'AAA', 1.0, 'rule-a', 'usdg candidate', pool=pool_of(TOKEN, C.USDG))
+
+
 def test_positions_opened_during_a_past_pause_are_flagged_not_deleted(db):
     import json
     now = int(time.time())

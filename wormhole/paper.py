@@ -133,7 +133,7 @@ class Paper:
         next round of research reads what production really saw. Returns True when a row was opened.
 
         The loss breaker applies here exactly as it would to live: a USDG candidate answers to the breaker over
-        the positions live could have held, any other to the whole book's. A candidate it turns away is recorded
+        the USDG-pool positions (as live holds only those), any other to the whole book's. A candidate it turns away is recorded
         in paper_skips and is no cohort member. That cannot pick winners: the pause is decided from trades that
         closed before the candidate existed, never from the candidate's own path, and live would have skipped it
         too. `last_skip` tells the watcher why."""
