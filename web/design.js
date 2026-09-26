@@ -10,18 +10,11 @@ const guide=document.createElement('a');guide.href='/docs';guide.textContent='Do
 const xlink=document.createElement('a');xlink.textContent='X ↗';xlink.className='docs-nav';xlink.target='_blank';xlink.rel='noopener noreferrer';xlink.hidden=true;document.querySelector('.rail nav').append(xlink);
 
 function navigate(){if(location.hash==='#activity')history.replaceState(null,'','#overview');const view=location.hash.slice(1);const v=names[view]?view:'overview';document.body.dataset.view=v;document.querySelector('#view-title').textContent=names[v];document.querySelectorAll('.rail nav a').forEach(a=>{a.classList.toggle('active',a.dataset.view===v);if(a.dataset.view===v)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current')});intro.hidden=v==='overview';intro.innerHTML=v==='overview'?'':`<h2>${names[v]}</h2><p>${descriptions[v]}</p>`;placeOverview(v);if(v==='overview')sizeWorm();if(v==='activity')drawVision();window.scrollTo({top:0,behavior:'instant'})}
-function placeOverview(v){
- const band=document.querySelector('#liveband'),grid=document.querySelector('#grid'),feed=document.querySelector('[data-panel=feed]'),voice=document.querySelector('[data-panel=voice]');
- if(!band||!grid||!feed||!voice)return;
- let left=band.querySelector('.livecol-l'),right=band.querySelector('.livecol-r');
- if(!left){
-  left=document.createElement('div');left.className='livecol livecol-l';
-  right=document.createElement('div');right.className='livecol livecol-r';
-  band.append(left,right);
-  for(const key of ['dig','log']){const panel=band.querySelector('[data-panel="'+key+'"]');if(panel)(key==='dig'?left:right).append(panel)}
- }
- if(v==='overview'){if(feed.parentElement!==right)right.prepend(feed);if(voice.parentElement!==left)left.append(voice)}
- else{if(feed.parentElement!==grid)grid.insertBefore(feed,grid.firstElementChild);if(voice.parentElement!==grid)grid.append(voice)}
+// Live keeps only the screen and the dig side by side; the log joins the other panels in the grid, where the
+// Learning view shows it. Field notes and the scans list stay in the grid for their own views.
+function placeOverview(){
+ const grid=document.querySelector('#grid'),log=document.querySelector('[data-panel=log]');
+ if(grid&&log&&log.parentElement!==grid)grid.append(log);
 }
 window.addEventListener('hashchange',navigate);navigate();
 window.motionPaused=matchMedia('(prefers-reduced-motion: reduce)').matches;const motion=document.querySelector('#motion');function motionSync(){document.body.classList.toggle('motion-off',window.motionPaused);motion.textContent=window.motionPaused?'Resume animation':'Pause animation';motion.setAttribute('aria-pressed',String(window.motionPaused))}motion.onclick=()=>{window.motionPaused=!window.motionPaused;motionSync()};motionSync();
@@ -443,3 +436,68 @@ const readingLimits=limitPanelLists;limitPanelLists=function(){
  if(readingUpdateDepth)return readingLimits();
  return preserveReadingPosition(()=>readingLimits());
 };
+
+// Live, first band: the burn. One large ring for the share of the supply destroyed, the next burn filling up,
+// and four plain figures beside it. Built once; afterwards only the numbers move. A burn that lands while the
+// page is open flares the ring and says how much went. Presentation only: every figure is the server's.
+const pulse={values:null,seen:false,lastQty:null};
+function pulseAgo(ts){if(!ts)return '';const d=Math.max(0,Date.now()/1000-ts);if(d<3600)return Math.max(1,Math.round(d/60))+' min ago';if(d<86400)return Math.round(d/3600)+' h ago';return Math.round(d/86400)+' d ago'}
+function paintPulse(){
+ const el=document.querySelector('#pulse'),v=pulse.values;if(!el||!v)return;
+ el.querySelectorAll('[data-pulse]').forEach(node=>{const value=v[node.dataset.pulse];if(value==null||!Number.isFinite(value)){node.textContent='—';return}
+  const format=storyFormats[node.dataset.format]||storyFormats.usd;if(pulse.seen)countTo(node,value,format);else node.textContent=format(0)});
+ el.querySelectorAll('[data-pulse-text]').forEach(node=>{node.textContent=v[node.dataset.pulseText]??''});
+ el.querySelectorAll('[data-pulse-width]').forEach(node=>node.style.setProperty('--w',(pulse.seen?v[node.dataset.pulseWidth]||0:0).toFixed(2)+'%'));
+ const ring=el.querySelector('.pulse-ring-arc');if(ring){const c=2*Math.PI*88,share=pulse.seen?Math.max(0,Math.min(1,v.burnedPct/100)):0,arc=Math.max(share*c,share>0?4:0);ring.style.strokeDasharray=arc.toFixed(2)+' '+(c-arc+1).toFixed(2)}
+ const last=el.querySelector('.pulse-last');if(last){if(v.lastBurnTs){last.hidden=false;last.querySelector('span').textContent='last burn '+pulseAgo(v.lastBurnTs);const a=last.querySelector('a');a.hidden=!v.lastBurnUrl;if(v.lastBurnUrl)a.href=v.lastBurnUrl}else last.hidden=true}
+}
+function renderPulse(s){
+ const el=document.querySelector('#pulse');if(!el)return;
+ const tr=s.treasury||{},rw=s.runway||{},ch=s.character||{},rd=s.readiness||{},trader=s.trader||{};
+ if(!tr.token){el.hidden=true;return}
+ const n=x=>Number.isFinite(Number(x))?Number(x):0;
+ const burns=(tr.ledger||[]).filter(e=>e.kind==='burn').sort((a,b)=>b.ts-a.ts),explorer=(s.links&&s.links.explorer)||'';
+ const lastBurn=burns[0],burnMin=n(tr.burn_min_usd)||5,ready=n(rd.score),readyAt=n(rd.ready_at)||80;
+ const qty=n(tr.burned_qty);
+ pulse.values={burnedQty:qty,burnedPct:100*qty/WORM_SUPPLY,burnedUsd:n(tr.burned_total),earned:n(tr.claimed_total),
+  burnOwed:n(tr.owed_to_burn),burnMin,burnNext:Math.min(100,100*n(tr.owed_to_burn)/burnMin),
+  goldUsd:tr.gold_usd==null?null:n(tr.gold_usd),treasury:ch.usd_real!=null?n(ch.usd_real):n(rw.treasury_usd),runwayDays:rw.runway_days_no_income==null?null:n(rw.runway_days_no_income),
+  ready,readyAt,readyFill:Math.min(100,100*ready/readyAt),
+  tradingState:trader.enabled?'Trading live':'Paper only',tradingNote:trader.enabled?`readiness ${ready} of ${readyAt} needed`:`real trades wait for proof · ${ready} of ${readyAt} ready`,
+  lastBurnTs:lastBurn?lastBurn.ts:null,lastBurnUrl:lastBurn&&lastBurn.tx&&explorer?explorer.replace(/\/?$/,'/')+'tx/'+lastBurn.tx:null};
+ if(!el.dataset.built){
+  el.dataset.built='1';
+  const embers=Array.from({length:14},(_,k)=>`<i style="--x:${(8+((k*37)%84))}%;--d:${(k*.53)%4.2}s;--t:${3.2+(k%5)*.55}s;--s:${2+(k%3)}px"></i>`).join('');
+  el.innerHTML=`<div class="pulse-burn">
+ <div class="pulse-orb" aria-hidden="true"><div class="pulse-embers">${embers}</div>
+  <svg viewBox="0 0 200 200" class="pulse-ring"><defs><linearGradient id="pulse-fire" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#ff7a3d"/><stop offset=".55" stop-color="#ffb25b"/><stop offset="1" stop-color="#ffe29a"/></linearGradient></defs>
+   <circle cx="100" cy="100" r="88" class="pulse-ring-track"/><circle cx="100" cy="100" r="88" class="pulse-ring-arc" transform="rotate(-90 100 100)"/>
+   <circle cx="100" cy="100" r="72" class="pulse-ring-inner"/></svg>
+  <div class="pulse-flame"><svg viewBox="0 0 40 56"><path class="f1" d="M20 2C24 14 36 20 36 34a16 16 0 0 1-32 0C4 24 12 20 14 10c3 6 6 8 6 8s2-8 0-16Z"/><path class="f2" d="M20 22c3 6 9 9 9 17a9 9 0 0 1-18 0c0-6 5-8 6-14 1 3 3 4 3 4s1-4 0-7Z"/></svg><b data-pulse="burnedPct" data-format="pct">0%</b><small>of supply</small></div>
+ </div>
+ <div class="pulse-copy"><span class="pulse-kicker">BURNED FOREVER</span>
+  <h2 id="pulse-title"><b data-pulse="burnedQty" data-format="millions">0</b> <em>$WORM</em></h2>
+  <p>bought back with <b data-pulse="burnedUsd">$0</b> of the fees it earned, and sent where no one can ever touch it.</p>
+  <div class="pulse-next"><div class="pulse-next-head"><span>Next burn</span><span><b data-pulse="burnOwed">$0</b> of <b data-pulse="burnMin">$5</b> saved up</span></div><div class="pulse-meter"><i data-pulse-width="burnNext"></i></div></div>
+  <div class="pulse-last" hidden><span></span> <a target="_blank" rel="noopener noreferrer">see the transaction ↗</a></div>
+  <div class="pulse-flash" role="status" aria-live="polite"></div>
+ </div>
+</div>
+<div class="pulse-facts">
+ <div class="pulse-fact"><span>Fees earned</span><strong data-pulse="earned" data-format="usd0">$0</strong><small>all time, from $WORM trading</small></div>
+ <div class="pulse-fact"><span>Gold reserve</span><strong data-pulse="goldUsd" data-format="usd0">$0</strong><small>10% of every claim, held</small></div>
+ <div class="pulse-fact"><span>Treasury</span><strong data-pulse="treasury" data-format="usd0">$0</strong><small><b data-pulse="runwayDays" data-format="days">0</b> days of costs covered</small></div>
+ <div class="pulse-fact trading"><span>Trading</span><strong data-pulse-text="tradingState">Paper only</strong><div class="pulse-meter small"><i data-pulse-width="readyFill"></i></div><small data-pulse-text="tradingNote"></small></div>
+ <a class="pulse-more" href="#treasury">Where every dollar goes <span aria-hidden="true">→</span></a>
+</div>`;
+  new IntersectionObserver((entries,observer)=>{if(entries.some(e=>e.isIntersecting)){observer.disconnect();pulse.seen=true;el.classList.add('is-seen');paintPulse()}},{threshold:.2}).observe(el);
+ }
+ if(pulse.lastQty!=null&&qty>pulse.lastQty+1){
+  const flash=el.querySelector('.pulse-flash');flash.textContent='+'+storyFormats.millions(qty-pulse.lastQty)+' WORM burned just now';
+  el.classList.remove('flare');void el.offsetWidth;el.classList.add('flare');clearTimeout(pulse.flareTimer);pulse.flareTimer=setTimeout(()=>{el.classList.remove('flare');flash.textContent=''},6000);
+ }
+ pulse.lastQty=qty;el.hidden=false;paintPulse();
+}
+// The mind on Live: the same brain as Learning, with the reading beside it cut to its headline.
+document.querySelector('#synapse').addEventListener('click',e=>{if(document.body.dataset.view!=='overview')return;const link=e.target.closest('[data-learning-jump]');if(link){e.stopImmediatePropagation();location.hash='learning'}},true);
+const renderBeforeHome=render;render=function(s){renderBeforeHome(s);renderPulse(s)};

@@ -237,13 +237,14 @@ tr.failed td{color:var(--bad)}
     <div class="title">
       <h1>WORM</h1>
       <div class="tag">knows the dirt on every launch</div>
-      <div class="sub">Your on-chain scout. Every graduation screened, every signal explained, every outcome tracked. <a href="/docs">how it works, the fee split, the roadmap →</a></div>
+      <div class="sub">It reads every Robinhood Chain launch, warns you off the bad ones, and burns $WORM with the fees it earns. <a href="/docs">how it works, the fee split, the roadmap →</a></div>
       <div class="stage" id="stage"><span class="live"></span>waking up…</div>
       <div class="bar"><i id="stagebar" style="width:0%"></i></div>
       <div class="meta" id="grow">grows with what it earns: the treasury it holds decides how long the worm is</div>
     </div>
   </header>
 
+  <section class="pulse" id="pulse" aria-labelledby="pulse-title" hidden></section>
   <section class="story" id="story" aria-labelledby="story-title" hidden></section>
   <section class="receipts" id="receipts" aria-labelledby="receipts-title" hidden></section>
   <section class="launch-clock" id="launch-clock" aria-labelledby="launch-clock-title">
@@ -287,6 +288,7 @@ tr.failed td{color:var(--bad)}
     <div class="panel" data-panel="voice"><h2><span class="ttl">voice</span><small>its journal · copy what you like to X</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse voice"></button></h2><div class="body"><div id="voice"></div></div></div>
   </div>
 </div>
+<footer class="home-foot" id="home-foot"><span>Every number here is read from Robinhood Chain. A verdict is the worm's opinion at scan time, not advice.</span><a href="/docs">How it works →</a></footer>
 <div class="ticker"><span class="lbl">LAUNCHES</span><div class="run" id="ticker"></div></div>
 <script>
 const $=s=>document.querySelector(s);
