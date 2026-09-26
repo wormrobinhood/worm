@@ -407,8 +407,8 @@ def backtest_arm(db, name, policy, delay):
     rets, base = [], []
     try:
         gas_default = lab.paper_gas(db)
-        for c in db.q("SELECT token, t0, cost, gas FROM lab_cases WHERE status='resolved' AND COALESCE(source,'api')<>'mixed'"):
-            path = [(r["ts"], r["price"]) for r in db.q("SELECT ts, price FROM ticks WHERE token=? ORDER BY ts", (c["token"],))]
+        for c in db.q("SELECT token, t0, cost, gas, source FROM lab_cases WHERE status='resolved' AND COALESCE(source,'api')<>'mixed'"):
+            path = lab.path_of(db, c)
             if len(path) < 3:
                 continue
             fee = c["cost"] if c.get("cost") is not None else lab.FEE

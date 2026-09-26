@@ -40,6 +40,21 @@ GAS_PER_SIDE = 0.004           # gas per leg as a fraction of the position when 
                                # $0.04 on its $10 (the quoted swap plus two approvals it charges, at recent chain prices)
 MAX_GAP_S = 900                # a position held across a longer silence in its path ...
 GAP_CAP = 1.0                  # ... is credited at most +100%: what happened in the hole is unknown
+ENTRY = ":entry"               # a paper entry's own case: lab_cases.token is the token plus this, beside its verdict case
+ENTRY_TICK_WINDOW_S = 120      # v1 wrote an entry's pool reading this long at most before the position opened
+
+
+def case_token(key):
+    """The token a case follows ('0x..' for a verdict case, '0x..:entry' for an entry case)."""
+    return key[:-len(ENTRY)] if key.endswith(ENTRY) else key
+
+
+def path_of(db, c):
+    """A case's price path from its one source: every tick of an entry case (all from its pool); a verdict case's
+    price-API ticks, without the pool reading v1 wrote into it at a paper entry."""
+    src = "" if c.get("source") == "pool" else " AND COALESCE(src,'')<>'pool'"
+    return [(r["ts"], r["price"]) for r in db.q(f"SELECT ts, price FROM ticks WHERE token=?{src} ORDER BY ts", (c["token"],))]
+
 
 # tp: list of (multiple, fraction of the initial tokens to sell); trail: drawdown from peak that sells the
 # rest; trail_from_start: trailing active before any take-profit; stop: loss that sells everything before
@@ -90,6 +105,10 @@ def ensure_tables(db):
         except Exception:
             pass
     db.x("CREATE TABLE IF NOT EXISTS ticks(token TEXT, ts INTEGER, price REAL, PRIMARY KEY(token, ts))")
+    try:
+        db.x("ALTER TABLE ticks ADD COLUMN src TEXT")    # 'pool' for an on-chain reading; NULL for the price API
+    except Exception:
+        pass
     for table in ("lab_arms", "lab_arms_usdg"):    # every case, and the USDG-pool cases only (what live could trade)
         db.x(f"CREATE TABLE IF NOT EXISTS {table}(name TEXT PRIMARY KEY, n INTEGER DEFAULT 0, sum_ret REAL DEFAULT 0,"
              " sum_sq REAL DEFAULT 0, wins INTEGER DEFAULT 0, updated INTEGER)")
@@ -97,15 +116,24 @@ def ensure_tables(db):
     if str(db.meta_get("lab_sim", "")) != str(SIM_VERSION):
         with db.transaction():
             # Once: v1 sums move aside; recent cases are re-simulated from their kept ticks (resimulate), older
-            # ones stay legacy. A case the book entered got a pool tick among API ticks: mixed, never ranked.
+            # ones stay legacy. A verdict case whose token the book entered got one pool tick among its API ticks,
+            # at the entry: that tick is labelled and left out of its path, so the case stays ranked (dropping the
+            # cases a rule bought would drop them by outcome). Only when the entry's tick cannot be told from an API
+            # tick (two readings in the window, which depends on timing, not on the outcome) is the case left mixed.
             old = int(db.meta_get("lab_sim", "1") or 1)
             if db.one("SELECT 1 FROM lab_arms WHERE n>0"):
                 db.x(f"DROP TABLE IF EXISTS lab_arms_v{old}")
                 db.x(f"CREATE TABLE lab_arms_v{old} AS SELECT * FROM lab_arms")
             db.x("UPDATE lab_arms SET n=0, sum_ret=0, sum_sq=0, wins=0")
             if "strategy" in {r["name"] for r in db.q("PRAGMA table_info(paper)")}:
-                db.x("UPDATE lab_cases SET source='mixed' WHERE source IS NULL AND token IN"
-                     " (SELECT token FROM paper WHERE strategy IS NOT NULL AND strategy<>'verdict-healthy-v1')")
+                for c in db.q("SELECT l.token, p.opened_ts FROM lab_cases l JOIN paper p ON p.token=l.token WHERE l.source IS NULL"
+                              " AND p.strategy IS NOT NULL AND p.strategy<>'verdict-healthy-v1'"):
+                    near = db.q("SELECT ts FROM ticks WHERE token=? AND ts BETWEEN ? AND ?",
+                                (c["token"], c["opened_ts"] - ENTRY_TICK_WINDOW_S, c["opened_ts"]))
+                    if len(near) == 1:
+                        db.x("UPDATE ticks SET src='pool' WHERE token=? AND ts=?", (c["token"], near[0]["ts"]))
+                    else:
+                        db.x("UPDATE lab_cases SET source='mixed' WHERE token=?", (c["token"],))
             db.x("UPDATE lab_cases SET source='api' WHERE source IS NULL")
             db.meta_set("lab_sim", SIM_VERSION)
 
@@ -296,21 +324,21 @@ def case_pair(db, c):
     """'USDG', 'ETH' or another asset's symbol: the case's own pool when it has one, else the token's launch pair."""
     if c.get("pair"):
         return c["pair"]
-    pool = db.one("SELECT quote FROM pools WHERE token=?", (c["token"],)) if db.one(
+    pool = db.one("SELECT quote FROM pools WHERE token=?", (case_token(c["token"]),)) if db.one(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pools'") else None
     if pool and pool.get("quote"):
         return "USDG" if pool["quote"] == C.USDG else "ETH" if pool["quote"] == C.ZERO else pool["quote"]
-    launch = db.one("SELECT pair_symbol FROM launches WHERE token=?", (c["token"],)) or {}
+    launch = db.one("SELECT pair_symbol FROM launches WHERE token=?", (case_token(c["token"]),)) or {}
     return launch.get("pair_symbol")
 
 
 def _resolve_once(db, c):
     now = int(time.time())
-    path = [(r["ts"], r["price"]) for r in db.q("SELECT ts, price FROM ticks WHERE token=? ORDER BY ts", (c["token"],))]
+    path = path_of(db, c)
     if len(path) < 3 or path[-1][0] < c["t0"] + HORIZON_S - STALE_TAIL_S:
         # a path that went silent is not a fill at its last price: no arm learns from it
         db.x("UPDATE lab_cases SET status='stale', resolved_ts=?, results=?, sim=? WHERE token=?", (now, "{}", SIM_VERSION, c["token"]))
-        db.add_event("lab", f"lab case ${c['symbol']} stale: {len(path)} ticks, last one {(now - path[-1][0]) // 3600 if path else '?'}h ago", c["token"])
+        db.add_event("lab", f"lab case ${c['symbol']} stale: {len(path)} ticks, last one {(now - path[-1][0]) // 3600 if path else '?'}h ago", case_token(c["token"]))
         return
     fee = c["cost"] if c.get("cost") is not None else FEE
     gas = c["gas"] if c.get("gas") is not None else paper_gas(db)
@@ -340,7 +368,7 @@ def _resolve_once(db, c):
     if arms:
         best = max(arms, key=arms.get)
         db.add_event("lab", f"lab case ${c['symbol']} resolved (simulated{'' if ranked else ', mixed prices: not ranked'}):"
-                     f" best arm {best} {arms[best] * 100:+.0f}%, {DEFAULT} {arms.get(DEFAULT, 0) * 100:+.0f}%", c["token"])
+                     f" best arm {best} {arms[best] * 100:+.0f}%, {DEFAULT} {arms.get(DEFAULT, 0) * 100:+.0f}%", case_token(c["token"]))
 
 
 def resimulate(db, limit=40):
@@ -348,8 +376,8 @@ def resimulate(db, limit=40):
     (ticks pruned after a week) stay as they were, marked legacy (sim 1), and are never ranked."""
     for c in db.q("SELECT * FROM lab_cases WHERE status='resolved' AND sim IS NULL LIMIT ?", (limit,)):
         with db.transaction():
-            path = db.q("SELECT ts FROM ticks WHERE token=? ORDER BY ts", (c["token"],))
-            if len(path) < 3 or path[0]["ts"] > c["t0"] or path[-1]["ts"] < c["t0"] + HORIZON_S - STALE_TAIL_S:
+            path = [{"ts": ts} for ts, _ in path_of(db, c)]
+            if len(path) < 3 or path[0]["ts"] > c["t0"] + ENTRY_SLACK_S or path[-1]["ts"] < c["t0"] + HORIZON_S - STALE_TAIL_S:
                 db.x("UPDATE lab_cases SET sim=1 WHERE token=?", (c["token"],))      # legacy v1: not enough left to redo
                 continue
             _resolve_once(db, c)

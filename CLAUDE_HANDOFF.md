@@ -725,7 +725,7 @@ per fix.
   - Take-profits fill at their level. Every leg pays gas. A gain across a gap of more than 15 minutes is
     capped at +100%.
   - Paper-entry cases are priced from their pool every minute by the watcher, one batched storage read.
-  - v1 mixed-source cases are kept but never ranked. The advisor backtest uses the same gas and gap rule.
+  - Entry cases are keyed `token:entry` beside the untouched verdict case (no deletes). A v1 verdict case's entry-time pool tick is labelled `ticks.src='pool'` and excluded from its path; only unclear ones are 'mixed'. The advisor backtest uses the same path, gas and gap rule.
   - `research_policy` is research only. `current_policy` is still the code default until a cohort passes.
 - **shadow-keep-v1** (`watch.FILTERED`, `watch.filtered_member`, `strategy_validation._sources`,
   `trader.candidates`). It buys nothing. Its members are the four rules' USDG entries whose recorded

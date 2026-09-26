@@ -374,28 +374,26 @@ def _sample(rpc, db, paper, now, on_entry=None):
 
 def _enroll(db, row, now, mid):
     """The lab ranks exit rules on what the book really buys (or what a rule chose and the breaker turned away):
-    a case from the entry, at the pool's mid, priced from that pool from here on (sample_lab). A verdict case of
-    the same token, priced from the API, gives way to it: one path never mixes two price sources."""
+    a case of its own from the entry (key token + lab.ENTRY), at the pool's mid, priced from that pool from here on
+    (sample_lab). The token's verdict case, priced from the API, is left exactly as it is and keeps being ranked:
+    removing the cases a rule picked would remove them by how they were doing."""
     lab.ensure_tables(db)
     try:
         m = json.loads(row["metrics"] or "{}")
         pk = json.loads(row.get("pool_key") or "null") or {}
     except ValueError:
         m, pk = {}, {}
-    old = db.one("SELECT status, source FROM lab_cases WHERE token=?", (row["token"],))
-    if old and (old["status"] != "active" or old["source"] == "pool"):
+    key = row["token"] + lab.ENTRY
+    if db.one("SELECT 1 FROM lab_cases WHERE token=?", (key,)):
         return
-    if old:
-        db.x("DELETE FROM ticks WHERE token=?", (row["token"],))
-        db.x("DELETE FROM lab_cases WHERE token=?", (row["token"],))
     held = db.one("SELECT gas_usd, size_usd FROM paper WHERE token=? AND status='open'", (row["token"],)) or {}
     gas = held["gas_usd"] / held["size_usd"] if held.get("gas_usd") and held.get("size_usd") else None   # this entry's own
     pair = "USDG" if pk.get("quote") == C.USDG else "ETH" if pk.get("quote") == C.ZERO else None
     db.x("INSERT OR IGNORE INTO lab_cases(token,symbol,score,verdict,t0,p0,status,cost,misses,source,pool_key,pair,gas)"
          " VALUES(?,?,?,?,?,?,?,?,0,'pool',?,?,?)",
-         (row["token"], row["symbol"], m.get("score"), m.get("verdict"), now, mid, "active", lab.token_cost(db, row["token"]),
+         (key, row["symbol"], m.get("score"), m.get("verdict"), now, mid, "active", lab.token_cost(db, row["token"]),
           json.dumps(pk) if pk else None, pair, gas))
-    db.x("INSERT OR IGNORE INTO ticks(token,ts,price) VALUES(?,?,?)", (row["token"], now, mid))
+    db.x("INSERT OR IGNORE INTO ticks(token,ts,price,src) VALUES(?,?,?,'pool')", (key, now, mid))
 
 
 def sample_lab(rpc, db, now):
@@ -403,14 +401,15 @@ def sample_lab(rpc, db, now):
     the pool it would have been sold into, never the price API (lab.tick samples the others)."""
     if not db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lab_cases'"):
         return
-    pools = {}
+    pools, keys = {}, {}
     for c in db.q("SELECT token, pool_key FROM lab_cases WHERE status='active' AND source='pool' AND pool_key IS NOT NULL"):
+        token = lab.case_token(c["token"])
         try:
             pk = json.loads(c["pool_key"])
         except ValueError:
             continue
-        if execution.verified(pk, c["token"], execution.PAPER_QUOTES) and "fee" in pk:
-            pools[c["token"]] = pk
+        if execution.verified(pk, token, execution.PAPER_QUOTES) and "fee" in pk:
+            pools[token], keys[token] = pk, c["token"]
     if not pools:
         return
     try:
@@ -418,7 +417,7 @@ def sample_lab(rpc, db, now):
     except Exception as e:
         log.info("lab pool sample failed: %s", e)
         return                                     # a missed reading is a gap, never a guessed price
-    db.many("INSERT OR IGNORE INTO ticks(token,ts,price) VALUES(?,?,?)", [(t, now, p) for t, p in mids.items() if p])
+    db.many("INSERT OR IGNORE INTO ticks(token,ts,price,src) VALUES(?,?,?,'pool')", [(keys[t], now, p) for t, p in mids.items() if p])
 
 
 class Watcher:

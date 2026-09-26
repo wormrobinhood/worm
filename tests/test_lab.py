@@ -333,6 +333,34 @@ def test_mixed_source_cases_are_never_ranked_and_usdg_cases_rank_separately(db, 
     assert lab.summary(db)["cases_mixed"] == 1
 
 
+def test_a_v1_case_the_book_entered_keeps_its_ticks_and_its_rank(db, monkeypatch):
+    from wormhole.paper import Paper
+    Paper(db)
+    lab.ensure_tables(db)
+    monkeypatch.setattr(lab, "time", Clock(NOW))
+    monkeypatch.setattr(lab, "token_prices", lambda addrs: {})
+    t0 = NOW - lab.HORIZON_S - 3600
+    api = [(t0 + i * 300, 1.0 + 0.01 * (i % 4)) for i in range(600)]
+    opened = t0 + 7200 + 150                                                 # no API reading in the entry window
+    for token, extra in ((TOKEN_A, [(opened - 20, 5.0)]),                    # one pool reading at the entry: clear
+                         (TOKEN_B, [(opened - 100, 5.0), (opened - 10, 5.0)])):   # two readings in the window: unclear
+        case(db, token, t0, sorted(api + extra))
+        db.x("UPDATE lab_cases SET status='resolved', results='{}' WHERE token=?", (token,))
+        db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,strategy) VALUES(?,?,?,?,?,?,'closed','rule-a')",
+             (token, "T", opened, 1.0, 10.0, 10.0))
+    db.meta_set("lab_sim", 1)
+    lab.ensure_tables(db)
+    assert db.one("SELECT source FROM lab_cases WHERE token=?", (TOKEN_A,))["source"] == "api"
+    assert db.q("SELECT ts FROM ticks WHERE token=? AND src='pool'", (TOKEN_A,)) == [{"ts": opened - 20}]
+    assert db.one("SELECT source FROM lab_cases WHERE token=?", (TOKEN_B,))["source"] == "mixed"
+    before = db.one("SELECT COUNT(*) n FROM ticks")["n"]
+    lab.tick(db)
+    assert db.one("SELECT COUNT(*) n FROM ticks")["n"] == before                            # nothing deleted
+    a = db.one("SELECT sim FROM lab_cases WHERE token=?", (TOKEN_A,))
+    assert a["sim"] == lab.SIM_VERSION and db.one("SELECT n FROM lab_arms WHERE name=?", (lab.DEFAULT,))["n"] == 1
+    assert 5.0 not in [p for _, p in lab.path_of(db, {"token": TOKEN_A, "source": "api"})]
+
+
 def test_a_lab_ranking_can_never_choose_the_exit(db, monkeypatch):
     """Only code changes the exit new positions get: a winning lab table, an adopted AI arm or a lab-only pass
     changes nothing without a paper cohort."""
