@@ -500,6 +500,10 @@ def test_the_summary_puts_what_live_could_trade_next_to_the_whole_book(db, feed)
     pairs = {p['token'][:4]: (p['pair'], p['live_comparable']) for p in s['closed']}
     assert pairs['0xe1'] == ('ETH', False) and pairs['0xe2'] == ('USDG', True) and pairs['0xe4'] == ('USDG', False)
     assert s['risk_live_comparable']['allowed'] and s['skipped'] == []
+    db.x("UPDATE paper SET strategy='quiet-v1', entry_shadow=? WHERE token IN (?,?)",
+         ('{"decision": "keep", "version": "entry-risk-shadow-v1"}', '0x' + 'e1' * 20, '0x' + 'e2' * 20))
+    kept = next(f for f in pb.summary()['filtered'] if f['rule'] == 'shadow-keep-v1')
+    assert kept['all_pools']['closed_count'] == 2 and kept['live_comparable']['closed_count'] == 1   # the ETH one is not
 
 
 def test_the_rebuilt_pause_lasts_a_day_after_losses_fall_back():

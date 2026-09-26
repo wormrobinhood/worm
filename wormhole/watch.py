@@ -74,6 +74,26 @@ STRATEGIES = [
                             {"feature": "moves_15m", "op": ">=", "value": 1}]},
 ]
 STRATEGY = STRATEGIES[0]           # the rule the summaries name first
+# Filtered rules buy nothing themselves: their members are the positions the rules named in `of` open whose entry
+# decision by a frozen shadow filter, recorded on the row before any outcome, was `decision`. They leave the rules
+# above exactly as they are (same entries, same cohorts) and get a cohort of their own under the same gate.
+#   shadow-keep-v1   (2026-09-26) any rule's entry that entry-risk-shadow-v1 (paper_research.LIMITS) would keep. Out of
+#            sample so far the 5 entries it kept all won (+$23.48) and the 18 it would skip lost $14.84; p about 0.01,
+#            but 5 trades and only 1 in a USDG pool. A hypothesis to be proven on 50 new USDG positions, nothing more.
+FILTERED = [{"name": "shadow-keep-v1", "of": ["quiet-v1", "runner-v1", "clean-crowd-v1", "holders-v1"],
+             "filter": "entry-risk-shadow-v1", "decision": "keep"}]
+
+
+def filtered_member(rule, row):
+    """Does the paper row (strategy, entry_shadow) belong to the filtered rule? Only a decision recorded at entry
+    by exactly this filter version counts; a row without one never does."""
+    if row.get("strategy") not in rule["of"]:
+        return False
+    try:
+        shadow = json.loads(row.get("entry_shadow") or "null") or {}
+    except (ValueError, TypeError):
+        return False
+    return shadow.get("version") == rule["filter"] and shadow.get("decision") == rule["decision"]
 SUPPLY = 1_000_000_000             # every Pons token: fully diluted value = price * supply
 OPS = {">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b}
 
@@ -458,6 +478,7 @@ def summary(db):
     day = int(time.time()) - 86400
     counts = {r["status"]: r["n"] for r in db.q("SELECT status, COUNT(*) n FROM watch WHERE t0>=? GROUP BY status", (day,))}
     return {"strategies": [{"name": rule["name"], "looks_min": rule["looks"]} for rule in STRATEGIES],
+            "filtered": [{"name": r["name"], "of": r["of"], "filter": r["filter"], "decision": r["decision"]} for r in FILTERED],
             "watching": counts.get("watching", 0) + counts.get("new", 0),
             "entered_24h": counts.get("entered", 0), "passed_over_24h": counts.get("done", 0),
             "unsupported_24h": counts.get("unsupported", 0),

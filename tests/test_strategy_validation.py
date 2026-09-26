@@ -15,6 +15,7 @@ OTHER = {"name": "rule-b", "looks": [60], "conditions": [{"feature": "ret_p0", "
 @pytest.fixture(autouse=True)
 def one_rule(monkeypatch):
     monkeypatch.setattr(watch, "STRATEGIES", [RULE])
+    monkeypatch.setattr(watch, "FILTERED", [])            # the filtered rule has its own tests below
 
 
 def exit_spec():
@@ -254,6 +255,77 @@ def test_old_trials_migrate_without_passing_or_freeing_anything_seen(db):
     assert [r['status'] for r in db.q('SELECT status FROM strategy_trials ORDER BY id')] == ['failed', 'voided', 'voided', 'collecting']
     V.tick(db)                                               # trial 4's spec is stale: voided; k=3 was never seen
     assert db.one("SELECT k FROM strategy_trials WHERE status='collecting'")['k'] == 3
+
+
+# ---- a filtered rule: another rule's entries that the frozen shadow filter kept ----------------------
+
+KEEP = {"name": "keep-a", "of": ["rule-a"], "filter": "entry-risk-shadow-v1", "decision": "keep"}
+
+
+def shadow(db, token, decision, version="entry-risk-shadow-v1"):
+    db.x("UPDATE paper SET entry_shadow=? WHERE token=?",
+         (json.dumps({"decision": decision, "version": version, "reasons": [], "missing": []}), token))
+
+
+def test_the_filtered_rule_enrolls_only_kept_usdg_entries_and_leaves_the_base_rule_alone(db, monkeypatch):
+    monkeypatch.setattr(watch, "FILTERED", [KEEP])
+    V.tick(db)
+    assert [(r["rule"], r["k"]) for r in db.q("SELECT rule,k FROM strategy_trials ORDER BY id")] == [("rule-a", 1), ("keep-a", 2)]
+    for i, decision in enumerate(("keep", "skip", "abstain", "keep", "keep"), start=1):
+        shadow(db, position(db, i), decision)
+    shadow(db, position(db, 6), "keep", version="entry-risk-shadow-v0")        # another filter version: never
+    position(db, 7)                                                            # no decision recorded: never
+    db.x("UPDATE paper SET pool_key=? WHERE token=?", (json.dumps({"quote": C.ZERO}), tok(5)))   # kept, but an ETH pool
+    V.tick(db)
+    members = lambda rule: [m["token"] for m in db.q("SELECT m.token FROM strategy_members m JOIN strategy_trials t ON t.id=m.trial"
+                                                     " WHERE t.rule=? ORDER BY m.token", (rule,))]
+    assert members("keep-a") == [tok(1), tok(4)]
+    assert members("rule-a") == sorted([tok(1), tok(2), tok(3), tok(4), tok(6), tok(7)])   # exactly as without it
+    assert db.one("SELECT COUNT(*) n FROM paper")["n"] == 7                                # it buys nothing itself
+
+
+def test_the_filtered_rule_is_judged_once_under_the_same_gate(db, monkeypatch):
+    monkeypatch.setattr(watch, "FILTERED", [KEEP])
+    V.tick(db)
+    for i in range(V.COHORT_N):
+        shadow(db, position(db, i, .3 + .001 * i), "keep")
+    V.tick(db)
+    s = V.summary(db)
+    keep = next(v for v in s["rules"] if v["rule"] == "keep-a")
+    assert keep["passed"] and keep["last"]["n"] == V.COHORT_N and keep["last"]["attempt"] == 2
+    assert "keep-a" in s["passed_rules"]
+
+
+def test_editing_the_filter_or_its_base_rule_voids_the_filtered_cohort(db, monkeypatch):
+    from wormhole import paper_research
+    monkeypatch.setattr(watch, "FILTERED", [KEEP])
+    V.tick(db)
+    spec = V.frozen(KEEP)
+    monkeypatch.setattr(paper_research, "LIMITS", paper_research.LIMITS[:-1])
+    assert V.frozen(KEEP) != spec
+    monkeypatch.undo()
+    monkeypatch.setattr(watch, "FILTERED", [KEEP])
+    monkeypatch.setattr(watch, "STRATEGIES", [{**RULE, "looks": [45]}])
+    assert V.frozen(KEEP) != spec
+
+
+def test_live_candidates_of_a_passed_filtered_rule_are_its_kept_entries(db, monkeypatch):
+    from wormhole import trader
+    trader.ensure_tables(db)
+    monkeypatch.setattr(watch, "FILTERED", [KEEP])
+    shadow(db, position(db, 1), "keep")
+    shadow(db, position(db, 2), "skip")
+    assert [r["token"] for r in trader.candidates(db, ["keep-a"])] == [tok(1)]
+    assert sorted(r["token"] for r in trader.candidates(db, ["rule-a"])) == [tok(1), tok(2)]
+
+
+def test_the_production_filtered_rule_draws_from_every_entry_rule_under_the_recorded_filter(monkeypatch):
+    from wormhole import paper_research
+    monkeypatch.undo()
+    rule = watch.FILTERED[0]
+    assert rule["name"] == "shadow-keep-v1" and rule["filter"] == paper_research.FILTER_VERSION
+    assert rule["of"] == [r["name"] for r in watch.STRATEGIES] and rule["decision"] == "keep"
+    assert [r["name"] for r in V.rules()][-1] == "shadow-keep-v1"
 
 
 def test_profitable_late_recovery_cannot_qualify_a_strategy(db):

@@ -45,14 +45,30 @@ def ensure_tables(db):
 
 def frozen(rule):
     """The strategy as one canonical string: the entry rule and the exit policy new positions get."""
+    from . import watch, paper_research
     policy, _ = lab.parse_arm(lab.DEFAULT)
+    if rule.get('of'):
+        # A filtered rule freezes the rules it draws from and the filter's own thresholds: editing either voids it.
+        rule = {**rule, 'bases': [r for r in watch.STRATEGIES if r['name'] in rule['of']],
+                'limits': [list(x) for x in paper_research.LIMITS], 'filter_version': paper_research.FILTER_VERSION}
     return json.dumps({'entry': rule, 'exit': policy, 'arm': lab.DEFAULT,
                        'execution': execution.evidence_spec()}, sort_keys=True)
 
 
 def rules():
+    """Every rule with a cohort: the entry rules, then the filtered rules drawn from them (watch.FILTERED)."""
     from . import watch
-    return list(watch.STRATEGIES)
+    return list(watch.STRATEGIES) + list(watch.FILTERED)
+
+
+def _sources(trial):
+    """The paper `strategy` labels whose positions can belong to this trial: its own rule, or for a filtered rule
+    the rules it draws from, as frozen in the trial itself."""
+    try:
+        entry = json.loads(trial['spec'] or '{}').get('entry') or {}
+    except (ValueError, AttributeError):
+        entry = {}
+    return list(entry.get('of') or [trial['rule']]), entry if entry.get('of') else None
 
 
 def _seen(db, trial, until=None):
@@ -63,8 +79,9 @@ def _seen(db, trial, until=None):
         return True
     if 'strategy' not in {r['name'] for r in db.q('PRAGMA table_info(paper)')}:
         return False
-    return bool(db.one('SELECT 1 FROM paper WHERE id>? AND strategy=? AND opened_ts<=?',
-                       (trial['cutoff'] or 0, trial['rule'], until if until is not None else 2 ** 62)))
+    names, _ = _sources(trial)
+    return bool(db.one(f"SELECT 1 FROM paper WHERE id>? AND strategy IN ({','.join('?' * len(names))}) AND opened_ts<=?",
+                       (trial['cutoff'] or 0, *names, until if until is not None else 2 ** 62)))
 
 
 def attempt(db, rule, spec):
@@ -118,17 +135,24 @@ def _fresh(row):
 
 
 def admit(db, trial):
-    """Paper positions this rule opened after the trial began, oldest first, the first one per creator."""
+    """Paper positions this rule opened after the trial began, oldest first, the first one per creator. For a
+    filtered rule: positions its source rules opened whose shadow decision at entry matched."""
+    from . import watch
     if 'strategy' not in {r['name'] for r in db.q('PRAGMA table_info(paper)')}:
         return                                       # the paper book adds its columns when it starts
     exit_spec = json.dumps(json.loads(trial['spec'])['exit'], sort_keys=True)
     have = db.one('SELECT COUNT(*) n FROM strategy_members WHERE trial=?', (trial['id'],))['n']
-    rows = db.q("SELECT p.id,p.token,p.opened_ts,p.policy_spec,p.gas_usd,p.cost,p.execution_model,p.execution_spec,p.pool_key,l.deployer FROM paper p LEFT JOIN launches l ON l.token=p.token"
-                " WHERE p.id>? AND p.strategy=? AND p.token NOT IN (SELECT token FROM strategy_members WHERE trial=?) ORDER BY p.id",
-                (trial['cutoff'], trial['rule'], trial['id']))
+    names, filtered = _sources(trial)
+    rows = db.q("SELECT p.id,p.token,p.opened_ts,p.policy_spec,p.gas_usd,p.cost,p.execution_model,p.execution_spec,p.pool_key,"
+                "p.strategy,p.entry_shadow,l.deployer FROM paper p LEFT JOIN launches l ON l.token=p.token"
+                f" WHERE p.id>? AND p.strategy IN ({','.join('?' * len(names))}) AND p.token NOT IN"
+                " (SELECT token FROM strategy_members WHERE trial=?) ORDER BY p.id",
+                (trial['cutoff'], *names, trial['id']))
     for r in rows:
         if have >= COHORT_N:
             return
+        if filtered and not watch.filtered_member(filtered, r):
+            continue
         try:
             same_exit = json.dumps(json.loads(r['policy_spec'] or 'null'), sort_keys=True) == exit_spec
             spec = json.loads(trial['spec'])['execution']

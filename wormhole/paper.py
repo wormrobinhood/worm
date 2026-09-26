@@ -334,6 +334,7 @@ class Paper:
         return not failed_quote
 
     def summary(self):
+        from . import watch
         opens = self.db.q("SELECT * FROM paper WHERE status='open' ORDER BY opened_ts DESC")
         closed = self.db.q("SELECT * FROM paper WHERE status='closed' ORDER BY closed_ts DESC LIMIT 30")
         unreal = 0.0
@@ -356,7 +357,7 @@ class Paper:
         tot = self.db.one("SELECT COALESCE(SUM(pnl_usd),0) s, COALESCE(SUM(pnl_usd>0),0) w, COUNT(*) n FROM paper WHERE status='closed'")
         cur, why = lab.current_policy(self.db)
         unpriced = sum(p['valuation_stale'] for p in opens)
-        every = self.db.q("SELECT status,pnl_usd,strategy,pool_key,execution_model,opened_in_pause FROM paper")
+        every = self.db.q("SELECT status,pnl_usd,strategy,pool_key,execution_model,opened_in_pause,entry_shadow FROM paper")
         skips = self.db.q("SELECT strategy, pair, reason, COUNT(*) n FROM paper_skips GROUP BY strategy, pair, reason ORDER BY strategy")
         return {"open": opens, "closed": closed, "realized_usd": round(tot["s"], 2),
                 # The headline for anything that stands in for live: USDG pools only (live buys nowhere else), second-
@@ -364,6 +365,10 @@ class Paper:
                 "live_comparable": _book(every, live_comparable), "all_pools": _book(every, lambda r: True),
                 "live_comparable_means": "a USDG pool, bought by a second-look rule at quoted fills, not while the loss breaker was paused",
                 "skipped": skips,
+                # Filtered rules (watch.FILTERED) own no positions: the tallies of the rows their filter kept.
+                "filtered": [{"rule": f["name"], "of": f["of"], "filter": f["filter"],
+                              "live_comparable": _book(every, lambda r, f=f: live_comparable(r) and watch.filtered_member(f, r)),
+                              "all_pools": _book(every, lambda r, f=f: watch.filtered_member(f, r))} for f in watch.FILTERED],
                 "risk_live_comparable": trade_risk.check(self.db, 'paper', latch=False, scope='usdg'),
                 "unrealized_usd": None if unpriced else round(unreal, 2), "priced_unrealized_usd": round(unreal, 2),
                 "closed_count": tot["n"], "win_rate": round(100.0 * tot["w"] / tot["n"]) if tot["n"] else None,
