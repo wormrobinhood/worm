@@ -31,13 +31,11 @@ EXIT_TOLERANCE_RETRY = 0.10    # after a sell reverted: give up more to get out
 MODEL = 'quoted-pool-v2'
 
 
-# What a paper position's evidence was produced under. A cohort compares this, not source files: the old whole-file
-# digest voided every cohort in progress on any edit (a comment, a refactor, an unrelated fix in chain.py), and each
-# void cost an attempt, so the gate could never finish. Constants are listed by value, so changing one voids the
-# cohorts it affects. SEMANTICS versions the code that turns quotes, mids and swap logs into fills, features and
-# exits: bump it by hand whenever that code changes meaning (it voids every cohort). tests/test_trade_checks.py pins
-# a comment- and docstring-blind digest of that code and fails until a change is acknowledged there: bump
-# SEMANTICS, or re-pin when behaviour really is unchanged. Re-pinning a real change is the one way to cheat this.
+# What a paper position's evidence was produced under. A cohort compares this, not whole source files: the old
+# whole-file hash voided every cohort in progress on any edit (a comment, an unrelated fix in chain.py), and each void
+# cost an attempt, so the gate could never finish. Constants are listed by value; the code that makes fills, features
+# and exits is covered by a digest of its syntax (EVIDENCE_CODE), blind to comments and docstrings, computed at run
+# time. SEMANTICS is bumped by hand only for a change of meaning outside that code (a new data source, say).
 SEMANTICS = 'paper-evidence-3'
 GAS_UNITS_MARGIN = 1.3          # the swap's estimated gas units, padded
 APPROVAL_GAS_UNITS = 240_000    # two bounded approvals, charged on every swap even when an allowance could be reused
@@ -96,13 +94,36 @@ def _code_digest(parts):
     return h.hexdigest()[:32]
 
 
+# The code that picks, prices and closes a paper position and decides whether it could stand in for live. Its digest
+# is part of every position's evidence spec, computed at run time, so no edit to it can reach a cohort unannounced.
+# The entry rules' own definitions are frozen per rule (strategy_validation.frozen), not here: adding a rule must not
+# void the others. A new Python minor version changes every digest and so voids every cohort once.
+EVIDENCE_CODE = {
+    'trade_checks': ('entry', 'exit_quote', 'quote_unit', 'gas_cost', '_gas_cost_at_price', 'entry_basis', 'verified',
+                     'pool', 'eligible', 'LIVE_QUOTES', 'PAPER_QUOTES'),
+    'paper': ('pair', 'live_comparable', 'pause_windows', 'Paper._consider', 'Paper.enter', 'Paper._open', 'Paper._mark',
+              'Paper._mark_position', 'Paper._quote', 'Paper._value'),
+    'trade_risk': ('loss_limit', 'check'),
+    'lab': ('parse_arm', 'side_cost', 'token_cost', 'trail_pct', 'exit_step'),
+    'watch': ('features', 'passes', 'flow', '_flows', 'holders_kept', 'sample_bucket', '_needs_flow', '_needs_holders',
+              'all_looks', '_resolve_pools', '_sample', 'filtered_member', 'Watcher._pools', 'Watcher.mark_positions'),
+    'poolstate': ('pool_id', 'state_slot', 'sqrt_price', 'token_price', 'mids', 'position_mids'),
+    'trader': ('pool_key', 'quote_buy'),
+    'prices': ('usable_price', 'observed_at', 'token_prices', 'eth_usd', 'eth_usd_cached', 'eth_usd_last'),
+    'paper_research': ('FILTER_VERSION', 'FEATURES', 'LIMITS', 'entry_features', 'risk_filter'),
+}
+
+
 def evidence_spec():
     from . import watch, trade_risk
-    return {'model': MODEL, 'semantics': SEMANTICS, 'entry_basis': 'acquisition_cost_per_token',
+    return {'model': MODEL, 'semantics': SEMANTICS, 'code': code_digest(EVIDENCE_CODE),
+            'entry_basis': 'acquisition_cost_per_token',
             'paper_size_usd': C.PAPER_SIZE_USD, 'paper_max_open': C.PAPER_MAX_OPEN,
             'paper_fill': PAPER_FILL, 'slippage': SLIPPAGE, 'exit_tolerance': EXIT_TOLERANCE,
+            'exit_tolerance_retry': EXIT_TOLERANCE_RETRY,
             'max_roundtrip_loss': MAX_ROUNDTRIP_LOSS, 'max_price_impact': MAX_PRICE_IMPACT,
             'max_gas_fraction': MAX_GAS_FRACTION, 'quote_ttl': QUOTE_TTL, 'live_quotes': list(LIVE_QUOTES),
+            'paper_quotes': list(PAPER_QUOTES),
             'gas': {'units_margin': GAS_UNITS_MARGIN, 'approval_units': APPROVAL_GAS_UNITS, 'price_margin': GAS_PRICE_MARGIN},
             'loss_limit_usd': trade_risk.loss_limit(), 'watch': watch.evidence_constants()}
 

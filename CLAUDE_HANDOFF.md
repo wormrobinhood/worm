@@ -707,9 +707,10 @@ per fix.
   `live_comparable` on every open or closed row. The old top-level totals are unchanged.
 - **Fingerprint and attempts** (`trade_checks.evidence_spec`, `SEMANTICS='paper-evidence-3'`,
   `watch.evidence_constants`, `strategy_validation.attempt/_seen/stage`, column `strategy_trials.counted`).
-  - The spec holds values, not file hashes. `tests/test_trade_checks.py::PINNED` pins a comment-blind AST
-    digest of the fill, feature and exit code. When that test fails: if behaviour changed, bump SEMANTICS;
-    if it did not, re-pin.
+  - The spec holds values, not file hashes, plus run-time digests of the code's syntax (comment- and
+    docstring-blind, read from the source files): `trade_checks.EVIDENCE_CODE` in `evidence_spec()['code']` and
+    `strategy_validation.GATE_CODE` in `frozen()['gate']` with the gate constants. Nothing is pinned by hand.
+    Keep both lists complete when adding code that picks, prices or judges positions.
   - Why the new attempt rule cannot be gamed: a void costs its k once anything of the cohort was visible (a
     member, or any position of its rule since the cutoff). A void before that returns the k. Counted
     attempts keep distinct k values, so the budget still sums to at most 0.10.
@@ -757,5 +758,6 @@ Risks and open points:
   USDG cohort is still only 3 of the last 30 trades, so a verdict needs many weeks.
 - The historical pause flag and the forward breaker use different scopes. The historical flag is the stricter
   one, on purpose.
-- The AST pin is tied to Python 3.11 (Dockerfile and CI both use 3.11).
+- The code digests depend on the Python minor version (3.11 in the Dockerfile and CI): moving Python voids
+  every cohort once.
 - Tests: 903 pass (872 before).

@@ -1,9 +1,6 @@
 import ast
-import hashlib
-import inspect
 import json
 import pathlib
-import textwrap
 import time
 import pytest
 from wormhole import config as C, trade_checks as E, trader
@@ -112,59 +109,57 @@ def test_cached_paper_exit_uses_no_price_refresh_and_charges_gas(db, quotes, mon
 
 # ---- the evidence fingerprint -------------------------------------------------------------------
 
-def behaviour_digest(sources):
-    """sha256 over the syntax trees of `sources` with docstrings removed: blind to comments, blank lines and
-    docstrings, changed by any edit to what the code does (a renamed variable included, deliberately)."""
-    h = hashlib.sha256()
-    for src in sources:
-        tree = ast.parse(textwrap.dedent(src))
-        for node in ast.walk(tree):
-            body = getattr(node, 'body', None)
-            if (isinstance(body, list) and body and isinstance(body[0], ast.Expr)
-                    and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str)):
-                node.body = body[1:] or [ast.Pass()]
-        h.update(ast.dump(tree).encode())
-    return h.hexdigest()[:32]           # 128 bits: plenty to notice an edit, and not mistaken for a key
+def source(module):
+    return (pathlib.Path(E.__file__).parent / f'{module}.py').read_text()
 
 
-def semantic_code():
-    """The code that turns quotes, mids and swap logs into paper fills, features and exits."""
-    from wormhole import lab, paper, poolstate, watch
-    fns = (E.entry, E.exit_quote, E.quote_unit, E._gas_cost_at_price, E.entry_basis, E.verified,
-           lab.exit_step, lab.trail_pct, paper.Paper._open, paper.Paper._mark_position, paper.Paper._quote,
-           watch.features, watch.passes, watch.flow, watch.holders_kept, watch.sample_bucket, watch._sample,
-           poolstate.token_price, poolstate.sqrt_price, poolstate.mids)
-    return [inspect.getsource(f) for f in fns]
+@pytest.mark.parametrize('module,name,comment_at,logic_from,logic_to', [
+    ('paper', 'Paper.enter', "            arm = lab.pick_arm(self.db)\n",
+     "risk = trade_risk.check(self.db, 'paper', scope='usdg' if usdg else None)", "risk = {'allowed': True}"),
+    ('trade_risk', 'check', "    losses, unknown = 0.0, False\n", "losses < limit and now >= until", "losses <= limit and now >= until"),
+    ('paper_research', 'LIMITS', None, "('fleet_pct', '<=', 20)", "('fleet_pct', '<=', 25)"),
+    ('trade_checks', 'entry', "    minimum = out * 9700 // 10000\n", "minimum = out * 9700 // 10000", "minimum = out * 9600 // 10000"),
+])
+def test_a_comment_leaves_the_evidence_digest_alone_and_a_logic_edit_moves_it(module, name, comment_at, logic_from, logic_to):
+    src = source(module)
+    assert name in E.EVIDENCE_CODE[module]
+    base = E.source_digest(ast.parse(src), E.EVIDENCE_CODE[module])
+    if comment_at:
+        assert comment_at in src
+        commented = src.replace(comment_at, comment_at + comment_at[:len(comment_at) - len(comment_at.lstrip())] + '# only a comment\n', 1)
+        assert E.source_digest(ast.parse(commented), E.EVIDENCE_CODE[module]) == base
+    assert logic_from in src
+    assert E.source_digest(ast.parse(src.replace(logic_from, logic_to, 1)), E.EVIDENCE_CODE[module]) != base
 
 
-# Re-pin ONLY after deciding the change leaves every fill, feature and exit exactly as it was. Otherwise bump
-# trade_checks.SEMANTICS (which voids every cohort in progress) and then re-pin. ast.dump output is stable within
-# one Python minor version: 3.11, as in the Dockerfile and CI; moving Python means re-pinning once.
-PINNED = {'semantics': 'paper-evidence-3', 'digest': 'f4e4e8cce23dbc3b0be4bc6f8d80a2b3'}
+def test_a_docstring_edit_leaves_the_digest_alone():
+    src = source('trade_checks')
+    old = '"""The shared paper/live exit reference. Gas is accounted for separately in cashflows."""'
+    assert old in src
+    assert E.source_digest(ast.parse(src.replace(old, '"""Reworded."""')), ('entry_basis',)) == \
+        E.source_digest(ast.parse(src), ('entry_basis',))
 
 
-def test_the_code_that_makes_evidence_is_pinned_to_its_semantics_version():
-    assert E.SEMANTICS == PINNED['semantics'], 'SEMANTICS was bumped: re-pin the digest below to the new code'
-    assert behaviour_digest(semantic_code()) == PINNED['digest'], (
-        'evidence code changed: bump trade_checks.SEMANTICS (voids cohorts) unless behaviour is truly unchanged, then re-pin')
+def test_the_evidence_spec_carries_the_code_digest_and_ignores_runtime_patches(monkeypatch):
+    from wormhole import paper, trade_risk
+    spec = E.evidence_spec()
+    assert spec['code'] == E.code_digest(E.EVIDENCE_CODE) and len(spec['code']) == 32
+    assert spec['exit_tolerance_retry'] == E.EXIT_TOLERANCE_RETRY and spec['paper_quotes'] == list(E.PAPER_QUOTES)
+    monkeypatch.setattr(E, 'entry', lambda *a, **k: {})                 # a test double is not an edit
+    monkeypatch.setattr(trade_risk, 'check', lambda *a, **k: {'allowed': True})
+    monkeypatch.setattr(paper.Paper, 'enter', lambda *a, **k: True)
+    assert E.evidence_spec() == spec
+    with pytest.raises(ValueError, match='out of date'):
+        E.code_digest({'paper': ('Paper.no_such_method',)})
 
 
-def test_the_digest_ignores_comments_and_docstrings_but_not_parameters():
-    base = 'def f(x):\n    """Doc."""\n    return x * 0.97\n'
-    assert behaviour_digest([base]) == behaviour_digest(['def f(x):\n    """Other words."""\n    # why\n\n    return x * 0.97  # note\n'])
-    assert behaviour_digest([base]) != behaviour_digest(['def f(x):\n    """Doc."""\n    return x * 0.96\n'])
-
-
-def test_the_evidence_spec_reads_no_source_files_and_moves_with_every_parameter(monkeypatch):
+def test_the_evidence_spec_moves_with_every_parameter(monkeypatch):
     from wormhole import lab, strategy_validation as V, watch
     rule = watch.STRATEGIES[0]
-    spec = E.evidence_spec()
-    assert 'implementation' not in spec and spec['semantics'] == E.SEMANTICS
     frozen = V.frozen(rule)
-    # a comment-only edit changes a file's bytes, never a value: reading any source file would fail here
-    monkeypatch.setattr(pathlib.Path, 'read_bytes', lambda self: pytest.fail('evidence must not hash source files'))
-    assert V.frozen(rule) == frozen and json.loads(frozen)['execution'] == spec
+    assert V.frozen(rule) == frozen and json.loads(frozen)['execution'] == E.evidence_spec()
     for obj, name, value in ((E, 'PAPER_FILL', .02), (E, 'APPROVAL_GAS_UNITS', 250_000), (E, 'SEMANTICS', 'x'),
+                             (E, 'EXIT_TOLERANCE_RETRY', .2), (E, 'PAPER_QUOTES', (C.USDG,)),
                              (watch, 'FLOW_WINDOW_S', 600), (watch, 'FAST_EVERY_S', 30), (C, 'PAPER_SIZE_USD', 20.0)):
         with monkeypatch.context() as m:
             m.setattr(obj, name, value)
@@ -178,3 +173,5 @@ def test_the_evidence_spec_reads_no_source_files_and_moves_with_every_parameter(
     changed = {**rule, 'conditions': [dict(c) for c in rule['conditions']]}
     changed['conditions'][0]['value'] += 1
     assert V.frozen(changed) != frozen
+
+
