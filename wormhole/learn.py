@@ -12,6 +12,7 @@ import statistics
 import time
 
 from . import advisor as ADV
+from .db import forgotten_launches
 from .prices import token_prices, PRICE0_WINDOW_S, usable_price, observed_at
 from .scorer import RULES
 
@@ -274,7 +275,7 @@ def creator_trust(db, deployer, exclude_token=None):
         r = db.one("SELECT COUNT(*) n, COALESCE(SUM(graduated),0) g FROM launches WHERE deployer=?", (deployer,))
         o = db.q("SELECT o.outcome, o.resolved FROM outcomes o JOIN launches l ON l.token=o.token WHERE l.deployer=?",
                  (deployer,))
-    n, g = int(r["n"]), int(r["g"])
+    n, g = int(r["n"]) + forgotten_launches(db, deployer), int(r["g"])   # old ungraduated launches live on as a count
     rug = sum(1 for x in o if x["outcome"] in BAD)
     grew = sum(1 for x in o if x["outcome"] in GOOD)
     unknown = sum(1 for x in o if x["outcome"] == "unknown")

@@ -1,10 +1,18 @@
 """SQLite storage. One connection, one lock, plain SQL."""
+import collections
 from contextlib import contextmanager
 import sqlite3
 import threading
 import time
 
 from . import config as C
+
+# Housekeeping deletes in short transactions: the lock is let go between batches so the treasury and the scorer
+# never wait long, and the WAL only ever holds one batch (a 150k-row DELETE in one go would grow it by ~100 MB).
+PRUNE_BATCH = 500
+PRUNE_MAX = 50_000          # rows per table per hourly run; a first run over a big table finishes over a few hours
+PRUNE_PAUSE_S = 0.05
+LAUNCH_KEEP_DAYS = 14       # ungraduated launches older than this are forgotten; their count per creator is kept
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS launches(
@@ -47,6 +55,7 @@ CREATE INDEX IF NOT EXISTS curve_buyers_ts ON curve_buyers(ts);
 CREATE TABLE IF NOT EXISTS wallet_records(wallet TEXT PRIMARY KEY, picks INTEGER, good INTEGER, grew INTEGER, updated INTEGER);
 CREATE TABLE IF NOT EXISTS wallet_folded(token TEXT PRIMARY KEY, ts INTEGER, buyers INTEGER, source TEXT);
 CREATE INDEX IF NOT EXISTS events_text ON events(text);
+CREATE TABLE IF NOT EXISTS launch_history(deployer TEXT PRIMARY KEY, launches INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID;
 """
 
 # Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an existing table alone.
@@ -152,10 +161,79 @@ class DB:
         return self.q("SELECT * FROM events ORDER BY id DESC LIMIT ?", (n,))
 
 
-def prune_launches(db, days=30):
-    """Forget launches older than `days` that never graduated, never got metadata, and whose deployer
-    never graduated anything. Creator history keeps everything else. Returns the number of rows removed."""
+def delete_batched(db, table, where, args=(), batch=PRUNE_BATCH, limit=PRUNE_MAX, pause=PRUNE_PAUSE_S):
+    """DELETE FROM table WHERE `where`, `batch` rows per transaction and at most `limit` per call, pausing
+    between batches so other threads get the lock. Returns the number of rows removed."""
+    done = 0
+    while done < limit:
+        want = min(batch, limit - done)
+        n = db.xc(f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {where} LIMIT ?)", (*args, want))
+        done += n
+        if n < want:
+            break
+        time.sleep(pause)
+    return done
+
+
+def prune_launches(db, days=LAUNCH_KEEP_DAYS, batch=PRUNE_BATCH, limit=PRUNE_MAX, pause=PRUNE_PAUSE_S):
+    """Forget ungraduated launches older than `days`: about 7,400 arrive a day and nothing looks at an old one
+    except to count it for its creator. So the count per deployer moves to launch_history in the same
+    transaction as the delete, and creator_trust, the flagged-creator count and the launch total read the
+    same numbers before and after. Graduated launches, the worm's own token, rows without a timestamp or a
+    deployer and the creators of tokens still waiting to be scored (a backlog after an outage) are kept. The windows that count
+    launches by time (the 7-day serial list, the scorer's BACKFILL_HOURS) always stay whole. Returns the
+    number of rows removed."""
+    days = max(days, 8, C.BACKFILL_HOURS / 24 + 4)
     cutoff = int(time.time()) - int(days * 86400)
-    return db.xc("DELETE FROM launches WHERE graduated=0 AND meta=0 AND ts<? AND token!=?"
-                 " AND deployer NOT IN (SELECT deployer FROM launches WHERE graduated=1)",
-                 (cutoff, C.TOKEN or ""))
+    done = 0
+    while done < limit:
+        want = min(batch, limit - done)
+        with db.transaction():
+            rows = db.q("SELECT token, deployer, ts FROM launches WHERE ts<? AND graduated=0 AND token!=?"
+                        " AND deployer IS NOT NULL AND deployer NOT IN (SELECT l.deployer FROM scan_jobs j JOIN launches l ON l.token=j.token"
+                        " WHERE j.state IN ('pending','leased') AND l.deployer IS NOT NULL) ORDER BY ts LIMIT ?",
+                        (cutoff, C.TOKEN or "", want))
+            if not rows:
+                break
+            db.many("INSERT INTO launch_history(deployer,launches) VALUES(?,?) ON CONFLICT(deployer)"
+                    " DO UPDATE SET launches=launches+excluded.launches",
+                    list(collections.Counter(r["deployer"] for r in rows).items()))
+            for i in range(0, len(rows), 500):
+                part = [r["token"] for r in rows[i:i + 500]]
+                db.x(f"DELETE FROM launches WHERE token IN ({','.join('?' * len(part))})", part)
+            # the span of forgotten launch times, so a forgotten launch that graduates later is not counted twice
+            since, before = db.meta_get("launch_history_since"), db.meta_get("launch_history_before")
+            lo, hi = min(r["ts"] for r in rows), max(r["ts"] for r in rows) + 1
+            db.meta_set("launch_history_since", lo if since is None else min(int(since), lo))
+            db.meta_set("launch_history_before", hi if before is None else max(int(before), hi))
+            db.meta_set("launches_forgotten", int(db.meta_get("launches_forgotten") or 0) + len(rows))
+        done += len(rows)
+        if len(rows) < want:
+            break
+        time.sleep(pause)
+    return done
+
+
+def forgotten_launches(db, deployer):
+    """Launches of this deployer that prune_launches removed: part of its record, no longer rows."""
+    r = db.one("SELECT launches FROM launch_history WHERE deployer=?", (deployer,))
+    return int(r["launches"]) if r else 0
+
+
+def launches_total(db):
+    """Every launch ever indexed, the forgotten ones included."""
+    return db.one("SELECT COUNT(*) n FROM launches")["n"] + int(db.meta_get("launches_forgotten") or 0)
+
+
+def launch_remembered(db, deployer, ts):
+    """A launch was indexed again (a forgotten one graduated late and the indexer read it back from the
+    factory): take it off the forgotten count, so its creator's record does not count it twice. Only a launch
+    inside the forgotten span qualifies. True when a count was taken back."""
+    since, before = db.meta_get("launch_history_since"), db.meta_get("launch_history_before")
+    if ts is None or deployer is None or since is None or not int(since) <= int(ts) < int(before):
+        return False
+    with db.transaction():
+        if db.xc("UPDATE launch_history SET launches=launches-1 WHERE deployer=? AND launches>0", (deployer,)) != 1:
+            return False
+        db.meta_set("launches_forgotten", max(0, int(db.meta_get("launches_forgotten") or 0) - 1))
+    return True

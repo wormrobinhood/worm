@@ -192,6 +192,40 @@ def test_failed_metadata_is_not_final(db):
     assert r["name"] == "Worm" and r["creator_tax_bps"] == 250 and r["meta"] == 1
 
 
+def test_live_launches_read_only_the_names_the_ticker_shows(db):
+    tokens = ["0x" + f"{i:040x}" for i in range(1, 31)]
+    answers = {}
+    for t in tokens:
+        answers.update(metadata(t))
+    node = Chain(logs=[launched(t, 100 + i) for i, t in enumerate(tokens)], answers=answers)
+    asked, batch = [], node.batch
+    node.batch = lambda calls: asked.extend(p[0]["data"][:10] for _, p in calls) or batch(calls)
+    shown = []
+    Indexer(node, db, on_launch=shown.append)._ingest(0, 999, live=True)
+    assert sorted(set(asked)) == sorted({selector("name()"), selector("symbol()")}) and len(asked) == 2 * ix.TICKER_NAMES
+    rows = db.q("SELECT name, symbol, twitter, meta FROM launches ORDER BY block")
+    assert all(r["name"] is None for r in rows[:-ix.TICKER_NAMES])
+    assert all(r["name"] == "Worm" and r["symbol"] == "WORM" and r["twitter"] is None and r["meta"] == 0
+               for r in rows[-ix.TICKER_NAMES:])
+    assert shown == tokens[-ix.TICKER_NAMES:]
+
+
+def test_a_ticker_name_is_not_the_full_record(db):
+    """A graduation whose full read fails stays meta=0 even though the ticker already has its name, so the
+    hourly refetch still asks for its tax and socials."""
+    node = Chain(logs=[launched(T1, 100)], answers=metadata(T1))
+    idx = Indexer(node, db)
+    idx._ingest(0, 199, live=True)
+    tax = node.answers.pop((CURVE, selector("creatorTaxBps()")))
+    node.logs.append(graduated(T1, 300))
+    idx._ingest(200, 399, live=True)
+    r = db.one("SELECT name, twitter, creator_tax_bps, meta FROM launches WHERE token=?", (T1,))
+    assert r["name"] == "Worm" and r["twitter"] == "x.com/w" and r["creator_tax_bps"] is None and r["meta"] == 0
+    node.answers[(CURVE, selector("creatorTaxBps()"))] = tax
+    assert idx.refetch_metadata() == 1
+    assert db.one("SELECT meta, creator_tax_bps FROM launches WHERE token=?", (T1,)) == {"meta": 1, "creator_tax_bps": 250}
+
+
 def test_metadata_is_truncated(db):
     node = Chain(logs=[launched(T1, 100), graduated(T1, 200)], answers=metadata(T1, name="N" * 500, symbol="S" * 100))
     Indexer(node, db)._ingest(0, 999, live=False)

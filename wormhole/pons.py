@@ -43,6 +43,17 @@ def pair_symbols(rpc, addrs):
     return {a: _SYMBOL_CACHE.get(a) or a[:8] for a in addrs}
 
 
+def token_names(rpc, tokens):
+    """Only name and symbol for each token (two reads instead of token_metadata's five): all the launch ticker
+    shows. A read that failed is None."""
+    tokens = list(tokens)
+    items = []
+    for t in tokens:
+        items += [(t, "name()", ("string",), (), ()), (t, "symbol()", ("string",), (), ())]
+    res = batch_calls(rpc, items, deadline=time.monotonic() + 10)
+    return {t: {"name": res[2 * i], "symbol": res[2 * i + 1]} for i, t in enumerate(tokens)}
+
+
 def token_metadata(rpc, tokens, with_curve=None):
     """name, symbol, logo, description, socials for each token; creator tax and fee bps from its curve.
     A read that failed is None, never '' or 0: the caller keeps what it had and can ask again."""

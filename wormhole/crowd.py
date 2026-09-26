@@ -25,6 +25,7 @@ LOSER_MAX_GOOD = 0.05     # at most this share of them not bad: with fewer than 
 MIN_HISTORY = 150         # resolved tokens on record before the read is trusted with points
 GOOD, BAD = ("flat", "grew"), ("rugged", "dumped")
 BACKFILL_PER_TICK = 4     # resolved tokens from before the buyers were followed, re-read from the chain per cycle
+UNPROVEN_KEEP_DAYS = 30   # a wallet with fewer than MIN_PICKS picks and no new pick for this long is forgotten
 _failed = collections.Counter()
 
 
@@ -132,6 +133,16 @@ def tick(rpc, db, backfill=BACKFILL_PER_TICK):
         else:
             _skip(db, r["token"], "no buyers found")
     return folded
+
+
+def prune(db, days=UNPROVEN_KEEP_DAYS, **batching):
+    """Forget wallets with fewer than MIN_PICKS picks whose record has not moved for `days` (about 13k new
+    wallets a day, most seen once). read() never looks at such a record and summary() does not judge it, so no
+    warning and no count of judged or losing wallets changes; 'needed' counts tokens, not wallets. Only the
+    total of wallets on record shrinks, and a wallet that comes back after that long starts its record again."""
+    from .db import delete_batched
+    return delete_batched(db, "wallet_records", "picks<? AND updated<?",
+                          (MIN_PICKS, int(time.time()) - int(days * 86400)), **batching)
 
 
 def summary(db):

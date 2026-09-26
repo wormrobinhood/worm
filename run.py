@@ -11,7 +11,7 @@ import time
 from wormhole import strategy_validation
 from wormhole import config as C
 from wormhole.chain import Rpc
-from wormhole.db import DB, prune_launches
+from wormhole.db import DB, delete_batched, prune_launches
 from wormhole.indexer import Indexer
 from wormhole.learn import Brain
 from wormhole.paper import Paper
@@ -226,12 +226,15 @@ def main():
                 trader.decide(rpc, db, rw, C.LIVE, acct, rd)
 
             def housekeeping():
-                if cycle_n % 12 == 1:                 # once an hour
-                    prune_launches(db)
-                    now_ = int(time.time())
-                    db.x("DELETE FROM curve_buyers WHERE ts<?", (now_ - 3 * 86400,))          # the fleet window is a day
-                    linked.prune(db)
-                    db.x("DELETE FROM events WHERE ts<? AND kind NOT IN ('lesson','launch')", (now_ - 60 * 86400,))
+                if cycle_n % 12 == 1:                 # once an hour; every prune is batched and bounded per run
+                    t0, now_ = time.time(), int(time.time())
+                    gone = {"launches": prune_launches(db)}
+                    gone["curve_buyers"] = delete_batched(db, "curve_buyers", "ts<?", (now_ - 3 * 86400,))   # the fleet window is a day
+                    gone["token_senders"], gone["code_cache"] = linked.prune(db)
+                    gone["events"] = delete_batched(db, "events", "ts<? AND kind NOT IN ('lesson','launch')", (now_ - 60 * 86400,))
+                    gone["wallet_records"] = crowd.prune(db)
+                    gone["posts"], gone["post_packets"] = voice.prune(db)
+                    log.info("housekeeping removed %s in %.1fs", ", ".join(f"{k} {v}" for k, v in gone.items()), time.time() - t0)
                     if hasattr(idx, "refetch_metadata"):
                         idx.refetch_metadata()
 

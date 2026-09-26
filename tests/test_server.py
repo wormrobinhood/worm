@@ -453,6 +453,83 @@ def test_websocket_hello_is_the_cached_state(site):
     assert client.app.state.snapshots.builds == 1
 
 
+def test_state_is_gzipped_once_per_build(site):
+    client, _, _ = site
+    r = client.get("/api/state", headers={"Accept-Encoding": "gzip"})
+    assert r.headers["content-encoding"] == "gzip" and "accept-encoding" in r.headers["vary"].lower()
+    assert r.json()["stats"] == {"scored": 1} and r.headers["cache-control"] == "no-store"
+    plain = client.get("/api/state", headers={"Accept-Encoding": "identity"})
+    assert "content-encoding" not in plain.headers and plain.json() == r.json()
+    assert client.app.state.snapshots.builds == 1
+
+
+def test_a_state_goes_out_only_when_it_changed():
+    def snap(core, fast):
+        return server.Snap({}, "", b"", core, fast)
+    push = server.StatePush(every=8, fast_every=60)
+    assert push.due(100) and not push.due(104) and push.due(104, kick=True) and push.due(113)
+    assert push.worth(snap("a", "x"), 100)
+    assert not push.worth(snap("a", "x"), 108)                  # unchanged: never sent again
+    assert not push.worth(snap("a", "y"), 130)                  # only the block, the ticker or the dig moved
+    assert push.worth(snap("a", "z"), 161)                      # ... they ride along at most once a minute
+    assert push.worth(snap("b", "z"), 165)                      # anything else goes out at the next look
+
+
+def test_fingerprint_ignores_the_clock_and_the_fast_counters():
+    base = {"now": 1, "launch": {"server_now": 1, "state": "unscheduled"}, "ticker": [1], "dig": [],
+            "stats": {"last_block": 5, "launches_24h": 9, "scored": 3}, "feed": [{"token": "0x1"}]}
+    core, fast = server._fingerprint(base)
+    later = dict(base, now=9, launch={"server_now": 9, "state": "unscheduled"})
+    assert server._fingerprint(later) == (core, fast)
+    moved = dict(base, ticker=[1, 2], stats=dict(base["stats"], last_block=6))
+    assert server._fingerprint(moved)[0] == core and server._fingerprint(moved)[1] != fast
+    scored = dict(base, stats=dict(base["stats"], scored=4))
+    assert server._fingerprint(scored)[0] != core
+
+
+def test_launches_do_not_rebuild_the_state_but_a_verdict_does_and_actions_reach_the_page(site):
+    client, hub, _ = site
+    with client:                                                 # runs the broadcaster
+        with client.websocket_connect("/ws") as ws:
+            assert ws.receive_json()["type"] == "state"
+            snaps = client.app.state.snapshots
+            built = snaps.builds
+            for i in range(10):
+                hub.notify("launch", ADDR)
+            hub.notify("mark")
+            hub.act({"action": "burn", "text": "burning", "tx": "0x" + "ab" * 32, "token": None, "done": False,
+                     "ts": int(time.time())})
+            while (m := ws.receive_json())["type"] != "action":
+                assert m["type"] == "state"                     # the first look may resend the hello's state
+            assert m["data"]["action"] == "burn" and m["data"]["done"] is False
+            time.sleep(1.2)
+            assert snaps.builds == built                        # a launch kick no longer forces a rebuild
+            hub.notify("score", ADDR)
+            deadline = time.time() + 3
+            while snaps.builds == built and time.time() < deadline:
+                time.sleep(0.05)
+            assert snaps.builds == built + 1                    # a verdict does
+
+
+def test_a_new_viewer_is_told_of_a_transaction_in_flight(site):
+    client, hub, _ = site
+    hub.act({"action": "claim", "text": "claiming", "tx": None, "token": None, "done": False, "ts": int(time.time())})
+    with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "state"
+        assert ws.receive_json() == {"type": "action", "data": hub.action_latest}
+
+
+def test_page_parts_that_scan_whole_tables_are_rebuilt_once_a_minute(db, monkeypatch):
+    calls = []
+    build = lambda: calls.append(1) or len(calls)
+    assert server._slow(db, "k", 60, build) == 1 and server._slow(db, "k", 60, build) == 1
+    db._page_parts["k"] = (time.monotonic() - 61, 1)
+    assert server._slow(db, "k", 60, build) == 2
+    from wormhole.db import DB
+    other = DB(db.path.parent / "other.db")
+    assert server._slow(other, "k", 60, build) == 3                # per database, never shared
+
+
 def test_pending_keeps_messages_and_drops_old_frames():
     hub = Hub()
     for i in range(30):
