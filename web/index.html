@@ -2,334 +2,295 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Worm</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>WORM · knows the dirt on every launch</title>
+<meta name="description" content="WORM reads every Robinhood Chain launch, warns you off the bad ones, and burns $WORM with the fees it earns. Every number is on-chain.">
+<meta name="theme-color" content="#060908">
 <link rel="icon" href="/logo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
-<style>
-:root{--g:#00ff41;--g2:#00b32d;--g3:#0a5c1f;--g4:#063d15;--bg:#000;--dim:#5fbf6f;--bad:#ff5252;--txt:#b6ffc8;--white:#e9ffee;--line:#0c4f1e;--panel:rgba(0,9,3,.82);--zebra:rgba(0,255,65,.035);--hover:rgba(0,255,65,.07);--gap:14px;--bar-h:38px}
-*{box-sizing:border-box}
-html{scroll-behavior:smooth}
-html,body{margin:0;background:var(--bg);color:var(--txt);font:13px/1.45 "IBM Plex Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
-a{color:var(--g);text-decoration:none}a:hover{text-decoration:underline}
-:focus-visible{outline:1px solid var(--g);outline-offset:2px}
-[hidden]{display:none!important}
-#rain{position:fixed;inset:0;z-index:0;opacity:.2;pointer-events:none}
-.wrap{position:relative;z-index:1;max-width:1400px;margin:0 auto;padding:8px 16px 64px}
-
-/* ---- masthead: the worm and the title side by side, the head points at the name ---- */
-.mast{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:0 28px;align-items:center;padding:0 0 14px;border-bottom:1px solid var(--g3)}
-.hero{position:relative;min-width:0}
-#hood{display:block;margin:0 auto;max-width:100%;cursor:crosshair;filter:drop-shadow(0 0 16px rgba(0,255,65,.22))}
-.title{min-width:0;padding:8px 0}
-h1{font-family:"Instrument Serif",Georgia,"Times New Roman",serif;font-weight:400;font-size:clamp(56px,8.4vw,122px);line-height:.9;margin:0 0 6px -4px;letter-spacing:.01em;color:#eafff0;text-shadow:0 0 26px rgba(0,255,65,.45),0 0 2px #000}
-.tag{font-family:"Instrument Serif",Georgia,serif;font-style:italic;font-size:clamp(20px,2.2vw,28px);color:var(--g);margin:0 0 10px}
-.sub{color:var(--dim);max-width:560px;font-size:12px}
-.stage{margin-top:12px;font-size:12px;color:var(--txt)}
-.stage b{color:var(--g)}
-.bar{height:6px;border:1px solid var(--g3);width:280px;max-width:100%;margin:8px 0 0;background:#000}
-.bar i{display:block;height:100%;background:var(--g);box-shadow:0 0 8px var(--g);transition:width 1s}
-#grow{margin-top:6px}
-.live{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--g);box-shadow:0 0 8px var(--g);margin-right:6px;animation:blink 1.6s infinite;vertical-align:middle}
-@keyframes blink{50%{opacity:.25}}
-@media(max-width:999px){.mast{grid-template-columns:1fr;text-align:center}.title{margin-top:-26px;position:relative;padding-top:0}h1{margin-left:0}.sub,.bar{margin-left:auto;margin-right:auto}}
-
-/* ---- sticky status bar, shown once the masthead has scrolled away ---- */
-.sbar{position:fixed;top:0;left:0;right:0;z-index:6;height:var(--bar-h);display:flex;align-items:center;gap:0 18px;padding:0 16px;background:rgba(0,4,1,.9);border-bottom:1px solid var(--g3);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);font-size:11px;color:var(--dim);transform:translateY(-100%);transition:transform .28s ease;white-space:nowrap;overflow:hidden}
-.sbar.on{transform:none}
-.sbar .brand{font-family:"Instrument Serif",Georgia,serif;font-size:19px;color:#eafff0;text-shadow:0 0 12px rgba(0,255,65,.5);letter-spacing:.02em;margin-right:2px;line-height:1}
-.sbar .brand:hover{text-decoration:none;color:var(--g)}
-.sbar .it{display:inline-flex;align-items:baseline;gap:6px}
-.sbar .it span{color:var(--white)}
-.sbar .it .l{color:var(--dim);font-size:10px;letter-spacing:.12em;text-transform:uppercase}
-.sbar .mode{border:1px solid var(--bad);color:var(--bad);padding:1px 7px;letter-spacing:.15em;font-size:10px}
-.sbar .mode.on{border-color:var(--g);color:var(--g);box-shadow:0 0 8px rgba(0,255,65,.4)}
-.sbar #sb-dig{color:var(--g);border:1px solid var(--g);padding:1px 8px;animation:blink 1.2s infinite;box-shadow:0 0 10px rgba(0,255,65,.35)}
-.sbar nav{margin-left:auto;display:flex;gap:14px}
-.sbar nav a{color:var(--dim);font-size:10px;letter-spacing:.14em;text-transform:uppercase}
-.sbar nav a:hover{color:var(--g);text-decoration:none}
-@media(max-width:1100px){.sbar nav{display:none}}
-@media(max-width:600px){.sbar{gap:0 10px;padding:0 10px}.sbar .it.blk,.sbar .it .l{display:none}.sbar .brand{font-size:16px}}
-
-/* ---- headline numbers: the brain at native scale, plain cards under 600px ---- */
-.synapse{margin:8px auto 0;max-width:1000px}.synapse svg{width:100%;height:auto;display:block}
-.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}
-.stat{border:1px solid var(--g3);padding:8px 10px;background:rgba(0,20,6,.65);min-width:0}
-.stat b{display:block;font-size:20px;color:var(--g)}
-.stat span{color:var(--dim);font-size:9.5px;text-transform:uppercase;letter-spacing:.08em}
-.stat small{display:block;color:var(--dim);font-size:10px;margin-top:3px}
-.stat.wide{grid-column:span 2}
-@media(max-width:599px){.synapse{display:none}}@media(min-width:600px){.stats{display:none}}
-.rbar{height:6px;border:1px solid var(--g3);margin-top:6px;background:#000;display:block}.rbar i{display:block;height:100%;background:var(--g2)}
-.rbar.big{height:10px;margin:0 0 8px}
-.rp{display:grid;grid-template-columns:minmax(110px,140px) 1fr 34px;gap:2px 8px;align-items:center;margin:8px 0 0;font-size:12px}.rp .rbar{margin-top:0}.rp .r{text-align:right;color:var(--g)}.rp .lbl{color:var(--white);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-
-/* ---- disclosure: two short columns, one strip ---- */
-.disc{display:grid;grid-template-columns:1fr 1fr;gap:6px 28px;margin-top:10px;padding:8px 12px;border:1px dashed var(--g3);color:var(--dim);font-size:11px;line-height:1.4;background:rgba(0,10,3,.75)}
-.disc b{color:var(--g);letter-spacing:.1em;text-transform:uppercase;font-size:10px;margin-right:4px}
-@media(max-width:800px){.disc{grid-template-columns:1fr}}
-
-/* ---- panel chrome: one header, one body, collapsible ---- */
-.panel{border:1px solid var(--line);background:var(--panel);min-width:0;scroll-margin-top:calc(var(--bar-h) + 8px);transition:border-color .2s}
-.panel:hover{border-color:#127a2e}
-.panel>h2{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--g);margin:0;padding:9px 12px;border-bottom:1px solid var(--g4);display:flex;align-items:baseline;gap:10px;cursor:pointer;user-select:none;font-weight:600}
-.panel>h2 .ttl{flex:none}
-.panel>h2 small{color:var(--dim);letter-spacing:0;text-transform:none;font-weight:400;font-size:11px;flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.panel>h2 .sum{display:none;color:var(--txt);letter-spacing:0;text-transform:none;font-weight:400;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0;text-align:right}
-.tog{flex:none;width:18px;height:18px;border:1px solid var(--g3);background:transparent;color:var(--dim);font:inherit;cursor:pointer;padding:0;display:inline-grid;place-items:center;align-self:center;margin-left:auto}
-.tog::before{content:"";width:6px;height:6px;border-right:1px solid currentColor;border-bottom:1px solid currentColor;transform:translateY(-2px) rotate(45deg);transition:transform .2s}
-.panel.collapsed .tog::before{transform:translateY(1px) rotate(-135deg)}
-.panel>h2:hover .tog,.panel>h2:hover{color:var(--g)}.panel>h2:hover .tog{border-color:var(--g)}
-.panel .body{padding:10px 12px 12px;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;scrollbar-color:var(--g3) #000}
-.panel.collapsed .body{display:none}
-.panel.collapsed>h2{border-bottom:0}
-.panel.collapsed>h2 small{display:none}
-.panel.collapsed>h2 .sum{display:block}
-.panel.hot{border-color:#0e6b27;box-shadow:0 0 0 1px rgba(0,255,65,.06),0 0 22px rgba(0,255,65,.10);animation:livepulse 3.2s ease-in-out infinite}
-@keyframes livepulse{50%{box-shadow:0 0 0 1px rgba(0,255,65,.12),0 0 30px rgba(0,255,65,.18)}}
-.panel.hot>h2::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--g);box-shadow:0 0 8px var(--g);animation:blink 1.6s infinite;align-self:center;flex:none}
-.panel.screenp .body{padding:0}
-.eyebrow{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin:12px 0 6px;font-weight:400;border-top:1px solid var(--g4);padding-top:10px}
-.meta{color:var(--dim);font-size:11px;line-height:1.5}
-.empty{color:var(--dim);padding:8px 0;font-size:12px}
-.pos{color:var(--g)}.neg{color:var(--bad)}
-
-/* ---- live band: the screen next to the dig and the log ---- */
-.liverow{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);grid-template-rows:auto auto minmax(280px,460px);grid-template-areas:"screen screen" "dig feed" "log voice";gap:var(--gap);margin-top:var(--gap)}
-.liverow>[data-panel=feed]{grid-area:feed;min-height:0}.liverow>[data-panel=feed] #feed{max-height:560px;overflow:auto}
-.liverow>[data-panel=voice]{grid-area:voice;min-height:0;display:flex;flex-direction:column}.liverow>[data-panel=voice] .body{flex:1 1 0px;min-height:0;overflow:auto}
-.screenp{grid-area:screen}.digp{grid-area:dig}.logp{grid-area:log}
-.panel.digp{display:flex;flex-direction:column}.panel.digp .body,#dig{flex:1 1 auto;display:flex;flex-direction:column;min-height:0}#dig>*{flex:none}#dig>#vision{flex:1 1 170px}
-.panel.logp{min-height:0;display:flex;flex-direction:column}
-.panel.logp .body{flex:1 1 0px;min-height:0;overflow:auto}
-.panel.logp.collapsed{min-height:auto}
-@media(max-width:1279px){.liverow{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"screen screen" "dig feed" "log voice"}}
-@media(max-width:899px){.liverow{grid-template-columns:1fr;grid-template-rows:auto;grid-template-areas:"screen" "dig" "feed" "log" "voice"}.panel.logp .body{max-height:320px}}
-.screen{position:relative;background:#000;aspect-ratio:1100/690;overflow:hidden}
-.screen img{width:100%;height:100%;object-fit:cover;display:block;filter:grayscale(.35) sepia(.5) hue-rotate(65deg) saturate(1.5) brightness(.9)}
-.screen img[src=""]{display:none}
-.screen::after{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0 1px,transparent 1px 3px)}
-#eye{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2}
-.shot{flex:none;display:flex;align-items:center;min-height:28px;padding:4px 10px;color:var(--g);font-size:11px;border-top:1px solid var(--g4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:20px}
-.panel.screenp{display:flex;flex-direction:column}.panel.screenp .body{flex:1 1 auto;display:flex;flex-direction:column;overflow:hidden}.screen{flex:none}
-.digtitle{font-size:15px;color:var(--white);margin-bottom:6px}
-.digtitle b{color:var(--white);font-weight:600}
-.digtitle .sym{color:var(--g)}
-ol.steps{list-style:none;margin:0 0 8px;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:4px 14px;font-size:12px}
-ol.steps li{color:var(--dim)}
-ol.steps li .dot{display:inline-block;width:8px;height:8px;border:1px solid var(--g3);margin-right:6px;vertical-align:middle}
-ol.steps li.done{color:var(--txt)}ol.steps li.done .dot{background:var(--g);border-color:var(--g);box-shadow:0 0 6px var(--g)}
-ol.steps li.now{color:var(--g)}ol.steps li.now .dot{border-color:var(--g);animation:blink .8s infinite}
-#vision{width:100%;height:auto;min-height:170px;display:block;border:1px solid var(--g4);background:rgba(0,0,0,.5)}
-
-/* ---- log: aligned kind column, duplicates counted ---- */
-.log{list-style:none;margin:0;padding:0;font-size:12px}
-.log li{display:grid;grid-template-columns:76px minmax(0,1fr) auto;gap:8px;padding:4px 0;border-bottom:1px solid var(--g4);align-items:baseline}
-.log li:last-child{border-bottom:0}
-.log .k{color:var(--dim);font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.log .k.lesson{color:var(--g)}.log .k.error{color:var(--bad)}.log .k.graduation{color:var(--white)}.log .k.paper{color:#8fe0a0}
-.log .x{color:var(--g);border:1px solid var(--g3);padding:0 4px;font-size:10px;margin-left:4px;white-space:nowrap}
-.log .t{color:var(--dim);font-size:10.5px;white-space:nowrap}
-
-/* ---- learning band ---- */
-.learn-grid{display:grid;grid-template-columns:1.35fr 1fr 1.15fr;gap:18px}
-@media(max-width:1100px){.learn-grid{grid-template-columns:1fr 1fr}.learn-grid>div:first-child{grid-column:1/-1}}
-@media(max-width:700px){.learn-grid{grid-template-columns:1fr}}
-.learn h3{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin:0 0 8px;font-weight:400}
-.lesson{border-left:2px solid var(--g4);padding:2px 8px;margin-bottom:7px;font-size:12px;color:var(--txt)}
-.lesson .o{font-weight:600}.lesson .o.bad{color:var(--bad)}.lesson .o.good{color:var(--g)}
-.lesson b{color:var(--white)}
-
-/* ---- masonry grid: the placer fills .col children, shortest column first ---- */
-#grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--gap);margin-top:var(--gap);align-items:start}
-#grid .col{display:flex;flex-direction:column;gap:var(--gap);min-width:0}
-@media(max-width:1279px){#grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:899px){#grid{grid-template-columns:1fr}}
-
-/* ---- feed cards ---- */
-#feed{max-height:640px;overflow-y:auto;padding-right:6px;scrollbar-width:thin;scrollbar-color:var(--g3) #000}
-#feed::-webkit-scrollbar,.panel .body::-webkit-scrollbar{width:8px;height:8px}#feed::-webkit-scrollbar-track,.panel .body::-webkit-scrollbar-track{background:#000}#feed::-webkit-scrollbar-thumb,.panel .body::-webkit-scrollbar-thumb{background:var(--g3);border:1px solid var(--g4)}#feed::-webkit-scrollbar-thumb:hover{background:var(--g2)}
-.card{border:1px solid var(--g4);border-left-width:3px;padding:8px 10px;margin-bottom:8px;background:rgba(0,12,3,.88);display:grid;grid-template-columns:56px 1fr;gap:10px;cursor:pointer;transition:border-color .15s,background .15s}
-.card:hover{border-color:var(--g3);border-left-color:inherit;background:rgba(0,18,5,.92)}
-.card.v-avoid{border-left-color:rgba(255,82,82,.75)}.card.v-healthy{border-left-color:var(--g)}.card.v-mixed{border-left-color:var(--g2)}
-.card.compact{grid-template-columns:44px 1fr}
-.card.new{animation:flash 2s ease-out}
-@keyframes flash{from{box-shadow:0 0 0 2px var(--g),0 0 28px var(--g)}to{box-shadow:none}}
-.logo{width:26px;height:26px;object-fit:cover;border:1px solid var(--g4);vertical-align:middle;margin-right:6px;filter:grayscale(.4) sepia(1) hue-rotate(70deg) saturate(2.2)}
-.badge{display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid var(--g2);height:56px}
-.badge b{font-size:22px;line-height:1}
-.badge small{font-size:7.5px;letter-spacing:.06em;text-transform:uppercase;text-align:center;margin-top:3px}
-.card.compact .badge{height:44px}.card.compact .badge b{font-size:18px}
-.healthy{background:var(--g);color:#000;border-color:var(--g);box-shadow:0 0 12px rgba(0,255,65,.5)}
-.mixed{color:var(--g);border-color:var(--g2)}
-.avoid{color:var(--bad);border-color:var(--bad)}
-.name{font-size:14px;color:var(--white)}
-.name .sym{color:var(--g)}
-.card .more{color:var(--dim);font-size:11px;margin-left:8px;white-space:nowrap}
-.card:hover .more{color:var(--g)}
-ul.reasons{margin:6px 0 0;padding-left:16px;font-size:12px}
-ul.reasons li.neg{color:#ffb0b0}
-ul.reasons li.pos{color:var(--g)}
-
-/* ---- chips and badges: one treatment ---- */
-.chips{display:flex;flex-wrap:wrap;gap:4px 5px;margin:6px 0 0}
-.chip,.tagc,.badge-inline,.demo{display:inline-block;border:1px solid var(--g4);padding:0 6px;font-size:10.5px;line-height:18px;color:var(--txt);background:rgba(0,0,0,.35);vertical-align:middle;white-space:nowrap}
-.chip.warn{border-color:rgba(255,82,82,.7);color:var(--bad)}
-.chip.good{border-color:var(--g2);color:var(--g)}
-.tagc{margin-left:6px;font-size:10px}.tagc.pos{border-color:var(--g2);color:var(--g)}.tagc.neg{border-color:var(--bad);color:var(--bad)}
-.badge-inline{margin-left:6px;font-size:11px;font-weight:600}
-.demo{border-color:var(--bad);color:var(--bad);letter-spacing:.15em;margin-right:6px;font-size:10px}
-
-/* ---- tables: dense, zebra, tabular numbers, scroll inside the panel ---- */
-table{width:100%;border-collapse:collapse;font-size:12px}
-td,th{padding:4px 7px;border-bottom:1px solid var(--g4);text-align:left;vertical-align:top}
-th{color:var(--dim);font-weight:400;font-size:10px;text-transform:uppercase;letter-spacing:.08em;white-space:nowrap}
-td.r,th.r{text-align:right;white-space:nowrap}
-tr:nth-child(even) td{background:var(--zebra)}
-tr:hover td{background:var(--hover)}
-td:first-child,th:first-child{padding-left:4px}td:last-child,th:last-child{padding-right:4px}
-tr:last-child td{border-bottom:0}
-td.dim,tr.pending td{color:var(--dim)}
-tr.failed td{color:var(--bad)}
-.wt{display:inline-block;width:56px;height:6px;border:1px solid var(--g4);vertical-align:middle;margin-right:6px}
-.wt i{display:block;height:100%;background:var(--g2)}
-.worst{display:grid;grid-template-columns:auto minmax(0,1fr);gap:1px 8px;margin-bottom:7px;align-items:baseline}
-.worst .meta{grid-column:2;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-
-/* ---- wallet, voice ---- */
-.addr{font-size:11px;word-break:break-all;color:var(--white)}
-.post{border:1px solid var(--g4);border-left:2px solid var(--g3);padding:8px 10px;margin-bottom:8px;background:rgba(0,0,0,.4);font-size:12.5px;color:var(--white);white-space:pre-wrap}
-.post .meta{display:block;margin-top:6px}
-.copy{float:right;margin:0 0 4px 8px;border:1px solid var(--g3);color:var(--g);background:#000;font:inherit;font-size:10.5px;padding:1px 8px;cursor:pointer}
-.copy:hover{background:var(--g4)}
-
-/* ---- ticker ---- */
-.ticker{position:fixed;left:0;right:0;bottom:0;z-index:2;background:#000;border-top:1px solid var(--g3);height:32px;overflow:hidden;white-space:nowrap}
-.ticker .lbl{position:absolute;left:0;top:0;bottom:0;padding:0 12px;line-height:32px;background:#000;color:var(--g);z-index:1;letter-spacing:.15em;font-size:10px;border-right:1px solid var(--g3)}
-.ticker .run{position:absolute;left:110px;top:0;line-height:32px;color:var(--dim);animation:run 60s linear infinite;font-size:12px}
-@keyframes run{from{transform:translateX(100vw)}to{transform:translateX(-100%)}}
-.ticker .run b{color:var(--g)}
-
-/* ---- small screens ---- */
-@media(max-width:600px){.wrap{padding:6px 10px 60px}.panel>h2{padding:8px 10px}.panel .body{padding:8px 10px 10px}.card.compact{grid-template-columns:40px 1fr}.log li{grid-template-columns:64px minmax(0,1fr) auto}#feed{max-height:560px}.rp{grid-template-columns:minmax(90px,120px) 1fr 30px}}
-@media(prefers-reduced-motion:reduce){.ticker .run{animation:none;transform:none}.panel.hot,.live,.sbar #sb-dig,ol.steps li.now .dot{animation:none}html{scroll-behavior:auto}}
-</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="/design.css">
 </head>
-<body data-view="overview">
-<aside class="rail"><a class="rail-brand" href="#overview"><span>WORM</span><small>CHAIN INTELLIGENCE</small></a><nav aria-label="Main navigation">
-<a href="#overview" data-view="overview">Live</a><a href="#learning" data-view="learning">Learning</a><a href="#scans" data-view="scans">Token scans</a><a href="#treasury" data-view="treasury">Treasury</a></nav><div class="rail-bottom"><span>ROBINHOOD CHAIN</span><a href="/docs">How it works ↗</a><button id="motion" type="button" aria-pressed="false">Pause animation</button></div></aside>
-<div class="topline"><span id="view-title">Live</span><div><span id="freshness" role="status">Connecting…</span><span id="mode-label">Mode loading</span></div></div>
-<canvas id="rain"></canvas>
-<div class="sbar" id="sbar"><a class="brand" href="#top">WORM</a><span class="live"></span>
-  <span class="it"><span class="l">stage</span><span id="sb-stage">…</span></span>
-  <span class="it"><span class="l">treasury</span><span id="sb-usd">…</span></span>
-  <span class="it"><span class="l">readiness</span><span id="sb-ready">…</span></span>
-  <span class="it blk"><span class="l">block</span><span id="sb-block">…</span></span>
-  <span class="mode" id="sb-mode">DEMO</span>
-  <span id="sb-dig" hidden></span>
-  <nav><a href="#liveband">live</a><a href="#learning">learning</a><a href="#grid">panels</a><a href="/docs">docs</a></nav>
-</div>
-<div class="wrap">
-  <header class="mast" id="top">
-    <section class="hero"><canvas id="hood" width="900" height="380" role="img" aria-label="Interactive binary worm wearing its Robin Hood hat"></canvas></section>
-    <div class="title">
-      <h1>WORM</h1>
-      <div class="tag">knows the dirt on every launch</div>
-      <div class="sub">It reads every Robinhood Chain launch, warns you off the bad ones, and burns $WORM with the fees it earns. <a href="/docs">how it works, the fee split, the roadmap →</a></div>
-      <div class="stage" id="stage"><span class="live"></span>waking up…</div>
-      <div class="bar"><i id="stagebar" style="width:0%"></i></div>
-      <div class="meta" id="grow">grows with what it earns: the treasury it holds decides how long the worm is</div>
+<body class="app">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="app-header">
+ <div class="app-header__in">
+  <a class="brand" href="#overview" aria-label="WORM, live"><img src="/logo.png" alt="" width="24" height="24"><span>WORM</span></a>
+  <nav class="tabs" aria-label="Views">
+   <a href="#overview" data-view="overview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg><span>Live</span></a>
+   <a href="#learning" data-view="learning"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4a3 3 0 0 0-3 3v.5A3 3 0 0 0 4 10.3 3 3 0 0 0 5 16a3 3 0 0 0 4 3.8V4Zm6 0a3 3 0 0 1 3 3v.5a3 3 0 0 1 2 2.8 3 3 0 0 1-1 5.7 3 3 0 0 1-4 3.8V4Z"/></svg><span>Learning</span></a>
+   <a href="#scans" data-view="scans"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg><span>Scans</span></a>
+   <a href="#treasury" data-view="treasury"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6.5" rx="7" ry="3"/><path d="M5 6.5v5c0 1.7 3.1 3 7 3s7-1.3 7-3v-5M5 11.5v5c0 1.7 3.1 3 7 3s7-1.3 7-3v-5"/></svg><span>Treasury</span></a>
+  </nav>
+  <div class="app-header__right">
+   <span class="dig-badge" id="dig-badge" role="status" hidden></span>
+   <span class="paper-pill" id="paper-pill">Paper trading only</span>
+   <a class="hdr-link" href="/docs"><span class="hdr-link__long">How it works</span><span class="hdr-link__short" aria-hidden="true">?</span><span class="sr-only hdr-link__sr"> (how it works)</span></a>
+   <a class="icon-btn hdr-x" id="xlink" target="_blank" rel="noopener noreferrer" aria-label="WORM on X" hidden>X&nbsp;↗</a>
+   <div class="status-wrap">
+    <button class="status" id="status" type="button" aria-expanded="false" aria-controls="status-pop"><span class="status__dot" aria-hidden="true"></span><span id="freshness">Connecting…</span></button>
+    <div class="status-pop" id="status-pop" hidden>
+     <dl>
+      <div><dt>Data</dt><dd id="pop-data">Connecting…</dd></div>
+      <div><dt>Block</dt><dd id="pop-block">…</dd></div>
+      <div><dt>Payments</dt><dd id="pop-pay">…</dd></div>
+      <div><dt>Trading</dt><dd id="pop-trade">Paper trading only</dd></div>
+     </dl>
+     <div class="status-pop__links"><a href="/docs">How it works →</a><a id="pop-x" target="_blank" rel="noopener noreferrer" hidden>WORM on X ↗</a></div>
     </div>
-  </header>
+   </div>
+   <button class="icon-btn motion-btn" id="motion" type="button" aria-pressed="false" aria-label="Pause animation" title="Pause animation"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="i-pause" d="M8 5v14M16 5v14"/><path class="i-play" d="M7 5l12 7-12 7z"/></svg><span class="motion-btn__label">Motion</span></button>
+  </div>
+ </div>
+</header>
 
-  <section class="pulse" id="pulse" aria-labelledby="pulse-title" hidden></section>
-  <section class="story" id="story" aria-labelledby="story-title" hidden></section>
-  <section class="receipts" id="receipts" aria-labelledby="receipts-title" hidden></section>
-  <section class="launch-clock" id="launch-clock" aria-labelledby="launch-clock-title">
-    <div class="launch-clock-copy"><span class="launch-clock-eyebrow">THE NEXT CHAPTER</span>
-      <h2 id="launch-clock-title">WORM token launch</h2><p id="launch-clock-note">Connecting to launch schedule…</p></div>
-    <div class="launch-clock-time"><div id="launch-clock-digits" aria-label="Time until token launch">—</div>
-      <time id="launch-clock-date"></time><a id="launch-clock-token" hidden target="_blank" rel="noopener noreferrer">View token ↗</a></div>
-    <ol class="launch-steps" aria-label="Launch progress">
-      <li data-launch-step="time"><span class="launch-step-number">01</span><div><strong>Launch time</strong><span class="launch-step-detail">Waiting for the date</span></div></li>
-      <li data-launch-step="chain"><span class="launch-step-number">02</span><div><strong>On-chain launch</strong><span class="launch-step-detail">Checks before execution</span></div></li>
-      <li data-launch-step="allocation"><span class="launch-step-number">03</span><div><strong>Initial allocation</strong><span class="launch-step-detail">1% for WORM · 1% for its creator</span></div></li>
-    </ol>
+<main id="main">
+<!-- ============ LIVE ============ -->
+<section class="view" id="view-overview" data-view="overview" aria-labelledby="live-title">
+ <div class="w-hero" id="top">
+  <canvas id="rain" aria-hidden="true"></canvas>
+  <div class="w-hero__art"><canvas id="hood" width="900" height="280" role="img" aria-label="The worm: a cloud of binary digits wearing a Robin Hood hat. It grows as its treasury grows."></canvas></div>
+  <h1 class="w-hero__title" id="live-title" tabindex="-1">WORM</h1>
+  <p class="w-hero__tag">knows the dirt on every launch</p>
+  <p class="w-hero__line">It reads every Robinhood Chain launch, warns you off the bad ones, and burns $WORM with the fees it earns.</p>
+  <div class="w-hero__stage">
+   <span class="w-chip w-chip--live" id="stage">Stage …</span>
+   <span class="w-meter w-hero__meter" aria-hidden="true"><i id="stagebar"></i></span>
+   <span class="w-hero__grow" id="grow">grows as its treasury grows</span>
+  </div>
+ </div>
+
+ <section class="w-card w-card--ember burn is-loading" id="pulse" aria-labelledby="pulse-title" data-anchor></section>
+
+ <section class="sect at-work reveal" id="at-work" aria-labelledby="work-title" data-anchor>
+  <div class="sect__head"><div><span class="label">The worm at work</span><h2 class="sect__title" id="work-title">Right now</h2></div></div>
+  <div class="at-work__grid" id="liveband">
+   <article class="w-card w-card--flush screen-card" id="screen-card">
+    <header class="w-card__head w-card__head--bar"><div><h3 class="w-card__title">Its screen</h3><p class="w-card__sub">live from the worm's own browser · it crawls to what it reads</p></div><span class="state-chip wait" id="screen-state">waiting for the next graduation</span></header>
+    <div class="screen" id="screen"><img id="screenimg" alt=""><canvas id="eye" aria-hidden="true"></canvas><p class="screen__idle">the screen wakes when the worm opens a page · until then it looks around</p></div>
+    <p class="screen__note" id="screennote">screen warming up…</p>
+   </article>
+   <article class="w-card dig-card" id="dig-card" aria-live="off">
+    <header class="w-card__head"><div><h3 class="w-card__title">What it's digging</h3><p class="w-card__sub" id="dig-sub">nothing dug yet, waiting for the next graduation</p></div></header>
+    <div class="dig" id="dig"><p class="dig-empty">waiting for the next graduation… one lands every few minutes.</p></div>
+   </article>
+  </div>
+  <div class="tape" id="tape" role="region" aria-label="Launching now. Hover or focus to pause." tabindex="0"><span class="tape__label">Launching now</span><div class="tape__viewport"><div class="tape__run" id="ticker">waiting for new launches…</div></div></div>
+ </section>
+
+ <section class="sect mind reveal" id="mind-live-sect" aria-labelledby="mind-title" data-anchor>
+  <div class="sect__head"><div><span class="label">Inside the worm's mind</span><h2 class="sect__title" id="mind-title">How it thinks</h2></div><a class="w-card__action" href="#learning">See how it learns →</a></div>
+  <div class="w-card mind__card">
+   <div class="mind__grid">
+    <div class="mind__brain"><div class="brain-slot" id="mind-live"></div><p class="mind__caption" id="mind-caption" aria-live="polite"></p></div>
+    <div class="mind__stats" id="mind-stats"></div>
+   </div>
+  </div>
+ </section>
+
+ <section class="sect reveal" id="receipts-live" aria-labelledby="called-title" data-anchor hidden>
+  <div class="sect__head"><div><span class="label">Called it</span><h2 class="sect__title" id="called-title">Warnings that came true</h2></div><a class="w-card__action" href="#learning/report">Every call, right and wrong →</a></div>
+  <div class="receipts snap" id="receipts-live-list" role="group" aria-label="The newest warnings that came true" tabindex="0"></div>
+ </section>
+</section>
+
+<!-- ============ LEARNING ============ -->
+<section class="view" id="view-learning" data-view="learning" aria-labelledby="learning-title" hidden>
+ <div class="view-intro"><h1 id="learning-title" tabindex="-1">Learning</h1><p>Every verdict is checked 24 hours later. Here is what came true, what went wrong, and what the worm changed its mind about.</p></div>
+
+ <section class="w-card sect-card" id="report" aria-labelledby="report-title" data-anchor>
+  <div class="w-card__head"><div><span class="label">Report card</span><h2 class="w-card__title" id="report-title">How often it is right</h2></div></div>
+  <div class="w-stats w-stats--4" id="report-stats"></div>
+  <div class="scorecard" id="scorecard"></div>
+ </section>
+
+ <section class="sect reveal" aria-labelledby="lanes-title" data-anchor>
+  <div class="sect__head"><div><span class="label">Both sides</span><h2 class="sect__title" id="lanes-title">Called it, and got it wrong</h2></div></div>
+  <div class="lanes">
+   <div class="lane"><h3 class="lane__title"><span class="lane__dot neg"></span>Called it <small id="lane-called-n"></small></h3><div class="lane__list snap" id="lane-called" tabindex="0" role="group" aria-label="Warnings that came true"></div></div>
+   <div class="lane"><h3 class="lane__title"><span class="lane__dot miss"></span>Got it wrong <small id="lane-missed-n"></small></h3><div class="lane__list snap" id="lane-missed" tabindex="0" role="group" aria-label="Healthy calls that went wrong"></div></div>
+  </div>
+ </section>
+
+ <section class="sect reveal" id="mind" aria-labelledby="mind-full-title" data-anchor>
+  <div class="sect__head"><div><span class="label">Inside the worm's mind</span><h2 class="sect__title" id="mind-full-title">The loop it learns by</h2></div><p class="sect__note">Pick a part of the mind to see what it does. The dots are a schematic, not measured neurons.</p></div>
+  <div class="w-card mind__card mind__card--full">
+   <div class="mind__grid mind__grid--full">
+    <div class="mind__brain"><div class="brain-slot" id="mind-learning"></div></div>
+    <div class="inspector" id="learning-inspector" aria-live="polite"></div>
+   </div>
+   <div class="counters" id="brain-counters"></div>
+  </div>
+ </section>
+
+ <div class="grid-2 grid-2--learn reveal" data-anchor>
+  <section class="w-card" id="lessons-card" aria-labelledby="lessons-title">
+   <div class="w-card__head"><div><span class="label">Latest lessons</span><h2 class="w-card__title" id="lessons-title">What each outcome taught it</h2></div></div>
+   <ul class="w-list" id="lessons"></ul>
+   <button class="w-btn w-btn--secondary more-btn" type="button" id="lessons-more" hidden>Show more</button>
   </section>
-  <div class="synapse" id="synapse"></div>
-  <div class="stats" id="stats"></div><div id="overview-metrics"></div>
-  <div class="disc" id="disc"></div>
+  <section class="w-card" id="moving-card" aria-labelledby="moving-title">
+   <div class="w-card__head"><div><span class="label">Rules moving</span><h2 class="w-card__title" id="moving-title">What it trusts more, and less</h2></div><a class="w-card__action" href="#learning/rules" data-open="d-rules">All rules →</a></div>
+   <ul class="w-list" id="moving"></ul>
+   <p class="w-note">A rule moves up to 2% a lesson, by how surprising the outcome was, and stays between 0.5× and 1.5×.</p>
+  </section>
+ </div>
 
-  <div class="liverow" id="liveband">
-    <div class="panel hot screenp" data-panel="screen"><h2><span class="ttl">screen</span><small>live from the worm's own browser · the worm crawls to what it reads</small><span class="pstate" id="screen-state" hidden></span><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse screen"></button></h2>
-      <div class="body"><div class="screen"><img id="screenimg" alt=""><canvas id="eye"></canvas></div><div class="shot" id="screennote">screen warming up…</div></div></div>
-    <div class="panel hot digp" data-panel="dig"><h2><span class="ttl">live dig</span><small id="dig-sub">what the worm is inside right now</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse live dig"></button></h2>
-        <div class="body"><div id="dig"><div class="empty">waiting for the next graduation…</div></div></div></div>
-    <div class="panel logp" data-panel="log"><h2><span class="ttl">log</span><small>newest first · repeats counted</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse log"></button></h2>
-        <div class="body"><ul class="log" id="log"></ul></div></div>
+ <section class="w-card sect-card reveal" id="paper" aria-labelledby="paper-title" data-anchor>
+  <div class="w-card__head"><div><span class="label">Paper only · no real money</span><h2 class="w-card__title" id="paper-title">Paper trading</h2></div></div>
+  <div id="paper-body"></div>
+ </section>
+
+ <section class="w-card sect-card reveal" id="voice-card" aria-labelledby="voice-title" data-anchor>
+  <div class="w-card__head"><div><span class="label">Field notes</span><h2 class="w-card__title" id="voice-title">In its own words</h2></div><span class="w-card__sub" id="voice-sub"></span></div>
+  <ul class="notes" id="voice"></ul>
+  <button class="w-btn w-btn--secondary more-btn" type="button" id="voice-more" hidden>Show more</button>
+ </section>
+
+ <section class="w-card details-group" id="learning-details" aria-label="Details for the curious" data-anchor>
+  <span class="label">Details · for the curious</span>
+  <details class="w-details" id="d-ready"><summary>Readiness breakdown</summary><div class="w-details__body" id="ready"></div></details>
+  <details class="w-details" id="d-rules"><summary>All rules &amp; weights</summary><div class="w-details__body" id="brain"></div></details>
+  <details class="w-details" id="d-lab"><summary>Exit strategy lab</summary><div class="w-details__body" id="lab"></div></details>
+  <details class="w-details" id="d-advisor"><summary>AI advisor</summary><div class="w-details__body" id="advisor"></div></details>
+  <details class="w-details" id="d-paper"><summary>How paper trading works</summary><div class="w-details__body" id="paper-more"></div></details>
+  <details class="w-details" id="d-log"><summary>Raw activity log</summary><div class="w-details__body"><ul class="log" id="log"></ul></div></details>
+ </section>
+</section>
+
+<!-- ============ SCANS ============ -->
+<section class="view" id="view-scans" data-view="scans" aria-labelledby="scans-title" hidden>
+ <div class="scans-col">
+  <div class="view-intro"><h1 id="scans-title" tabindex="-1">Token scans</h1><p>Look up any new token and see the worm's call, the evidence behind it, and what happened next.</p></div>
+  <div class="scanbar" id="scanbar">
+   <label class="scanbar__search"><span class="sr-only">Find a token</span><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg><input id="token-search" type="search" placeholder="Find a token: name, symbol or address" autocomplete="off" spellcheck="false"></label>
   </div>
-
-  <section class="panel learn" data-panel="learning" id="learning" style="margin-top:var(--gap)"><h2><span class="ttl">learning</span><small>what the worm changed its mind about · every verdict is checked 24 hours later</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse learning"></button></h2>
-    <div class="body"><div class="learn-grid"><div><h3>latest lessons</h3><div id="lessons"></div></div><div><h3>rules moving</h3><div id="moving"></div></div><div><h3>readiness</h3><div id="ready"></div></div></div>
-    <div class="meta" id="learnmeta" style="margin-top:10px"></div></div></section>
-
-  <div id="grid">
-    <div class="panel" data-panel="feed"><h2><span class="ttl">graduations</span><small>newest first <span id="feedinfo"></span></small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse graduations"></button></h2><div class="body"><div class="scan-controls"><label>Find a token<input id="token-search" type="search" placeholder="Name, symbol or address" autocomplete="off"></label><label>Assessment<select id="verdict-filter"><option value="all">All assessments</option><option value="looks healthy">Looks healthy</option><option value="mixed">Mixed signals</option><option value="avoid">Avoid</option><option value="partial">Incomplete data</option></select></label><label>Sort by<select id="scan-sort"><option value="newest">Newest graduation</option><option value="score">Highest score</option><option value="risk">Lowest score</option></select></label></div><div id="scan-count" class="meta" aria-live="polite"></div><div id="feed"><div class="empty">reading the chain…</div></div></div></div>
-    <div class="panel" data-panel="wallet"><h2><span class="ttl">wallet</span><small>its own money, in the open</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse wallet"></button></h2><div class="body"><div id="wallet"></div></div></div>
-    <div class="panel" data-panel="runway"><h2><span class="ttl">runway</span><small>can it pay for itself?</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse runway"></button></h2><div class="body"><div id="runway"></div></div></div>
-    <div class="panel" data-panel="trades"><h2><span class="ttl">trades</span><small>from the surplus only, hedged</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse trades"></button></h2><div class="body"><div id="trades"></div></div></div>
-    <div class="panel" data-panel="brain"><h2><span class="ttl">brain</span><small>rules, weights, what it learned</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse brain"></button></h2><div class="body"><div id="brain"></div></div></div>
-    <div class="panel" data-panel="lab"><h2><span class="ttl">strategy lab</span><small>which exit rule actually pays</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse strategy lab"></button></h2><div class="body"><div id="lab"></div></div></div>
-    <div class="panel" data-panel="paper"><h2><span class="ttl">training book</span><small>paper trades that teach the exit rules · no real money</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse training book"></button></h2><div class="body"><div id="paper"></div></div></div>
-    <div class="panel" data-panel="advisor"><h2><span class="ttl">advisor</span><small>hypotheses from the writer, judged by the records</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse advisor"></button></h2><div class="body"><div id="advisor"></div></div></div>
-    <div class="panel" data-panel="bad"><h2><span class="ttl">bad actors</span><small>serial launchers in the window</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse bad actors"></button></h2><div class="body"><div id="serial"></div><h3 class="eyebrow">worst verdicts</h3><div id="worst"></div></div></div>
-    <div class="panel" data-panel="voice"><h2><span class="ttl">voice</span><small>its journal · copy what you like to X</small><span class="sum"></span><button class="tog" type="button" aria-expanded="true" aria-label="collapse voice"></button></h2><div class="body"><div id="voice"></div></div></div>
+  <div class="scanchips">
+   <div class="scanchips__group" role="group" aria-label="Filter by verdict" id="verdict-chips"></div>
+   <div class="scanchips__group scanchips__sort" role="group" aria-label="Sort" id="sort-chips">
+    <button class="w-filter" type="button" data-sort="newest" aria-pressed="true">Newest</button><button class="w-filter" type="button" data-sort="score" aria-pressed="false">Highest</button><button class="w-filter" type="button" data-sort="risk" aria-pressed="false">Lowest</button>
+   </div>
   </div>
-</div>
-<footer class="home-foot" id="home-foot"><span>Every number here is read from Robinhood Chain. A verdict is the worm's opinion at scan time, not advice.</span><a href="/docs">How it works →</a></footer>
-<div class="ticker"><span class="lbl">LAUNCHES</span><div class="run" id="ticker"></div></div>
+  <p class="scan-count" id="scan-count" aria-live="polite"></p>
+  <div class="w-card w-card--flush"><ul class="w-list scan-list" id="feed"><li class="w-empty">reading the chain…</li></ul></div>
+  <button class="w-btn w-btn--secondary more-btn" type="button" id="feed-more" hidden>Show 20 more</button>
+
+  <section class="w-card w-card--flush sect-gap reveal" id="creators" aria-labelledby="creators-title" data-anchor>
+   <div class="w-card__head w-card__head--pad"><div><span class="label">Creator signals</span><h2 class="w-card__title" id="creators-title">Creators to watch</h2></div><span class="w-card__sub">serial launchers in the last 72 hours</span></div>
+   <ul class="w-list" id="serial"></ul>
+   <button class="w-btn w-btn--ghost more-btn more-btn--pad" type="button" id="serial-more" hidden>Show all</button>
+  </section>
+ </div>
+</section>
+
+<!-- ============ TREASURY ============ -->
+<section class="view" id="view-treasury" data-view="treasury" aria-labelledby="treasury-title" hidden>
+ <div class="view-intro"><h1 id="treasury-title" tabindex="-1">Treasury</h1><p>Where every dollar of fees goes, and what is left. Balances are read from the chain.</p></div>
+
+ <section class="w-card sect-card" id="money" aria-labelledby="money-title" data-anchor></section>
+ <section class="w-card w-card--ember sect-card reveal" id="burn" aria-labelledby="burncard-title" data-anchor></section>
+ <div class="grid-2 reveal" data-anchor>
+  <section class="w-card w-card--gold" id="gold" aria-labelledby="gold-title"></section>
+  <section class="w-card" id="runway" aria-labelledby="runway-title"></section>
+ </div>
+ <div class="grid-2 grid-2--wallet reveal" data-anchor>
+  <section class="w-card" id="wallet" aria-labelledby="wallet-title"></section>
+  <section class="w-card" id="trades" aria-labelledby="trades-title"></section>
+ </div>
+ <section class="w-card details-group" id="treasury-details" aria-label="Details for the curious" data-anchor>
+  <span class="label">Details · for the curious</span>
+  <details class="w-details" id="d-settle"><summary>Balances &amp; settlement</summary><div class="w-details__body" id="settle"></div></details>
+  <details class="w-details" id="d-ledger"><summary>Payment history</summary><div class="w-details__body" id="ledger"></div></details>
+  <details class="w-details" id="d-projection"><summary>90-day projection</summary><div class="w-details__body" id="projection"></div></details>
+  <details class="w-details" id="d-costs"><summary>Cost assumptions</summary><div class="w-details__body" id="costs"></div></details>
+  <details class="w-details" id="d-policy"><summary>Full trading policy</summary><div class="w-details__body" id="policy"></div></details>
+ </section>
+</section>
+</main>
+
+<footer class="app-footer" id="disc">
+ <div class="app-footer__in">
+  <p class="app-footer__line"><b>Real</b> <span id="disc-real">Every number on this page is read from Robinhood Chain.</span></p>
+  <p class="app-footer__line"><b>Not real</b> <span id="disc-not">Verdicts are a screening aid, paper trades are simulated, and the worm trades nothing by policy.</span></p>
+  <p class="app-footer__line app-footer__advice">A verdict is the worm's opinion at scan time, not advice.</p>
+  <nav class="app-footer__links" aria-label="More"><a href="/docs#real">Full disclosure →</a><a href="/docs">How it works →</a><a id="foot-x" target="_blank" rel="noopener noreferrer" hidden>WORM on X ↗</a></nav>
+ </div>
+</footer>
+<div class="toast-host" id="toasts" role="status" aria-live="polite"></div>
+
 <script>
+/* The engine: small helpers, the canvases (the worm, the rain, the scout on its screen), the live dig and the
+   connection to the server. The views live in design.js. */
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=v=>{const n=typeof v==='number'?v:(typeof v==='string'&&v.trim()!==''?Number(v):NaN);return Number.isFinite(n)?n:'…'};
 const ago=ts=>{if(!ts)return'';const d=Math.max(0,Math.floor(Date.now()/1000-ts));if(d<60)return d+'s ago';if(d<3600)return Math.floor(d/60)+'m ago';if(d<86400)return Math.floor(d/3600)+'h '+Math.floor(d%3600/60)+'m ago';return Math.floor(d/86400)+'d ago'};
-const usd=v=>v==null?null:(v>=1e6?'$'+(v/1e6).toFixed(2)+'M':v>=1e3?'$'+(v/1e3).toFixed(1)+'K':'$'+Number(v).toFixed(v<1?6:2));
 const short=a=>a?esc(a.slice(0,6)+'…'+a.slice(-4)):'';
-const pct=v=>v==null?'':(v>0?'+':'')+Math.round(v)+'%';
+const pct=v=>v==null?'':(v>0?'+':v<0?'−':'')+Math.abs(Math.round(v))+'%';
+const isNum=v=>v!=null&&v!==''&&Number.isFinite(Number(v));
+/* one number formatter for the whole page */
+const fmt={
+ usd(v,o={}){if(!isNum(v))return '—';const n=Number(v),c=o.cents?2:0;return (n<0?'−':'')+'$'+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:c,maximumFractionDigits:c})},
+ compact(v){if(!isNum(v))return null;const n=Number(v);return n>=1e6?'$'+(n/1e6).toFixed(n>=1e7?1:2)+'M':n>=1e3?'$'+(n/1e3).toFixed(1)+'K':n>=1?'$'+n.toFixed(2):'$'+n.toLocaleString('en-US',{maximumSignificantDigits:2})},
+ qty(v){if(!isNum(v))return '—';const n=Number(v),a=Math.abs(n);return a>=1e9?(n/1e9).toFixed(1)+'B':a>=1e6?(n/1e6).toFixed(1)+'M':a>=1e4?Math.round(n/1e3)+'K':a>=1e3?(n/1e3).toFixed(1)+'K':Math.round(n).toLocaleString('en-US')},
+ int(v){return isNum(v)?Math.round(Number(v)).toLocaleString('en-US'):'—'},
+ pct(v,d=0){return isNum(v)?Number(v).toFixed(d)+'%':'—'},
+ ago,
+ utc(ts){if(!ts)return '';return new Date(ts*1000).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hourCycle:'h23',timeZone:'UTC'})+' UTC'},
+ date(ts){if(!ts)return '';return new Date(ts*1000).toLocaleString('en-GB',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',timeZone:'UTC'})+' UTC'}
+};
 function xurl(h){h=(h||'').trim().replace(/^https?:\/\/(www\.)?(x|twitter)\.com\//i,'').replace(/^@/,'').split(/[\/?]/)[0];return /^[A-Za-z0-9_]{1,15}$/.test(h)?'https://x.com/'+h:null}
 function tgurl(h){h=(h||'').trim().replace(/^https?:\/\/t\.me\//i,'').replace(/^@/,'').split(/[?]/)[0];return /^[A-Za-z0-9_+\-\/]{3,80}$/.test(h)?'https://t.me/'+h:null}
 const badLogos=new Set();
 function logo(u){u=(u||'').trim();if(badLogos.has(u))return null;let m=u.match(/^ipfs:\/\/(?:ipfs\/)?([A-Za-z0-9]{40,100}(?:\/[A-Za-z0-9._-]{1,80})?)$/i)||u.match(/^https?:\/\/[^\/]+\/ipfs\/([A-Za-z0-9]{40,100}(?:\/[A-Za-z0-9._-]{1,80})?)$/i);if(m)return '/ipfs/'+m[1];return /^https:\/\/[^\s"'<>]+$/i.test(u)?u:null}
 function weburl(u){u=(u||'').trim();return /^https?:\/\/[^\s"'<>]+$/i.test(u)?u:null}
+function vcls(v){return v==='looks healthy'?'healthy':v==='mixed'?'mixed':v==='avoid'?'avoid':'partial'}
+function initials(name){return esc(String(name||'?').replace(/[^A-Za-z0-9 ]/g,'').split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase()||'?')}
+/* the canvases read the palette once, so the art and the chrome agree */
+const T={};{const cs=getComputedStyle(document.documentElement);for(const k of ['g-500','g-300','g-700','v-avoid','v-mixed','e-600','e-300','e-100','t-hi','t-1','t-2','t-3','bg-0','bg-3','line-2'])T[k]=cs.getPropertyValue('--'+k).trim()||'#5ff29a'}
+const rgb=h=>{h=String(h).replace('#','');if(h.length===3)h=[...h].map(c=>c+c).join('');const n=parseInt(h,16);return [(n>>16)&255,(n>>8)&255,n&255]};
+const rgba=(h,a)=>`rgba(${rgb(h).join(',')},${a})`;
+let lastState=null;
 
-/* ---------- matrix rain ---------- */
+/* ---------- one loop manager: a canvas animates only while it is on screen, the tab is visible and motion is on ---------- */
+const loops={};
+function addLoop(name,el,tick,every){const L=loops[name]={el,tick,every,visible:true,id:0,last:0};
+ if('IntersectionObserver' in window)new IntersectionObserver(es=>{L.visible=es[es.length-1].isIntersecting;wakeLoops()},{rootMargin:'120px'}).observe(el);return L}
+function loopLive(L){return !window.motionPaused&&!document.hidden&&L.visible&&L.el.getClientRects().length>0}
+function wakeLoops(){for(const L of Object.values(loops)){if(L.id||!loopLive(L))continue;const run=now=>{if(!loopLive(L)){L.id=0;return}L.id=requestAnimationFrame(run);if(now-L.last<L.every)return;L.last=now;L.tick(now)};L.id=requestAnimationFrame(run)}}
+document.addEventListener('visibilitychange',wakeLoops);
+
+/* ---------- matrix rain, only behind the Live hero ---------- */
 const rain=$('#rain'),rc=rain.getContext('2d');let drops=[];
-function sizeRain(){rain.width=innerWidth;rain.height=innerHeight;drops=Array.from({length:Math.floor(innerWidth/14)},()=>Math.random()*-60)}
-addEventListener('resize',sizeRain);sizeRain();
-setInterval(()=>{if(window.motionPaused)return;rc.fillStyle='rgba(0,0,0,0.14)';rc.fillRect(0,0,rain.width,rain.height);rc.font='12px ui-monospace,Menlo,monospace';
-  for(let i=0;i<drops.length;i++){const y=drops[i];rc.fillStyle=Math.random()<.07?'#b6ffb6':'#00b32d';rc.fillText(Math.random()<.5?'0':'1',i*14,y*14);
-    drops[i]=(y*14>rain.height&&Math.random()>.97)?0:y+1}},75);
+function sizeRain(){const r=rain.parentElement.getBoundingClientRect();if(!r.width)return;rain.width=Math.round(r.width);rain.height=Math.round(r.height);drops=Array.from({length:Math.floor(rain.width/14)},()=>Math.random()*-60)}
+function rainTick(){rc.fillStyle='rgba(6,9,8,0.16)';rc.fillRect(0,0,rain.width,rain.height);rc.font='12px "IBM Plex Mono",ui-monospace,monospace';
+ for(let i=0;i<drops.length;i++){const y=drops[i];rc.fillStyle=Math.random()<.07?T['g-300']:T['g-500'];rc.fillText(Math.random()<.5?'0':'1',i*14,y*14);drops[i]=(y*14>rain.height&&Math.random()>.97)?0:y+1}}
+addLoop('rain',rain,rainTick,75);
 
-/* ---------- the worm: a cloud of 0 and 1 with depth. It wriggles, scatters around the mouse, and gets longer as it earns. ---------- */
+/* ---------- the worm: a cloud of 0 and 1 with depth. It wriggles, scatters around the pointer, and gets longer as it earns. ---------- */
 const cv=$('#hood'),cx=cv.getContext('2d');
-let hood={stage:0,cols:0,rows:0,cell:5,t:0,mouse:null,digits:null,mode:'idle',streaks:[]};
-function sizeWorm(){const w=Math.min(980,(document.querySelector('.hero').clientWidth||590)-8);hood.cell=w>450?3.5:3;hood.cols=Math.floor(w/hood.cell);hood.rows=Math.floor(hood.cols*.46);const W=hood.cols*hood.cell,H=hood.rows*hood.cell,dpr=Math.min(window.devicePixelRatio||1,2);cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);cv.style.width=W+'px';cv.style.height=H+'px';cx.setTransform(dpr,0,0,dpr,0,0);hood.digits=new Uint8Array(hood.cols*hood.rows);for(let i=0;i<hood.digits.length;i++)hood.digits[i]=Math.random()<.5?0:1;drawHood(true)}
-function buildHood(stage){hood.stage=stage}
-cv.addEventListener('mousemove',e=>{const r=cv.getBoundingClientRect();hood.mouse=[(e.clientX-r.left)*(hood.cols*hood.cell)/r.width,(e.clientY-r.top)*(hood.rows*hood.cell)/r.height]});
-cv.addEventListener('mouseleave',()=>hood.mouse=null);cv.addEventListener('pointermove',e=>{const r=cv.getBoundingClientRect();hood.mouse=[(e.clientX-r.left)*(hood.cols*hood.cell)/r.width,(e.clientY-r.top)*(hood.rows*hood.cell)/r.height];if(window.motionPaused)drawHood(true)});cv.addEventListener('pointerleave',()=>hood.mouse=null);
+let hood={stage:0,cols:0,rows:0,cell:5,t:0,mouse:null,digits:null,mode:'idle',ember:0,width:0};
+function sizeWorm(force){const box=cv.parentElement.clientWidth;if(!box)return;const w=Math.min(980,box-8);if(!force&&w===hood.width)return;hood.width=w;
+ const maxH=innerWidth>=1024?280:innerWidth>=768?240:200;hood.cell=w>450?3.5:3;hood.cols=Math.floor(w/hood.cell);hood.rows=Math.floor(Math.min(hood.cols*.46,maxH/hood.cell));
+ const W=hood.cols*hood.cell,H=hood.rows*hood.cell,dpr=Math.min(window.devicePixelRatio||1,2);cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);cv.style.width=W+'px';cv.style.height=H+'px';cx.setTransform(dpr,0,0,dpr,0,0);
+ hood.digits=new Uint8Array(hood.cols*hood.rows);for(let i=0;i<hood.digits.length;i++)hood.digits[i]=Math.random()<.5?0:1;drawHood(true)}
+function hoodPointer(e){const r=cv.getBoundingClientRect();hood.mouse=[(e.clientX-r.left)*(hood.cols*hood.cell)/r.width,(e.clientY-r.top)*(hood.rows*hood.cell)/r.height];if(window.motionPaused)drawHood(true)}
+cv.addEventListener('pointermove',hoodPointer);cv.addEventListener('pointerleave',()=>{hood.mouse=null;if(window.motionPaused)drawHood(true)});
 function layout(){const {cols,rows,cell,stage,t}=hood,W=cols*cell,H=rows*cell,n=9+stage*2,R=H*0.19,sp=R*0.60;
   const need=sp*(n-1)+R*2.8,sc=Math.min(1,(W-30)/need),r0=R*sc,s0=sp*sc;
   const hx=W/2+(s0*(n-1))/2-r0*0.1,ymid=H*0.52,amp=H*0.08*sc,segs=[];
   for(let i=0;i<n;i++){const x=hx-i*s0,y=ymid+amp*Math.sin(i*0.72-t*2.0)+(i?0:amp*0.15),r=r0*(i===0?1:0.90-0.52*(i/(n-1)));segs.push({x,y,r})}
   return {segs,r0}}
-function drawHood(force=false){if(window.motionPaused&&!force)return;const {cols,rows,cell,digits}=hood;if(!cols)return;if(!window.motionPaused)hood.t+=hood.mode==='dig'?.043:.018;
+const HAT=[[-1.02,-.40],[-.84,-1.04],[-.22,-1.62],[.33,-1.42],[1.25,-1.08],[.73,-.68],[.95,-.34],[.13,-.16]];
+function inside(x,y,p){let yes=false;for(let i=0,j=p.length-1;i<p.length;j=i++){const a=p[i],b=p[j];if((a[1]>y)!==(b[1]>y)&&x<(b[0]-a[0])*(y-a[1])/(b[1]-a[1])+a[0])yes=!yes}return yes}
+function drawHood(force){if(window.motionPaused&&!force)return;const {cols,rows,cell,digits}=hood;if(!cols)return;if(!window.motionPaused)hood.t+=hood.mode==='dig'?.043:.018;
  const W=cols*cell,H=rows*cell,{segs,r0}=layout(),hd=segs[0],hx=hd.x,hy=hd.y,m=hood.mouse;
+ /* a burn that just landed tints the feather ember for a moment */
+ const eAge=(performance.now()-hood.ember)/1500,ek=hood.ember&&eAge<1&&!window.motionPaused?Math.sin(Math.PI*eAge):0;
+ const feather=ek?[Math.round(222+(255-222)*ek),Math.round(222+(150-222)*ek),Math.round(146+(70-146)*ek)].join(','):'222,222,146';
  cx.clearRect(0,0,W,H);
  const glow=cx.createRadialGradient(W*.54,H*.57,5,W*.54,H*.57,W*.43);glow.addColorStop(0,'rgba(20,165,81,.10)');glow.addColorStop(1,'rgba(0,0,0,0)');cx.fillStyle=glow;cx.fillRect(0,0,W,H);
- const hat=[[-1.02,-.40],[-.84,-1.04],[-.22,-1.62],[.33,-1.42],[1.25,-1.08],[.73,-.68],[.95,-.34],[.13,-.16]];
- function inside(x,y,p){let yes=false;for(let i=0,j=p.length-1;i<p.length;j=i++){let a=p[i],b=p[j];if((a[1]>y)!==(b[1]>y)&&x<(b[0]-a[0])*(y-a[1])/(b[1]-a[1])+a[0])yes=!yes}return yes}
  cx.font=`500 ${cell*1.07}px "IBM Plex Mono",monospace`;cx.textBaseline='middle';
  for(let row=0;row<rows;row++)for(let col=0;col<cols;col++){
   const x=col*cell,y=row*cell,index=row*cols+col;let part='',light=0,nx=(x-hx)/r0,ny=(y-hy)/r0,segment=0;
@@ -337,93 +298,46 @@ function drawHood(force=false){if(window.motionPaused&&!force)return;const {cols
   if(part==='body'){
    const wave=Math.pow(Math.max(0,Math.cos(segment*.75-hood.t*3)),14);light+=wave*.26;
    if(near>.90)light+=.15;
-   // A rounded eye and a slight smile cut into the binary face.
    const eye=Math.hypot(nx-.43,ny+.04);if(eye<.13){part=eye<.065?'eye':'';light=.95}
    if(nx>.19&&nx<.72&&Math.abs(ny-(.39-.38*(nx-.2)*(nx-.2)))<.037)part='';
   }
-  if(inside(nx,ny,hat)){part='hat';light=.4+.37*Math.max(0,1-Math.abs(nx+.35))+.13*(-ny)}
-  // Turned brim, deliberately wider than the crown.
+  if(inside(nx,ny,HAT)){part='hat';light=.4+.37*Math.max(0,1-Math.abs(nx+.35))+.13*(-ny)}
   if(nx>-1.09&&nx<1.02&&ny>-.42+nx*.065&&ny<-.20+nx*.065){part='brim';light=.8}
-  // A separate curved feather, anchored in the hat band.
   const u=(-ny-.61)/1.67;if(u>=0&&u<=1){const center=-.36-.47*u+.13*Math.sin(u*Math.PI),width=.028+.115*Math.sin(u*Math.PI);if(Math.abs(nx-center)<width){part='feather';light=.75+.23*Math.sin(u*Math.PI)}}
   if(!part)continue;
   if(Math.random()<(hood.mode==='dig'?.025:.004)&&!window.motionPaused)digits[index]^=1;
   let ox=0,oy=0;if(m){const dx=x-m[0],dy=y-m[1],d=Math.hypot(dx,dy);if(d<65){light+=.25*(1-d/65);if(d>0){ox=dx/d*(1-d/65)*3;oy=dy/d*(1-d/65)*3}}}
   light=Math.max(.16,Math.min(1,light));
-  const rgb=part==='eye'?'213,255,230':part==='feather'?'222,222,146':part==='brim'?'126,200,106':part==='hat'?'155,222,137':'60,245,131';
-  cx.fillStyle=`rgba(${rgb},${light})`;cx.fillText(digits[index],x+ox,y+oy);
+  const c=part==='eye'?'213,255,230':part==='feather'?feather:part==='brim'?'126,200,106':part==='hat'?'155,222,137':'60,245,131';
+  cx.fillStyle=`rgba(${c},${light})`;cx.fillText(digits[index],x+ox,y+oy);
  }
- // Sparse electrical connections follow the existing segment geometry.
  cx.lineWidth=.6;for(let i=1;i<segs.length-1;i++){const a=segs[i],b=segs[i+1];cx.strokeStyle='rgba(161,255,197,.19)';cx.beginPath();cx.moveTo(a.x,a.y-a.r*.32);cx.lineTo(b.x,b.y-b.r*.32);cx.stroke();if((i+Math.floor(hood.t*3))%5===0){cx.fillStyle='#bdffd7';cx.beginPath();cx.arc(a.x,a.y-a.r*.32,1.05,0,Math.PI*2);cx.fill()}}
 }
-addEventListener('resize',sizeWorm);sizeWorm();setInterval(drawHood,50);
-
-/* ---------- rendering ---------- */
-let seen=new Set(),first=true,lastFeed=[];
-function stat(label,val,sub){return `<div class="stat"><b>${esc(val??'…')}</b><span>${esc(label)}</span>${sub?`<small>${esc(sub)}</small>`:''}</div>`}
-const expanded=new Set();
-function vcls(v){return v==='looks healthy'?'healthy':v==='mixed'?'mixed':'avoid'}
-function btText(b){b=b||{};if(b.n_fired==null)return '';return `${num(b.n_fired)} fired · median ${b.median_fired!=null?pct(b.median_fired):'…'} vs ${b.median_other!=null?pct(b.median_other):'…'} for the rest${b.p!=null?` · chance ${Math.round(b.p*100)} in 100`:''}`}
-function armText(p){p=p||{};const tp=(p.tp||[]).map(t=>`${t[0]}x sell ${Math.round(t[1]*100)}%`).join(', ');return [tp&&`take profit ${tp}`,p.trail!=null&&`trail ${Math.round(p.trail*100)}%`,p.stop!=null&&`stop ${Math.round(p.stop*100)}%`,p.max_age&&`≤ ${Math.round(p.max_age/3600)}h`,p.delay_min!=null&&`enter +${p.delay_min}m`].filter(Boolean).join(' · ')}
-function specText(x){const sp=x.spec||{};if(x.kind==='rule'){const c=(sp.conditions||[]).map(c=>`${c.metric} ${c.op} ${c.value}`).join(' and ');return `${c||'?'} → ${sp.points>0?'+':''}${num(sp.points)}`}return `${sp.name||'?'}: ${armText(sp)}`}
-function card(t,isNew){
-  const m=t.metrics||{},v=t.verdict,cls=vcls(v),open=expanded.has(t.token);
-  const allChips=[['holders',m.holders],['top10',m.top10_pct!=null?m.top10_pct+'%':null,m.top10_pct>=50,m.top10_pct<20],['outside pool',m.outside_pool_pct!=null?m.outside_pool_pct+'%':null],['buyers',m.unique_buyers],['via bots',m.routed_pct!=null?m.routed_pct+'%':null],['linked wallets',m.linked_group_pct>=10&&m.senders_on_record>=150?m.linked_group_pct+'%':null,m.linked_group_pct>=10],['losing wallets',m.losing_pct!=null&&m.crowd_history>=150?m.losing_pct+'%':null,m.losing_pct>=30,m.losing_pct<5],
-    ['sniped',m.snipe_pct!=null?m.snipe_pct+'%':null,m.snipe_pct>=30],['creator bought',m.deployer_buy_pct?m.deployer_buy_pct+'%':null,m.deployer_buy_pct>=20],
-    ['creator holds',m.deployer_hold_pct?m.deployer_hold_pct+'%':null,m.deployer_hold_pct>=10],['tax',t.creator_tax_bps==null?'?':(t.creator_tax_bps/100)+'%',(t.creator_tax_bps||0)>500],
-    ['creator launches',m.creator_prev_launches,(m.creator_prev_launches||0)>10],['creator trust',t.trust,t.trust<35,t.trust>=65],['trades 1h',m.swaps_1h],['fdv at scan',usd(m.fdv0_usd)],['fdv now',usd(m.fdv_usd)],['vol 24h',usd(m.volume_24h_usd)]];
-  const keyChips=allChips.filter(c=>['holders','top10','sniped','creator trust','fdv at scan','fdv now'].includes(c[0]));
-  const chipHtml=cs=>cs.filter(c=>c[1]!=null&&c[1]!=='').map(c=>`<span class="chip${c[2]?' warn':c[3]?' good':''}">${esc(c[0])} ${esc(c[1])}</span>`).join('');
-  const reasons=(t.reasons||[]).map(r=>`<li class="${/\(-/.test(r)?'neg':/\(\+/.test(r)?'pos':''}">${esc(r)}</li>`).join('');
-  const links=[[`https://www.ponsfamily.com/launchpad/${t.token}`,'pons'],[`https://robinhoodchain.blockscout.com/token/${t.token}`,'explorer'],
-    [`https://robinhoodchain.blockscout.com/address/${t.deployer}`,'creator'],[xurl(t.twitter),'x'],[tgurl(t.telegram),'telegram'],[weburl(t.website),'site']]
-    .filter(l=>l[0]).map(l=>`<a href="${esc(l[0])}" target="_blank" rel="noopener noreferrer">${l[1]}</a>`).join(' · ');
-  let out='';
-  if(t.outcome&&t.outcome!=='pending')out=`<span class="chip ${/rugged|dumped/.test(t.outcome)?'warn':t.outcome==='grew'?'good':''}">${esc(t.outcome)} ${pct(t.change_pct)}</span>`;
-  else if(t.change_pct!=null)out=`<span class="chip">since verdict ${pct(t.change_pct)}</span>`;
-  const lg=logo(t.logo)?`<img class="logo" src="${esc(logo(t.logo))}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="badLogos.add(this.dataset.src);this.remove()" data-src="${esc(t.logo||'')}">`:'';
-  const title=`<div class="name">${lg}${esc(t.name||'?')} <span class="sym">$${esc(t.symbol||'?')}</span> <span class="meta">· ${esc(t.pair_symbol||'')} pair · graduated ${ago(t.grad_ts)} · creator ${short(t.deployer)}${t.partial?' · partial data':''}</span><span class="more">${open?'▾ less':'▸ details'}</span></div>`;
-  if(!open)return `<div class="card compact v-${cls}${isNew?' new':''}" data-token="${esc(t.token)}"><div class="badge ${cls}"><b>${num(t.score)}</b><small>${esc(v)}</small></div><div>${title}<div class="chips">${chipHtml(keyChips)}${out}</div></div></div>`;
-  return `<div class="card v-${cls}${isNew?' new':''}" data-token="${esc(t.token)}"><div class="badge ${cls}"><b>${num(t.score)}</b><small>${esc(v)}</small></div><div>${title}<div class="chips">${chipHtml(allChips)}${out}</div><ul class="reasons">${reasons}</ul><div class="meta" style="margin-top:6px">${links}</div></div></div>`;
-}
-function renderFeed(feed,force){
-  lastFeed=feed;const fkey=JSON.stringify([feed,[...expanded],window.scanQuery,window.scanFilter,window.scanSort]);
-  if(!force&&fkey===window.__feedKey)return;window.__feedKey=fkey;
-  const q=(window.scanQuery||'').toLowerCase();feed=feed.filter(t=>(!q||[t.name,t.symbol,t.token].some(x=>String(x||'').toLowerCase().includes(q)))&&(!window.scanFilter||window.scanFilter==='all'||(window.scanFilter==='partial'?t.partial:t.verdict===window.scanFilter)));
-  feed=[...feed].sort((a,b)=>window.scanSort==='score'?b.score-a.score:window.scanSort==='risk'?a.score-b.score:b.grad_ts-a.grad_ts);
-  $('#scan-count').textContent=`${feed.length} of ${lastFeed.length} recent scans · scores describe the assessment at scan time`;
-  const focusToken=document.activeElement?.closest?.('.scan-row')?.closest('.card')?.dataset.token;
-  $('#feed').innerHTML=feed.length?feed.map(t=>card(t,!first&&!seen.has(t.token))).join(''):lastFeed.length?'<div class="empty">No matching scans. Try another search or assessment filter.</div>':'<div class="empty">No scans yet. The backfill is running; the first cards land within a minute or two.</div>';
-  if(focusToken){const btn=[...document.querySelectorAll('#feed .card')].find(c=>c.dataset.token===focusToken)?.querySelector('.scan-row');if(btn)btn.focus({preventScroll:true})}
-}
-document.addEventListener('click',async e=>{const b=e.target.closest('.copy');if(!b)return;try{await navigator.clipboard.writeText(b.dataset.text||'');b.textContent='Copied'}catch{b.textContent='Copy failed'}setTimeout(()=>b.textContent='copy',1500)});
-$('#feed').addEventListener('click',e=>{if(e.target.closest('a'))return;const c=e.target.closest('.card');if(!c)return;const t=c.dataset.token;expanded.has(t)?expanded.delete(t):expanded.add(t);renderFeed(lastFeed,true)});
+addLoop('hood',cv,()=>drawHood(),50);
 
 /* ---------- screen frames + the scout: the same worm, small, living inside the screen. It crawls to whatever the
-   worm is reading (the focus of the latest frame), circles it while it reads, and roams the page when there is
-   nothing to look at. Same digits, same hood, grows with the same treasury. ---------- */
-let eyeFocus=null;
-let lastFrame=null,lastAction=null;
+   worm is reading (the focus of the latest frame), circles it while it reads, and roams when there is nothing to
+   look at. Same digits, same hat, grows with the same treasury. ---------- */
+let eyeFocus=null,lastFrame=null,lastAction=null;
 const ACTIONS={claim:'claiming its fees',forward:'paying the creator',burn:'burning $WORM',gold:'buying gold',compute:'buying compute',launch:'launched its token'};
-function applyAction(a){if(!a||!a.action)return;lastAction=a;updateBar()}
+function applyAction(a){if(!a||!a.action)return;lastAction=a;updateLive()}
 function currentAction(){return lastAction&&Date.now()/1000-(lastAction.ts||0)<120?lastAction:null}
-function applyFrame(f){if(!f||!f.jpg)return;lastFrame=f;if(f.action)lastAction={action:f.action,done:f.done,ts:f.ts||Date.now()/1000};const img=$('#screenimg');img.src='data:image/jpeg;base64,'+f.jpg;$('#screennote').textContent=(f.note||'')+(f.url?'  ·  '+f.url.replace(/^https?:\/\//,'').slice(0,70):'');eyeFocus=f.focus||null;scout.arrived=false}
-const eye=$('#eye'),scx=eye.getContext('2d'),NOTE_H=32;
-const scout={x:0,y:0,h:0,dir:1,trail:[],len:0,cell:4,digits:null,cols:0,rows:0,W:0,H:0,t:0,arrived:false,way:null,wayAt:0,orbit:0,mouse:null,last:0,drawn:0};
-eye.parentElement.addEventListener('mousemove',e=>{const r=eye.getBoundingClientRect();scout.mouse=[(e.clientX-r.left)*scout.W/r.width,(e.clientY-r.top)*scout.H/r.height]});
-eye.parentElement.addEventListener('mouseleave',()=>scout.mouse=null);
-function scoutResize(w,h){const k=scout.W?w/scout.W:0;eye.width=w;eye.height=h;scout.cols=Math.ceil(w/scout.cell);scout.rows=Math.ceil(h/scout.cell);
+function applyFrame(f){if(!f||!f.jpg)return;lastFrame=f;if(f.action)lastAction={action:f.action,done:f.done,ts:f.ts||Date.now()/1000};$('#screenimg').src='data:image/jpeg;base64,'+f.jpg;$('#screen').classList.add('has-frame');$('#screennote').textContent=(f.note||'')+(f.url?'  ·  '+f.url.replace(/^https?:\/\//,'').slice(0,70):'');eyeFocus=f.focus||null;scout.arrived=false}
+const eye=$('#eye'),scx=eye.getContext('2d'),NOTE_H=4;
+const scout={x:0,y:0,h:0,dir:1,trail:[],len:0,cell:4,digits:null,cols:0,rows:0,W:0,H:0,t:0,arrived:false,way:null,wayAt:0,orbit:0,mouse:null,last:0};
+eye.parentElement.addEventListener('pointermove',e=>{if(e.pointerType==='touch')return;const r=eye.getBoundingClientRect();scout.mouse=[(e.clientX-r.left)*scout.W/r.width,(e.clientY-r.top)*scout.H/r.height]});
+eye.parentElement.addEventListener('pointerleave',()=>scout.mouse=null);
+function scoutResize(w,h){const k=scout.W?w/scout.W:0,dpr=Math.min(window.devicePixelRatio||1,2);eye.width=Math.round(w*dpr);eye.height=Math.round(h*dpr);scx.setTransform(dpr,0,0,dpr,0,0);scout.cols=Math.ceil(w/scout.cell);scout.rows=Math.ceil(h/scout.cell);
   scout.digits=new Uint8Array(scout.cols*scout.rows);for(let i=0;i<scout.digits.length;i++)scout.digits[i]=Math.random()<.5?0:1;
-  if(k){scout.x*=k;scout.y*=k;scout.len*=k;scout.trail.forEach(p=>{p.x*=k;p.y*=k;p.s*=k});if(scout.way){scout.way[0]*=k;scout.way[1]*=k}}else{scout.x=w*.5;scout.y=h*.45;scout.h=0}
+  if(k){scout.x*=k;scout.y*=k;scout.len*=k;scout.trail.forEach(p=>{p.x*=k;p.y*=k;p.s*=k});if(scout.way){scout.way[0]*=k;scout.way[1]*=k}}else{scout.x=w*.5;scout.y=h*.55;scout.h=0}
   scout.W=w;scout.H=h}
 function scoutBack(back){const tr=scout.trail,want=scout.len-back;
   for(let i=tr.length-1;i>0;i--){const a=tr[i-1],b=tr[i];if(a.s<=want){const u=(want-a.s)/Math.max(1e-6,b.s-a.s);return [a.x+(b.x-a.x)*u,a.y+(b.y-a.y)*u]}}
   const a=tr[0]||{x:scout.x,y:scout.y,s:scout.len},gap=a.s-want;return [a.x-Math.cos(scout.h)*gap,a.y-Math.sin(scout.h)*gap]}
-function scoutTick(now){requestAnimationFrame(scoutTick);if(window.motionPaused)return;const box=eye.parentElement.getBoundingClientRect();if(!box.width||now-scout.drawn<30)return;
-  const dt=Math.min(.05,(now-scout.last)/1000||.016);scout.last=now;scout.drawn=now;
+function scoutTick(now,still){const box=eye.parentElement.getBoundingClientRect();if(!box.width)return;
+  const dt=still?0:Math.min(.05,(now-scout.last)/1000||.016);scout.last=now;
   const w=Math.round(box.width),hh=Math.round(box.height);if(w!==scout.W||hh!==scout.H)scoutResize(w,hh);
   const {W,H,cell,cols,digits}=scout,stage=hood.stage||0,n=8+stage*2,r0=12+stage*.9,sp=r0*.62,dig=hood.mode==='dig';
-  /* where to go: the focus of the frame, or a waypoint of its own */
   let tx,ty;const seek=!!eyeFocus;
   if(seek){tx=eyeFocus[0]*W;ty=eyeFocus[1]*H}
   else{if(!scout.way||now>scout.wayAt||Math.hypot(scout.way[0]-scout.x,scout.way[1]-scout.y)<r0){scout.way=[r0*3+Math.random()*(W-r0*6),r0*3+Math.random()*(H-NOTE_H-r0*6)];scout.wayAt=now+3500+Math.random()*3500}
@@ -436,22 +350,19 @@ function scoutTick(now){requestAnimationFrame(scoutTick);if(window.motionPaused)
   let d=want-scout.h;while(d>Math.PI)d-=2*Math.PI;while(d<-Math.PI)d+=2*Math.PI;
   const turn=(seek?6:2.8)*dt;scout.h+=Math.max(-turn,Math.min(turn,d));
   if(Math.abs(Math.cos(scout.h))>.3)scout.dir=Math.cos(scout.h)>0?1:-1;
-  /* crawl: forward along the heading with a sideways sway, so the body behind it wriggles */
   scout.t+=dt*speed/(sp*1.6);const lat=Math.sin(scout.t)*speed*.35,px=scout.x,py=scout.y;
   scout.x+=(Math.cos(scout.h)*speed-Math.sin(scout.h)*lat)*dt;scout.y+=(Math.sin(scout.h)*speed+Math.cos(scout.h)*lat)*dt;
   scout.x=Math.max(r0,Math.min(W-r0,scout.x));scout.y=Math.max(r0*2.6,Math.min(H-NOTE_H-r0,scout.y));
   const step=Math.hypot(scout.x-px,scout.y-py);if(step>.3){scout.len+=step;scout.trail.push({x:scout.x,y:scout.y,s:scout.len})}
   const need=(n+1)*sp;while(scout.trail.length>2&&scout.len-scout.trail[1].s>need)scout.trail.shift();
-  /* the body follows the path the head took */
   const segs=[{x:scout.x,y:scout.y,r:r0}];for(let i=1;i<n;i++){const [x,y]=scoutBack(i*sp);segs.push({x,y,r:r0*(.90-.52*(i/(n-1)))})}
   const D=scout.dir,hx=scout.x,hy=scout.y;
   const hoodc={x:hx-D*r0*.10,y:hy-r0*.30,r:r0*1.10,brim:hy-r0*.20};
   const tip={x0:hx-D*r0*.02,y0:hy-r0*1.30,x1:hx+D*r0*1.30,y1:hy-r0*2.15};
   const fe={x0:tip.x1,y0:tip.y1,x1:tip.x1+D*r0*.5,y1:tip.y1-r0*.4};
   const hole={x:hx+D*r0*.40,y:hy-r0*.02,r:r0*.15};
-  /* draw: the ring it is heading for, a dark halo so the digits read on top of the page, then the digits */
   scx.clearRect(0,0,W,H);
-  if(seek){scx.strokeStyle=`rgba(0,255,65,${scout.arrived?.28:.55})`;scx.lineWidth=1;scx.beginPath();scx.arc(tx,ty,R+7,0,Math.PI*2);scx.stroke()}
+  if(seek){scx.strokeStyle=rgba(T['g-500'],scout.arrived?.28:.55);scx.lineWidth=1;scx.beginPath();scx.arc(tx,ty,R+7,0,Math.PI*2);scx.stroke()}
   scx.fillStyle='rgba(0,0,0,.5)';for(const s of segs){scx.beginPath();scx.arc(s.x,s.y,s.r+3,0,Math.PI*2);scx.fill()}
   scx.beginPath();scx.arc(hoodc.x,hoodc.y,hoodc.r+2,0,Math.PI*2);scx.fill();
   scx.font=`600 ${cell+1}px "IBM Plex Mono",ui-monospace,Menlo,monospace`;scx.textBaseline='top';
@@ -468,211 +379,93 @@ function scoutTick(now){requestAnimationFrame(scoutTick);if(window.motionPaused)
     if(!part)continue;
     let b=.22+.62*shade+.16*(-D*lx-ly),ox=0,oy=0;
     if(m){const dx=cxp-m[0],dy=cy-m[1],dm=Math.sqrt(dx*dx+dy*dy);if(dm<80&&dm>0){b+=.55*(1-dm/80);const k=(1-dm/80)*10;ox=dx/dm*k;oy=dy/dm*k}}
-    if(dig){b+=.12;if(Math.random()<.06)digits[i]^=1}else if(Math.random()<.015)digits[i]^=1;
+    if(!still){if(dig){b+=.12;if(Math.random()<.06)digits[i]^=1}else if(Math.random()<.015)digits[i]^=1}
     b=Math.max(.1,Math.min(1,b));
     scx.fillStyle=part==='hood'?`rgba(190,248,179,${b})`:part==='feather'?`rgba(236,218,149,${b})`:`rgba(81,242,137,${b})`;
     scx.fillText(digits[i],q*cell+ox,r*cell+oy)}}
   /* the bubble: what the worm is doing, said beside its head; the words come from the screen chip */
   const chip=$('#screen-state'),say=chip&&!chip.hidden?chip.textContent:'';
-  if(say){const busy=/\bon\b|\bact\b/.test(chip.className),dots=busy?'.'.repeat(1+Math.floor(now/400)%3):'',text=say.replace(/^waiting for (the next )?graduation$/,'looking around')+dots;
-    const col=/\bon\b/.test(chip.className)?'#ff7b7b':/\bact\b/.test(chip.className)?'#ffd166':'#7dff9c';
+  if(say){const busy=/\b(on|act)\b/.test(chip.className),dots=busy&&!still?'.'.repeat(1+Math.floor(now/400)%3):'',text=say.replace(/^waiting for (the next )?(a )?graduation$/,'looking around')+dots;
+    const col=/\bact\b/.test(chip.className)?T['e-300']:/\bon\b/.test(chip.className)?T['g-500']:T['g-300'];
     scx.font='600 11px "IBM Plex Mono",ui-monospace,Menlo,monospace';const tw=Math.ceil(scx.measureText(text).width)+16,bh=22;
     let bx=D>0?hx+r0*1.7:hx-r0*1.7-tw,by=hy-r0*3.1-bh;bx=Math.max(4,Math.min(W-tw-4,bx));by=Math.max(4,by);
-    scx.fillStyle='rgba(0,0,0,.82)';scx.strokeStyle=col;scx.lineWidth=1;scx.beginPath();if(scx.roundRect)scx.roundRect(bx,by,tw,bh,5);else scx.rect(bx,by,tw,bh);scx.fill();scx.stroke();
+    scx.fillStyle='rgba(6,9,8,.86)';scx.strokeStyle=col;scx.lineWidth=1;scx.beginPath();if(scx.roundRect)scx.roundRect(bx,by,tw,bh,6);else scx.rect(bx,by,tw,bh);scx.fill();scx.stroke();
     scx.beginPath();scx.moveTo(D>0?bx+8:bx+tw-8,by+bh);scx.lineTo(D>0?bx+2:bx+tw-2,by+bh+7);scx.lineTo(D>0?bx+16:bx+tw-16,by+bh);scx.closePath();scx.fillStyle=col;scx.fill();
     scx.fillStyle=col;scx.textBaseline='middle';scx.textAlign='left';scx.fillText(text,bx+8,by+bh/2);scx.textBaseline='top'}
 }
-requestAnimationFrame(scoutTick);
+addLoop('scout',eye,now=>scoutTick(now),30);
 
-/* ---------- live dig ---------- */
-const STEPS=[['start','open'],['creator','creator history'],['curve','bonding curve'],['holders','holders now'],['pool','after graduation'],['verdict','verdict']];
-let dig={token:null,steps:{}},digIdleTimer=null;
+/* ---------- live dig: a stepper, the verdict, the three reasons that weighed most, and what the worm saw ---------- */
+const STEPS=[['start','Open'],['creator','Creator'],['curve','Curve'],['holders','Holders'],['pool','Pool'],['verdict','Verdict']];
+let dig={token:null,steps:{}},digIdleTimer=null,digStamp=null;
 function applyScan(ev){if(!ev||!ev.step)return;if(ev.step==='start'||ev.token!==dig.token){dig={token:ev.token,steps:{}}}dig.steps[ev.step]=ev;
-  hood.mode=ev.step==='verdict'?'idle':'dig';clearTimeout(digIdleTimer);if(ev.step!=='verdict')digIdleTimer=setTimeout(()=>{hood.mode='idle'},90000);renderDig();updateBar()}
-function renderDig(){const el=$('#dig'),st=dig.steps;if(!dig.token){el.innerHTML='<div class="empty">waiting for the next graduation… one lands every few minutes.</div>';return}
-  const head=st.start?st.start.data:{},next=STEPS.map(x=>x[0]).find(k=>!st[k]);
-  let html=`<div class="digtitle">${st.verdict?'last dig':'digging into'} <b>${esc(head.name||dig.token.slice(0,10))}</b> <span class="sym">$${esc(head.symbol||'?')}</span> <span class="meta" id="digago">${digAgo(head)}</span>${st.verdict?` <span class="badge-inline ${vcls(st.verdict.data.verdict)}">${num(st.verdict.data.score)} ${esc(st.verdict.data.verdict)}</span> <span class="meta">in ${num(st.verdict.data.seconds)}s</span>`:''}</div>`;
-  if(st.verdict)html+=`<div class="digwait" id="digwait"><span class="wdot"></span><span>${esc(waitText())}</span></div>`;
-  html+='<ol class="steps">'+STEPS.map(([k,label])=>{const ev=st[k];const state=ev?'done':(k===next&&!st.verdict?'now':'todo');return `<li class="${state}"><span class="dot"></span>${label}${ev?`: <span class="meta">${esc(ev.text)}</span>`:''}</li>`}).join('')+'</ol>';
-  html+='<canvas id="vision" height="170"></canvas>';el.innerHTML=html;drawVision()}
-/* the state both hot panels share: digging (a dig in progress, or one that just ended) or waiting for the next graduation */
+  if(ev.step==='verdict')digStamp=ev.token;
+  hood.mode=ev.step==='verdict'?'idle':'dig';clearTimeout(digIdleTimer);if(ev.step!=='verdict')digIdleTimer=setTimeout(()=>{hood.mode='idle';updateLive()},90000);renderDig();updateLive()}
+const stripStep=t=>String(t||'').replace(/^(curve|verdict|pool|holders|creator)[^:]*:\s*/i,'');
+function splitReason(r){const m=/\(([+\-−]?\d+(?:\.\d+)?)\)\s*$/.exec(r||'');return {text:String(r||'').replace(/\s*\([+\-−]?\d+(?:\.\d+)?\)\s*$/,''),pts:m?Number(m[1].replace('−','-')):null}}
+function topReasons(rs,n=3){return (rs||[]).map(splitReason).filter(r=>r.pts).sort((a,b)=>Math.abs(b.pts)-Math.abs(a.pts)).slice(0,n).sort((a,b)=>(a.pts<0?0:1)-(b.pts<0?0:1)||Math.abs(b.pts)-Math.abs(a.pts))}
+function reasonList(rs,cls){return `<ul class="${cls}">${rs.map(r=>`<li class="${r.pts<0?'neg':'pos'}"><b>${r.pts>0?'+':'−'}${Math.abs(Math.round(r.pts))}</b><span>${esc(r.text)}</span></li>`).join('')}</ul>`}
+function renderDig(){const el=$('#dig'),st=dig.steps;
+  if(!dig.token){el.innerHTML='<p class="dig-empty">waiting for the next graduation… one lands every few minutes.</p>';return}
+  const head=st.start?st.start.data:{},v=st.verdict&&st.verdict.data,next=STEPS.map(x=>x[0]).find(k=>!st[k]);
+  const readOpen=!!el.querySelector('.dig-read[open]'),img=logo(head.logo),stamp=v&&digStamp===dig.token;if(stamp)digStamp=null;
+  const done=STEPS.filter(([k])=>st[k]).length;
+  let html=`<div class="dig-token">${img?`<img class="dig-logo" src="${esc(img)}" alt="" referrerpolicy="no-referrer" onerror="badLogos.add(this.dataset.src);this.replaceWith(Object.assign(document.createElement('span'),{className:'dig-logo',textContent:'${initials(head.name)}'}))" data-src="${esc(head.logo||'')}">`:`<span class="dig-logo">${initials(head.name)}</span>`}<div class="dig-name"><b>${esc(head.name||dig.token.slice(0,10))}</b> <span class="dig-sym">$${esc(head.symbol||'?')}</span><span class="dig-meta" id="digago">${digAgo(head)}</span></div></div>`;
+  if(v)html+=`<div class="dig-call"><span class="w-verdict ${vcls(v.verdict)}${stamp?' is-stamp':''}"><b>${num(v.score)}</b>${esc(v.verdict)}</span><span class="dig-took">${esc(v.verdict==='looks healthy'?'Looks healthy':String(v.verdict||'').replace(/^./,c=>c.toUpperCase()))} · ${num(v.score)}/100 · dug in ${Math.round(Number(v.seconds)||0)} s</span></div><p class="digwait" id="digwait"><span class="dot" aria-hidden="true"></span><span>${esc(waitText())}</span></p>`;
+  else html+=`<div class="dig-call"><span class="w-live">digging</span><span class="dig-took">step ${Math.min(6,done+1)} of 6 · ${esc((STEPS.find(x=>x[0]===next)||['',''])[1].toLowerCase())}</span></div>`;
+  html+=`<ol class="stepper" aria-label="Dig progress: ${done} of 6 steps">${STEPS.map(([k,label])=>{const s=st[k]?'done':(k===next&&!v?'now':'todo');return `<li class="${s}"${s==='now'?' aria-current="step"':''}><i aria-hidden="true"></i><span>${label}</span></li>`}).join('')}</ol>`;
+  if(v){const top=topReasons(v.reasons);if(top.length)html+=reasonList(top,'dig-reasons'+(stamp?' is-fresh':''))}
+  html+=`<div class="vision"><canvas id="vision" role="img" aria-label="What the worm saw: holders sized by their share, and curve buys over time with the first seconds (snipes) in red"></canvas></div>`;
+  html+=`<details class="w-details dig-read"${readOpen?' open':''}><summary>What it read</summary><div class="w-details__body"><ul class="dig-steps">${STEPS.filter(([k])=>st[k]).map(([k,label])=>`<li><b>${label}</b><span>${esc(stripStep(st[k].text))}</span></li>`).join('')}</ul>${v&&(v.reasons||[]).length?`<p class="label">Every reason it gave</p><ul class="reasons">${v.reasons.map(r=>{const x=splitReason(r);return `<li class="${x.pts<0?'neg':x.pts>0?'pos':''}">${esc(r)}</li>`}).join('')}</ul>`:''}</div></details>`;
+  el.innerHTML=html;drawVision()}
+/* the state both live cards share: digging (a dig in progress, or one that just ended) or waiting for the next graduation */
 function digState(){const last=Math.max(0,...Object.values(dig.steps).map(e=>e.ts||0)),head=(dig.steps.start&&dig.steps.start.data)||{};
   return {digging:!!dig.token&&!dig.steps.verdict&&(hood.mode==='dig'||Date.now()/1000-last<90),head,sym:head.symbol||String(dig.token||'').slice(0,8)}}
-function digAgo(head){return `· ${esc(head.pair||'')} pair · graduated ${ago(head.grad_ts)}`}
+function digAgo(head){return `${esc(head.pair||'')} pair · graduated ${ago(head.grad_ts)}`}
 function waitText(){const g=Number(((lastState||{}).stats||{}).grads_24h||0),gap=g>0?Math.max(1,Math.round(1440/g)):0;
   return 'waiting for the next graduation'+(gap?` · about one every ${gap} min over the last day`:'')}
-let visionRO=null,visionSize='';
-function watchVision(c){if(!window.ResizeObserver)return;if(!visionRO)visionRO=new ResizeObserver(()=>{const c=$('#vision');if(c&&visionSize!==Math.round(c.clientWidth)+'x'+Math.round(c.clientHeight))drawVision()});visionRO.disconnect();visionRO.observe(c)}
-function drawVision(){const c=$('#vision');if(!c)return;const ctx=c.getContext('2d');const W=c.width=c.clientWidth||600,H=c.height=Math.max(170,Math.round(c.clientHeight)||170);visionSize=Math.round(c.clientWidth)+'x'+Math.round(c.clientHeight);watchVision(c);ctx.clearRect(0,0,W,H);
-  ctx.font='10px "IBM Plex Mono",ui-monospace,monospace';ctx.textBaseline='alphabetic';
-  const hb=(dig.steps.holders&&dig.steps.holders.data.bubbles)||[],bw=W*0.5;
-  ctx.fillStyle='#5fbf6f';{const lab1='holders · size = share · red = creator or ≥10%';ctx.fillText(ctx.measureText(lab1).width>bw-14?'holders · size = share':lab1,6,12)}
-  if(hb.length){const placed=[],maxp=hb[0].pct||1,rmax=Math.min(34,H*0.2);let seed=7;const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647};
-    for(const b of hb.slice(0,30)){let r=Math.max(2.5,Math.sqrt(b.pct/maxp)*rmax);let ok=false,x=0,y=0;for(let k=0;k<400&&!ok;k++){if(k===200)r*=0.7;x=6+r+rnd()*(bw-12-2*r);y=18+r+rnd()*(H-24-2*r);ok=placed.every(q=>Math.hypot(q.x-x,q.y-y)>=q.r+r+1.5)}
-      placed.push({x,y,r});ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fillStyle=b.dep?'rgba(255,82,82,.85)':b.pct>=10?'rgba(255,82,82,.4)':b.pct>=3?'rgba(0,255,65,.35)':'rgba(0,255,65,.16)';ctx.fill();ctx.strokeStyle=b.dep||b.pct>=10?'#ff5252':'#00b32d';ctx.stroke();
-      if(r>13){ctx.fillStyle='#eafff0';ctx.fillText(b.pct.toFixed(1)+'%',x-13,y+3)}}}
-  else{ctx.fillStyle='#0a5c1f';ctx.fillText(dig.steps.curve?'reading transfers…':'…',12,H/2)}
-  const cv=dig.steps.curve&&dig.steps.curve.data,tx=W*0.54,tw=W-tx-8;
-  ctx.fillStyle='#5fbf6f';ctx.fillText('curve buys · red = 3s snipe window',tx,12);
-  if(cv&&cv.timeline){const tl=cv.timeline,mx=Math.max(0.01,...tl),bwid=tw/tl.length;tl.forEach((v,i)=>{const h=(H-34)*(v/mx);ctx.fillStyle=i<=cv.snipe_bucket_end?'rgba(255,82,82,.85)':'rgba(0,255,65,.6)';ctx.fillRect(tx+i*bwid+1,H-16-h,Math.max(1,bwid-2),h)});
-    ctx.fillStyle='#5fbf6f';ctx.fillText('launch',tx,H-4);const lab=cv.span_s>=3600?Math.round(cv.span_s/3600)+'h later':cv.span_s>=60?Math.round(cv.span_s/60)+'m later':cv.span_s+'s later';ctx.fillText(lab,tx+tw-ctx.measureText(lab).width,H-4);
-    ctx.fillText(`${cv.buys} buys · ${cv.unique_buyers} wallets · ${cv.snipe_pct}% sniped`,tx,26)}
-  else{ctx.fillStyle='#0a5c1f';ctx.fillText(dig.steps.creator?'reading the curve…':'…',tx+6,H/2)}
-}
-
-let lastSyn='';
-function synapse(st,vd,sco,rd){
-  const score=Math.max(0,Math.min(100,rd.score||0));
-  const f=v=>v==null?'…':(typeof v==='number'?v.toLocaleString():String(v));
-  const key=JSON.stringify([st.launches_24h,st.grads_24h,st.scored,st.queued,vd['avoid']||0,sco.called,sco.warn_precision,sco.creators_flagged,score,rd.ready_at]);
-  if(key===lastSyn){const bb=document.getElementById('brainblock');if(bb)bb.textContent=f(st.last_block);return null}
-  lastSyn=key;
-  const R=66,cx=285,cy=215,circ=2*Math.PI*R;
-  // lateral view facing left, built from four parts whose union gets one outline:
-  // the cerebrum, the temporal lobe hanging under its front, the cerebellum at the back, the stem rooted under the middle
-  const cerebrum='M90,250 C90,120 230,50 480,45 C740,40 940,110 940,240 C940,330 860,380 720,395 C560,410 380,400 260,385 C150,370 90,320 90,250 Z';
-  const parts=`<path d="${cerebrum}"/><ellipse cx="415" cy="402" rx="250" ry="70" transform="rotate(-5 415 402)"/><ellipse cx="872" cy="415" rx="92" ry="58"/><rect x="705" y="330" width="52" height="205" rx="18" transform="rotate(4 731 430)"/>`;
-  const signal='M731,530 C733,470 735,420 733,360 C725,320 570,300 470,270 C420,255 385,238 352,215';
-  const sulci=['M500,46 C492,140 475,220 452,300','M760,62 C770,150 780,240 790,340'];
-  const gyri=['M140,305 C175,280 200,340 235,310 C270,280 300,340 335,310','M150,150 C185,125 210,180 245,150','M470,80 C505,60 540,100 575,80 C610,60 645,100 680,80','M480,290 C515,263 550,320 585,290 C620,263 655,320 690,290','M810,120 C835,100 860,140 885,120','M815,300 C840,280 865,320 890,300','M200,420 C225,404 250,432 275,416'];
-  const folia=['M812,392 C850,372 900,372 930,392','M806,412 C850,392 905,392 938,412','M812,432 C850,412 900,412 930,432'];
-  const val=(x,y,v,l,s,size)=>`<text x="${x}" y="${y}" text-anchor="middle" font-size="${size||30}" font-weight="bold" fill="#00ff41" filter="url(#glow)">${esc(f(v))}</text><text x="${x}" y="${y+24}" text-anchor="middle" font-size="12" fill="#8fe0a0" letter-spacing=".4">${esc(l.toUpperCase())}</text>${s?`<text x="${x}" y="${y+40}" text-anchor="middle" font-size="11" fill="#5fbf6f">${esc(s)}</text>`:''}`;
-  const reg=(x,y,t)=>`<text x="${x}" y="${y}" text-anchor="middle" font-size="11" font-style="italic" fill="#5fbf6f" opacity=".8">${esc(t)}</text>`;
-  return `<svg viewBox="0 0 1000 565" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="the worm's brain: each lobe shows the number that fits what that part does">
-  <defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-  <filter id="outline" x="-5%" y="-5%" width="110%" height="110%"><feMorphology in="SourceAlpha" operator="dilate" radius="2" result="dil"/><feComposite in="dil" in2="SourceAlpha" operator="out" result="ring"/><feFlood flood-color="#00ff41"/><feComposite in2="ring" operator="in" result="line"/><feGaussianBlur in="line" stdDeviation="3" result="halo"/><feMerge><feMergeNode in="halo"/><feMergeNode in="halo"/><feMergeNode in="line"/></feMerge></filter>
-  <pattern id="bits" width="28" height="24" patternUnits="userSpaceOnUse"><text x="3" y="12" font-size="10" fill="#00ff41" opacity=".09">0 1</text><text x="15" y="22" font-size="9" fill="#00ff41" opacity=".07">1 0</text></pattern>
-  <clipPath id="cb"><path d="${cerebrum}"/></clipPath></defs>
-  <g fill="rgba(0,18,5,.96)">${parts}</g>
-  <g fill="url(#bits)">${parts}</g>
-  <g fill="#000" filter="url(#outline)">${parts}</g>
-  <g clip-path="url(#cb)" fill="none" stroke="#0a5c1f" stroke-width="2"><ellipse cx="415" cy="402" rx="250" ry="70" transform="rotate(-5 415 402)"/><ellipse cx="872" cy="415" rx="92" ry="58"/></g>
-  ${folia.map(p=>`<path d="${p}" fill="none" stroke="#0a5c1f" stroke-width="1.5"/>`).join('')}
-  ${gyri.map(p=>`<path d="${p}" fill="none" stroke="#0a5c1f" stroke-width="1.5" opacity=".75"/>`).join('')}
-  ${sulci.map(p=>`<path d="${p}" fill="none" stroke="#0a5c1f" stroke-width="2"/><path d="${p}" fill="none" stroke="#00ff41" stroke-width="1" stroke-dasharray="3 15" opacity=".35"><animate attributeName="stroke-dashoffset" from="18" to="0" dur="1.1s" repeatCount="indefinite"/></path>`).join('')}
-  <path id="signal" d="${signal}" fill="none" stroke="none"/>
-  ${[0,1,2,3].map(i=>`<circle r="3.2" fill="#00ff41" filter="url(#glow)" visibility="hidden"><set attributeName="visibility" to="visible" begin="${i*1.4}s" fill="freeze"/><animateMotion dur="5.6s" begin="${i*1.4}s" repeatCount="indefinite"><mpath href="#signal"/></animateMotion></circle>`).join('')}
-  <g><title>frontal lobe: decides. Readiness is the evidence-only score that unlocks real trades.</title>${reg(cx,122,'frontal lobe · decides')}
-    <circle cx="${cx}" cy="${cy}" r="${R}" fill="rgba(0,18,5,.97)" stroke="#063d15" stroke-width="7"/>
-    <circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="#00ff41" stroke-width="7" stroke-linecap="round" stroke-dasharray="${(circ*score/100).toFixed(1)} ${circ.toFixed(1)}" transform="rotate(-90 ${cx} ${cy})" filter="url(#glow)"/>
-    <text x="${cx}" y="${cy+12}" text-anchor="middle" font-size="34" font-weight="bold" fill="#00ff41">${score}%</text>
-    <text x="${cx}" y="${cy+R+22}" text-anchor="middle" font-size="12" fill="#8fe0a0" letter-spacing=".8">READINESS</text>
-    <text x="${cx}" y="${cy+R+38}" text-anchor="middle" font-size="11" fill="#5fbf6f">real trades at ${num(rd.ready_at||80)}%</text></g>
-  <g><title>parietal lobe: sorts. What has been screened and what is waiting in the queue.</title>${reg(600,108,'parietal lobe · sorts')}${val(600,160,st.scored,'screened')}${val(600,240,st.queued,'in queue')}</g>
-  <g><title>occipital lobe: sees. What the worm watched on the chain in the last 24 hours.</title>${reg(840,172,'occipital lobe · sees')}${val(840,222,st.launches_24h,'launches 24h',null,26)}${val(840,292,st.grads_24h,'graduations 24h',null,26)}</g>
-  <g><title>amygdala: fears. Tokens the worm warned the community to avoid.</title><circle cx="322" cy="398" r="30" fill="rgba(0,18,5,.97)" stroke="#00ff41" stroke-width="1.5" filter="url(#glow)"/><text x="322" y="407" text-anchor="middle" font-size="25" font-weight="bold" fill="#00ff41">${esc(f(vd['avoid']||0))}</text><text x="322" y="442" text-anchor="middle" font-size="11" fill="#8fe0a0" letter-spacing=".4">WARNED: AVOID</text><text x="322" y="458" text-anchor="middle" font-size="10" font-style="italic" fill="#5fbf6f">amygdala · fears</text></g>
-  <g><title>temporal lobe: remembers. Warnings that came true, and creators it will not forget.</title>${val(445,392,sco.called||0,'rugs called early',sco.warn_precision!=null?`${sco.warn_precision}% proved right`:'checked at 24h')}${val(578,392,sco.creators_flagged||0,'creators flagged','serial or rugged')}${reg(322,356,'temporal lobe · remembers')}</g>
-  <g><title>cerebellum: keeps time. The latest block the worm has read.</title><text id="brainblock" x="870" y="404" text-anchor="middle" font-size="17" font-weight="bold" fill="#00ff41">${esc(f(st.last_block))}</text><text x="870" y="422" text-anchor="middle" font-size="11" fill="#8fe0a0" letter-spacing=".8">BLOCK</text>${reg(870,441,'cerebellum · keeps time')}</g>
-  ${reg(731,560,'brain stem · robinhood chain, every block')}
-  </svg>`}
-let lastState=null,synTimer=null;addEventListener('resize',()=>{clearTimeout(synTimer);synTimer=setTimeout(()=>{lastSyn='';if(lastState)render(lastState)},250)});
-function render(s){
-  lastState=s;const st=s.stats||{},ch=s.character||{};
-  $('#liveband').classList.toggle('noscreen',s.screen_on===false);
-  if(ch.stage!==hood.stage)buildHood(ch.stage||0);
-  const lo=[0,20,100,500,2000,10000,50000][ch.stage||0],hi=ch.next_usd;
-  $('#stagebar').style.width=(hi?Math.min(100,100*((ch.usd||0)-lo)/(hi-lo)):100)+'%';
-  const vd=st.verdicts||{};
-  const sco=s.scout||{},rd=s.readiness||{};
-  $('#stats').innerHTML=stat('launches 24h',st.launches_24h)+stat('graduations 24h',st.grads_24h)+stat('screened',st.scored)+stat('in queue',st.queued)
-    +stat('warned: avoid',vd['avoid']||0)+stat('rugs called early',sco.called||0,sco.warn_precision!=null?`${sco.warn_precision}% of checked warnings proved right`:'checked 24h after each warning')
-    +stat('creators flagged',sco.creators_flagged||0,'serial launchers or a rug on record')
-    +`<div class="stat wide"><b>${num(rd.score??0)}%</b><span>readiness · real trades at ${num(rd.ready_at||80)}%</span><span class="rbar"><i style="width:${rd.score||0}%"></i></span></div>`+stat('block',st.last_block);
-  const syn=synapse(st,vd,sco,rd);if(syn)$('#synapse').innerHTML=syn;
-  const dc=s.disclosure||{};$('#disc').innerHTML=`<div><b>Data &amp; assessments</b> ${esc(dc.real)}</div><div><b>Simulation &amp; estimates</b> ${esc(dc.not_real)}</div>`;
-  const feed=s.feed||[];$('#feedinfo').textContent=feed.length?`· last ${feed.length}`:'';
-  renderFeed(feed,false);
-  feed.forEach(t=>seen.add(t.token));first=false;
-  if(s.dig&&s.dig.length&&(!dig.token||s.dig[0].token!==dig.token||Object.keys(dig.steps).length<s.dig.length)){dig={token:s.dig[0].token,steps:{}};s.dig.forEach(ev=>dig.steps[ev.step]=ev);renderDig()}
-  const ser=(s.bad_actors||{}).serial||[];
-  $('#serial').innerHTML=ser.length?`<table><tr><th>creator</th><th class="r">launches</th><th class="r">grads</th><th class="r">rugged</th><th class="r">trust</th><th class="r">last</th></tr>`+ser.map(x=>`<tr><td><a href="https://robinhoodchain.blockscout.com/address/${esc(x.deployer)}" target="_blank" rel="noopener noreferrer">${short(x.deployer)}</a></td><td class="r">${num(x.launches)}</td><td class="r">${num(x.grads||0)}</td><td class="r ${x.rugged?'neg':''}">${num(x.rugged||0)}</td><td class="r ${x.trust<35?'neg':x.trust>=65?'pos':''}">${num(x.trust)}</td><td class="r">${ago(x.last_ts)}</td></tr>`).join('')+'</table>':'<div class="empty">none yet</div>';
-  const worst=(s.bad_actors||{}).worst||[];
-  $('#worst').innerHTML=worst.length?worst.map(w=>`<div class="worst"><span class="chip warn">${num(w.score)}</span><span class="name" style="font-size:13px">${esc(w.name||'?')} <span class="sym">$${esc(w.symbol||'?')}</span></span><span class="meta">${(w.reasons||[]).filter(r=>/\(-/.test(r)).slice(0,2).map(esc).join(' · ')}</span></div>`).join(''):'<div class="empty">none yet</div>';
-  if(typeof renderTreasuryPanels==='function')renderTreasuryPanels(s);
-  const vo=s.voice||{};
-  $('#voice').innerHTML=`<div class="meta" style="margin-bottom:8px">Observations from the latest scans and recorded outcomes · every ${num(vo.every_min)} min. Measured numbers checked against the records.</div>`
-    +((vo.entries||[]).filter(e=>e.ok).length?vo.entries.filter(e=>e.ok).slice(0,60).map(e=>`<div class="post" data-reading-key="${esc(e.id)}"><button class="copy" data-text="${esc(e.text)}">copy</button>${esc(e.text)}<span class="meta">${esc(e.mood||'')} · ${ago(e.ts)} · ${esc(e.model||'')}</span></div>`).join(''):'<div class="empty">no entries yet</div>');
-  const b=s.brain||{},rules=b.rules||[],cnt=b.counts||{};
-  const sc2=b.scorecard||{},vs=['looks healthy','mixed','avoid'],os=['rugged','dumped','flat','grew','unknown'];
-  const scoreTable=Object.keys(sc2).length?`<table style="margin-bottom:10px"><tr><th>verdict</th>${os.map(o=>`<th class="r">${o}</th>`).join('')}<th class="r">right?</th></tr>`+vs.filter(v=>sc2[v]).map(v=>{const row=sc2[v]||{},tot=Object.values(row).reduce((a,c)=>a+c,0),bad=(row.rugged||0)+(row.dumped||0),good=row.grew||0;const right=v==='avoid'?bad:v==='looks healthy'?good:null;return `<tr><td>${esc(v)}</td>${os.map(o=>`<td class="r">${row[o]||0}</td>`).join('')}<td class="r">${right==null?'…':Math.round(100*right/tot)+'%'}</td></tr>`}).join('')+'</table>':'';
-  $('#brain').innerHTML=scoreTable+`<div class="meta" style="margin-bottom:8px">tracking ${b.tracked||0} verdicts · resolved ${b.resolved||0} · rugged ${cnt.rugged||0} · dumped ${cnt.dumped||0} · flat ${cnt.flat||0} · grew ${cnt.grew||0}. A rule moves by how surprising the outcome was against the base rate: warned before a token that went bad, it gains; reassured, it loses; up to 2% a lesson, bounded 0.5x to 1.5x.</div>
-    <table><tr><th>rule</th><th>weight</th><th class="r">lift</th><th class="r">hit / miss</th></tr>`+rules.map(r=>`<tr><td title="${esc(r.about)}">${esc(r.id)}${r.learned?' <span class="chip good">learned</span>':''}</td><td><span class="wt"><i style="width:${Math.round((r.weight-0.5)/1*100)}%"></i></span>${Number(r.weight).toFixed(2)}x</td><td class="r ${r.lift>1?'pos':r.lift!=null&&r.lift<1?'neg':'dim'}">${r.lift==null?'…':Number(r.lift).toFixed(1)+'x'}</td><td class="r">${num(r.hits)} / ${num(r.misses)}${r.hit_rate!=null?` (${num(r.hit_rate)}%)`:''}</td></tr>`).join('')+'</table>';
-  $('#ready').innerHTML=`<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:6px"><b style="font-size:34px;color:var(--g)">${num(rd.score??0)}%</b><span class="meta">${rd.ready?'<span class="pos">evidence threshold met</span>':`evidence threshold: ${num(rd.ready_at||80)} / 100`}</span></div><span class="rbar big"><i style="width:${rd.score||0}%"></i></span>`
-    +(rd.parts||[]).map(pt=>`<div class="rp"><span class="lbl">${esc(pt.label)}</span><span class="rbar"><i style="width:${pt.score||0}%"></i></span><span class="r">${num(pt.score||0)}</span><div class="meta" style="grid-column:1/-1">${Math.round(((rd.weights||{})[pt.id]||0)*100)}% of the score · ${esc(pt.detail||'')}</div></div>`).join('')
-    +`<div class="meta" style="margin-top:8px">next: ${esc(rd.next||'')}<br>${esc(rd.gate||'')}</div>`;
-  const ls=s.lessons||[];
-  $('#lessons').innerHTML=ls.length?ls.slice(0,6).map(x=>`<div class="lesson"><span class="o ${(x.outcome==='rugged'||x.outcome==='dumped')?'bad':x.outcome==='grew'?'good':''}">${esc(x.outcome)}</span> ${x.change_pct!=null?pct(x.change_pct):''} · $${esc(x.symbol||'?')} after <b>${esc(x.verdict)}</b> [${num(x.score)}]<span class="tagc ${x.tag==='called it'?'pos':x.tag==='missed it'?'neg':''}">${esc(x.tag)}</span><div class="meta">${x.up.length?'trusts more: '+x.up.map(esc).join(', '):''}${x.up.length&&x.down.length?' · ':''}${x.down.length?'trusts less: '+x.down.map(esc).join(', '):''}${(!x.up.length&&!x.down.length)?'no rule moved':''} · ${ago(x.scored_at)}</div></div>`).join(''):'<div class="empty">the first lessons arrive 24 hours after the first verdicts</div>';
-  const mv=rules.filter(r=>Math.abs(r.weight-1)>0.001).sort((a,b)=>Math.abs(b.weight-1)-Math.abs(a.weight-1)).slice(0,6);
-  $('#moving').innerHTML=(mv.length?'<table>'+mv.map(r=>`<tr><td title="${esc(r.about)}">${esc(r.id)}</td><td class="r ${r.weight>1?'pos':'neg'}">${r.weight>1?'▲':'▼'} ${Number(r.weight).toFixed(2)}x</td><td class="r meta">${num(r.hits)} / ${num(r.misses)}</td></tr>`).join('')+'</table>':'<div class="empty">no rule has moved yet</div>')+'<div class="meta" style="margin-top:6px">a rule moves up to 2% a lesson, by how surprising the outcome was against the base rate, bounded 0.5x to 1.5x. Hover a rule for what it checks.</div>';
-  $('#learnmeta').textContent=`verdicts checked ${b.resolved||0} · called it ${sco.called||0} · missed it ${sco.missed||0} · lab cases ${(s.lab||{}).cases_active||0} active, ${(s.lab||{}).cases_resolved||0} resolved · reading block ${st.last_block||'…'}`;
-  const lb=s.lab||{},arms=(lb.arms||[]);
-  $('#lab').innerHTML=`<div class="meta" style="margin-bottom:8px">in use: <b class="pos">${esc(lb.in_use||'')}</b> · ${esc(lb.why||'')}. Every candidate (a verdict scoring ≥ 60, or a second-look entry) is simulated by ${num(arms.length)} arms at once (${num(Object.keys(lb.policies||{}).length)} exit rules × entry delays of ${(lb.delays_min||[]).join('/')} min), with ${Math.round((lb.cost_per_side||0)*200)}% round-trip costs. An arm is ranked by the lower bound of its net return once it has ${num(lb.min_n)} cases; the ranking informs, and the rule in use only changes in the open, in the code. Cases: ${num(lb.cases_active||0)} active · ${num(lb.cases_resolved||0)} resolved.</div>`
-    +(arms.some(a=>a.n>0)?`<table><tr><th>arm</th><th class="r">cases</th><th class="r">avg return</th><th class="r">lower bound</th><th class="r">win rate</th></tr>`+arms.filter(a=>a.n>0).slice(0,12).map(a=>`<tr><td>${esc(a.arm)}${a.arm===lb.in_use?' <span class="pos">◀ in use</span>':''}</td><td class="r">${num(a.n)}</td><td class="r ${a.mean_ret>=0?'pos':'neg'}">${a.mean_ret==null?'…':(a.mean_ret*100).toFixed(0)+'%'}</td><td class="r ${a.lcb==null?'dim':a.lcb>0?'pos':'neg'}">${a.lcb==null?'…':(a.lcb*100).toFixed(0)+'%'}</td><td class="r">${a.win_rate==null?'…':a.win_rate+'%'}</td></tr>`).join('')+'</table>':'<div class="empty">no resolved cases yet: the first arms get scored 48 hours after the first candidates.</div>');
-  const ad=s.advisor||{},lr=ad.last_run;
-  $('#advisor').innerHTML=`<div class="meta" style="margin-bottom:8px">writer <b>${esc(ad.model||'stub')}</b> · every ${num(ad.every_min)} min once ${num(ad.min_new)} more verdicts have resolved · ${esc(ad.state||'')}${lr?` · last run ${ago(lr.ts)}: ${num(lr.proposed)} proposals, ${num(lr.adopted)} adopted${(lr.tokens_in||lr.tokens_out)?` · ${num(lr.tokens_in)} tokens in, ${num(lr.tokens_out)} out`:''}${lr.note?` · ${esc(lr.note)}`:''}`:' · no run yet'}. New scoring rules first enter shadow mode: a frozen cohort of ${num((ad.shadow||{}).cohort_size||80)} future launches, one per creator, must establish a difference on at least ${num((ad.bar||{}).min_n)} cases each side. ${num((ad.shadow||{}).pending||0)} rules are waiting. This never enables trading. Exit arms remain lab experiments.</div>`
-    +((ad.rules||[]).length?'<table><tr><th>learned rule</th><th>when</th><th class="r">points</th><th class="r">weight</th><th>backtest</th></tr>'+ad.rules.map(r=>`<tr class="${r.active?'':'pending'}"><td>${esc(r.id)}${r.active?'':' <span class="meta">retired</span>'}</td><td>${esc(r.text)}</td><td class="r ${r.points<0?'neg':'pos'}">${num(r.points)}</td><td class="r">${Number(r.weight||1).toFixed(2)}x</td><td class="meta">${btText(r.backtest)}</td></tr>`).join('')+'</table>':'<div class="empty">no learned rules yet</div>')
-    +((ad.arms||[]).length?'<table style="margin-top:8px"><tr><th>learned arm</th><th>policy</th><th>backtest</th></tr>'+ad.arms.map(a=>`<tr><td>${esc(a.name)}</td><td class="meta">${esc(armText(a.policy))}</td><td class="meta">${esc((a.backtest||{}).why||'')}</td></tr>`).join('')+'</table>':'')
-    +((ad.shadow?.rules||[]).length?'<h3 class="eyebrow">future launch evaluation</h3><div class="meta">'+ad.shadow.rules.map(r=>`Rule ${num(r.id)}: ${esc(r.status)}${r.result?.n_fired!==undefined?` · ${num(r.result.n_fired)} matched / ${num(r.result.n_other)} comparison`:''}`).join('<br>')+'</div>':'')
-    +((ad.suggestions||[]).length?'<h3 class="eyebrow">proposals</h3><table><tr><th>when</th><th>kind</th><th>proposal</th><th>fate</th></tr>'+ad.suggestions.map(x=>`<tr><td>${ago(x.ts)}</td><td>${esc(x.kind)}</td><td>${esc(specText(x))}${x.why?`<div class="meta">${esc(x.why)}</div>`:''}</td><td class="${x.status==='adopted'?'pos':'dim'}">${esc(x.status)}<div class="meta">${esc(x.reason||'')}</div></td></tr>`).join('')+'</table>':lr?'<div class="empty">no proposals: the last run found no split of the records worth proposing</div>':'<div class="empty">no proposals yet: the first run comes once 40 verdicts have resolved</div>');
-  const p=s.paper||{};
-  $('#paper').innerHTML=`<div class="meta" style="margin-bottom:8px">training P&amp;L, fake money: realized <span class="${p.realized_usd>=0?'pos':'neg'}">$${(p.realized_usd||0).toFixed(2)}</span> · open result <span class="${p.unrealized_usd==null?'dim':p.unrealized_usd>=0?'pos':'neg'}">${p.unrealized_usd==null?'Unavailable':'$'+Number(p.unrealized_usd).toFixed(2)}</span>${p.unpriced_count?` · ${num(p.unpriced_count)} awaiting a fresh sell quote`:""}${p.win_rate!=null?` · win rate ${num(p.win_rate)}% of ${num(p.closed_count)} closed`:''}. Every loss here is a lesson for the brain and the lab, not a cost. $${num(p.size_usd)} paper per entry: ${esc(p.entry||'')}. Exits: ${esc(p.rules||'')}.</div>`
-    +((p.open||[]).length?`<table><tr><th>open</th><th class="r">entry</th><th class="r">now</th><th class="r">%</th><th>arm · state</th></tr>`+p.open.map(x=>`<tr><td>$${esc(x.symbol)}</td><td class="r">${usd(x.entry_usd)}</td><td class="r">${x.valuation_stale?'Unavailable':usd(x.last_usd)}</td><td class="r ${x.change_pct>=0?'pos':'neg'}">${x.valuation_stale?'—':pct(x.change_pct)}</td><td><span class="meta">${esc((x.policy||'').split('@')[0])}</span> ${x.hedged?`<span class="pos">took profit, ${num(x.bag_pct)}% left</span>`:''}</td></tr>`).join('')+'</table>':'<div class="empty">no open paper positions</div>')
-    +((p.closed||[]).length?(why=>`<table style="margin-top:8px"><tr><th>closed</th><th class="r">%</th>${why?'<th>why</th>':''}</tr>`+p.closed.slice(0,8).map(x=>`<tr><td>$${esc(x.symbol)}</td><td class="r ${x.pnl_usd>=0?'pos':'neg'}">${pct(x.change_pct)}</td>${why?`<td>${esc(x.reason)}</td>`:''}</tr>`).join('')+'</table>')(p.closed.slice(0,8).some(x=>x.reason)):'');
-  const evs=[];for(const e of [...(s.events||[])].sort((a,b)=>(b.ts||0)-(a.ts||0))){const l=evs[evs.length-1];if(l&&l.kind===e.kind&&l.text===e.text){l.n++;continue}if(evs.length>=60)break;evs.push({id:e.id,kind:e.kind,text:e.text,ts:e.ts,n:1})}
-  $('#log').innerHTML=evs.map(e=>`<li data-reading-key="${esc(e.id??e.kind+e.text)}"><span class="k ${esc(e.kind)}">${esc(e.kind)}</span><span>${esc(e.text)}${e.n>1?`<span class="x">×${e.n}</span>`:''}</span><span class="t">${ago(e.ts)}</span></li>`).join('');
-  $('#ticker').innerHTML=(s.ticker||[]).map(t=>`<b>$${esc(t.symbol||t.token.slice(0,8))}</b> ${esc(t.name||'')} · ${esc(t.pair_symbol||'')} · ${ago(t.ts)}`).join(' &nbsp;&nbsp;│&nbsp;&nbsp; ');
-  renderSummaries(s);updateBar();place(!placedData);placedData=true;
-}
-/* ---------- panels: collapse (remembered in localStorage), one-line summaries, masonry placement, sticky status bar ---------- */
-let folded=null;try{folded=JSON.parse(localStorage.getItem('irlworm.panels'))}catch(e){}
-if(!folded||typeof folded!=='object')folded=matchMedia('(max-width:599px)').matches?{brain:true,lab:true,paper:true,bad:true,voice:true}:{};
-function applyFolded(){document.querySelectorAll('.panel[data-panel]').forEach(p=>{const k=p.dataset.panel,c=!!folded[k];p.classList.toggle('collapsed',c);const b=p.querySelector('.tog');if(b){b.setAttribute('aria-expanded',String(!c));b.setAttribute('aria-label',(c?'expand ':'collapse ')+k)}})}
-document.addEventListener('click',e=>{const h=e.target.closest('.panel[data-panel]>h2');if(!h||e.target.closest('a'))return;const k=h.parentElement.dataset.panel;if(folded[k])delete folded[k];else folded[k]=true;
-  try{localStorage.setItem('irlworm.panels',JSON.stringify(folded))}catch(e){}applyFolded();place(true)});
-applyFolded();
-function renderSummaries(s){const tr=s.treasury||{},rw=s.runway||{},b=s.brain||{},lb=s.lab||{},p=s.paper||{},ba=s.bad_actors||{},vo=s.voice||{},trd=s.trader||{},rd=s.readiness||{},feed=s.feed||[],f0=feed[0];
-  const S={feed:f0?`${feed.length} scored · latest $${f0.symbol||'?'} ${f0.verdict||''} [${num(f0.score)}]`:'nothing scored yet',
-    wallet:tr.wallet?`ETH ${Number(tr.eth||0).toFixed(4)} · USDG ${Number(tr.usdg||0).toFixed(2)} · ${tr.live?'payments enabled':'payments off'}`:'Wallet setup pending',
-    trades:(trd.positions||[]).length?`${trd.positions.length} open`:'no positions',
-    runway:`treasury $${Number(rw.treasury_usd||0).toFixed(2)} · ~$${num(rw.cost_per_day_usd)}/day · surplus $${num(rw.surplus_usd)}`,
-    brain:`${(b.rules||[]).length} rules · ${b.resolved||0} of ${b.tracked||0} verdicts checked`,
-    lab:`in use ${lb.in_use||'…'} · ${num(lb.cases_active||0)} active · ${num(lb.cases_resolved||0)} resolved`,
-    advisor:`${((s.advisor||{}).rules||[]).filter(r=>r.active).length} learned rules · ${((s.advisor||{}).arms||[]).length} learned arms · ${(s.advisor||{}).last_run?'last run '+ago(s.advisor.last_run.ts):'no run yet'}`,
-    paper:`realized $${Number(p.realized_usd||0).toFixed(2)} · open ${p.unrealized_usd==null?'unavailable':'$'+Number(p.unrealized_usd).toFixed(2)} · ${(p.open||[]).length} open`,
-    bad:`${(ba.serial||[]).length} serial launchers · ${(ba.worst||[]).length} worst verdicts`,
-    voice:`${(vo.entries||[]).filter(e=>e.ok).length} entries · writer ${vo.model||'stub'}`,
-    log:`${(s.events||[]).length} events`,
-    learning:`readiness ${num(rd.score??0)}% · ${b.resolved||0} verdicts checked · ${(s.lessons||[]).length} lessons`,
-    screen:digState().digging?'digging':'waiting for the next graduation',dig:dig.token?(dig.steps.verdict?'last dig · waiting for the next graduation':'digging'):'waiting for the next graduation'};
-  for(const k in S){const el=document.querySelector(`.panel[data-panel="${k}"]>h2 .sum`);if(el)el.textContent=S[k]}}
-const ORDER=['feed','wallet','trades','runway','brain','lab','paper','advisor','bad','voice'],grid=$('#grid');let gridCols=0,placedAt=0,placedData=false,placeTimer=null;
-function colCount(){return matchMedia('(min-width:1280px)').matches?3:matchMedia('(min-width:900px)').matches?2:1}
-function place(force){}
-addEventListener('resize',()=>{clearTimeout(placeTimer);placeTimer=setTimeout(()=>place(colCount()!==gridCols),200)});
-const sbar=$('#sbar');
-function updateBar(){const s=lastState;if(!s)return;const ch=s.character||{},st=s.stats||{},rd=s.readiness||{};
-  $('#sb-stage').textContent=`${(ch.stage||0)+1}/${num(ch.stages||7)} ${ch.stage_name||'hatchling'}`;
-  $('#sb-usd').textContent='$'+Number(ch.usd||0).toFixed(2);
-  $('#sb-ready').textContent=num(rd.score??0)+'%';
-  $('#sb-block').textContent=st.last_block==null?'…':String(st.last_block);
-  const m=$('#sb-mode');m.textContent=s.live?'LIVE':'NOT LIVE';m.className='mode'+(s.live?' on':'');
-  const {digging,head,sym}=digState();
-  const act=currentAction(),actText=act?(ACTIONS[act.action]||act.action)+(act.done?'':'…'):'';
-  const d=$('#sb-dig');d.hidden=!digging&&!act;d.textContent=digging?'digging $'+sym:actText;
+function updateLive(){
+  const {digging,head,sym}=digState(),act=currentAction(),actText=act?(ACTIONS[act.action]||act.action)+(act.done?'':'…'):'';
+  const b=$('#dig-badge');b.hidden=!digging&&!act;b.textContent=digging?'digging $'+sym:actText;b.classList.toggle('is-act',!digging&&!!act);
   const sc=$('#screen-state'),fr=lastFrame||{},fresh=fr.ts&&Date.now()/1000-fr.ts<180,onPage=fresh&&!fr.idle&&!fr.action;
-  let cls='wait',txt=matchMedia('(max-width:500px)').matches?'waiting for a graduation':'waiting for the next graduation';
+  let cls='wait',txt=innerWidth<500?'waiting for a graduation':'waiting for the next graduation';
   if(act){cls='act';txt=actText}else if(digging){cls='on';txt='digging $'+sym}else if(onPage&&dig.token){cls='on';txt='just dug $'+sym}
-  sc.hidden=false;sc.textContent=txt;sc.className='pstate '+cls;
-  $('#dig-sub').textContent=!dig.token?'nothing dug yet, waiting for the first graduation':digging?'what the worm is inside right now':'the last dig, while the worm waits for the next graduation';
+  sc.textContent=txt;sc.className='state-chip '+cls;
+  $('#dig-sub').textContent=!dig.token?'nothing dug yet, waiting for the next graduation':digging?'what the worm is inside right now':'the last dig, while the worm waits for the next graduation';
+  $('#dig-card').classList.toggle('w-card--live',digging);$('#screen-card').classList.toggle('w-card--live',digging||!!act);
   const w=$('#digwait');if(w)w.lastElementChild.textContent=waitText();
   const a=$('#digago');if(a&&head.grad_ts)a.innerHTML=digAgo(head)}
-setInterval(updateBar,2000);
-new IntersectionObserver(es=>{sbar.classList.toggle('on',!es[0].isIntersecting)},{rootMargin:'-60px 0px 0px 0px'}).observe($('#top'));
-place(true);
-async function load(){try{const r=await fetch('/api/state');if(!r.ok)throw new Error('unavailable');render(await r.json());window.lastReceived=Date.now();window.loadFailed=false}catch(e){window.loadFailed=true}if(window.updateFreshness)window.updateFreshness()}
+setInterval(updateLive,2000);
+
+/* the holders and the curve, drawn crisp at any pixel density */
+let visionRO=null;
+function drawVision(){const c=$('#vision');if(!c)return;const box=c.parentElement,W=Math.round(box.clientWidth),H=Math.round(box.clientHeight);if(!W||!H)return;
+  if(!visionRO&&window.ResizeObserver){visionRO=new ResizeObserver(()=>{const k=$('#vision');if(k&&k.dataset.size!==k.parentElement.clientWidth+'x'+k.parentElement.clientHeight)drawVision()})}
+  if(visionRO){visionRO.disconnect();visionRO.observe(box)}
+  const dpr=Math.min(2,window.devicePixelRatio||1);c.width=W*dpr;c.height=H*dpr;c.dataset.size=W+'x'+H;const ctx=c.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,W,H);
+  const stack=W<520&&H>=260,A=stack?{x:0,y:0,w:W,h:H/2-6}:{x:0,y:0,w:W*.5-6,h:H},B=stack?{x:0,y:H/2+6,w:W,h:H/2-6}:{x:W*.5+6,y:0,w:W*.5-6,h:H};
+  ctx.font='500 11px "IBM Plex Mono",ui-monospace,monospace';ctx.textBaseline='alphabetic';
+  const label=(t,alt,x,y,maxw)=>{ctx.fillStyle=T['t-2'];ctx.fillText(ctx.measureText(t).width<=maxw?t:alt,x,y)};
+  const hb=(dig.steps.holders&&dig.steps.holders.data.bubbles)||[];
+  label('holders · size = share · red = creator or ≥10%','holders · size = share',A.x+2,A.y+12,A.w-4);
+  if(hb.length){const placed=[],maxp=hb[0].pct||1,rmax=Math.min(34,A.h*0.2);let seed=7;const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647};
+    for(const b of hb.slice(0,30)){let r=Math.max(2.5,Math.sqrt(b.pct/maxp)*rmax),ok=false,x=0,y=0;for(let k=0;k<400&&!ok;k++){if(k===200)r*=0.7;x=A.x+4+r+rnd()*(A.w-8-2*r);y=A.y+20+r+rnd()*(A.h-24-2*r);ok=placed.every(q=>Math.hypot(q.x-x,q.y-y)>=q.r+r+1.5)}
+      placed.push({x,y,r});ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);const bad=b.dep||b.pct>=10;ctx.fillStyle=b.dep?rgba(T['v-avoid'],.75):bad?rgba(T['v-avoid'],.35):b.pct>=3?rgba(T['g-500'],.30):rgba(T['g-500'],.13);ctx.fill();ctx.strokeStyle=bad?T['v-avoid']:rgba(T['g-500'],.55);ctx.lineWidth=1;ctx.stroke();
+      if(r>16){ctx.fillStyle=T['t-hi'];ctx.textAlign='center';ctx.fillText(b.pct.toFixed(1)+'%',x,y+4);ctx.textAlign='left'}}}
+  else{ctx.fillStyle=T['t-3'];ctx.fillText(dig.steps.curve?'reading transfers…':'…',A.x+8,A.y+A.h/2)}
+  const cvd=dig.steps.curve&&dig.steps.curve.data;
+  label('curve buys · red = first 3 s (snipes)','curve buys',B.x,B.y+12,B.w);
+  if(cvd&&cvd.timeline){const tl=cvd.timeline,mx=Math.max(0.01,...tl),bw=B.w/tl.length,top=B.y+34,bot=B.y+B.h-18;
+    tl.forEach((v,i)=>{const h=(bot-top)*(v/mx);ctx.fillStyle=i<=cvd.snipe_bucket_end?rgba(T['v-avoid'],.85):rgba(T['g-500'],.6);ctx.fillRect(B.x+i*bw+1,bot-h,Math.max(1,bw-2),h)});
+    ctx.fillStyle=T['t-3'];ctx.fillText('launch',B.x,B.y+B.h-3);const lab=cvd.span_s>=3600?Math.round(cvd.span_s/3600)+'h later':cvd.span_s>=60?Math.round(cvd.span_s/60)+'m later':cvd.span_s+'s later';ctx.fillText(lab,B.x+B.w-ctx.measureText(lab).width,B.y+B.h-3);
+    ctx.fillStyle=T['t-1'];const sub=`${cvd.buys} buys · ${cvd.unique_buyers} wallets · ${cvd.snipe_pct}% sniped`;ctx.fillText(ctx.measureText(sub).width<=B.w?sub:`${cvd.buys} buys · ${cvd.snipe_pct}% sniped`,B.x,B.y+27)}
+  else{ctx.fillStyle=T['t-3'];ctx.fillText(dig.steps.creator?'reading the curve…':'…',B.x+6,B.y+B.h/2)}
+}
+
+/* ---------- the connection: a first read over HTTP, then the websocket, and a poll as a safety net ---------- */
+async function load(){try{const r=await fetch('/api/state',{cache:'no-store'});if(!r.ok)throw new Error('unavailable');render(await r.json());window.lastReceived=Date.now();window.loadFailed=false}catch(e){window.loadFailed=true}if(window.updateFreshness)window.updateFreshness()}
 function connect(){const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
   ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='state'){render(m.data);window.lastReceived=Date.now();window.loadFailed=false}else if(m.type==='scan')applyScan(m.data);else if(m.type==='frame')applyFrame(m.data);else if(m.type==='action')applyAction(m.data)};ws.onclose=()=>setTimeout(connect,3000)}
-load();connect();setInterval(load,20000);
 </script>
 <script src="/design.js"></script>
 </body>
