@@ -221,6 +221,23 @@ def test_a_non_member_position_of_the_rule_also_counts_as_seen(db, monkeypatch):
     assert db.q("SELECT k,counted FROM strategy_trials ORDER BY id") == [{'k': 1, 'counted': 1}, {'k': 2, 'counted': 1}]
 
 
+def test_a_pick_the_breaker_turned_away_counts_as_seen(db, monkeypatch):
+    from wormhole.paper import Paper
+    Paper(db)
+    V.tick(db)
+    created = db.one("SELECT created FROM strategy_trials")["created"]
+    db.x("INSERT INTO paper_skips(token,symbol,ts,strategy,reason,pair) VALUES(?,?,?,?,?,?)",
+         (tok(2), 'T', created - 10, 'rule-a', 'loss breaker', 'USDG'))           # before the trial: not its evidence
+    db.x("INSERT INTO paper_skips(token,symbol,ts,strategy,reason,pair) VALUES(?,?,?,?,?,?)",
+         (tok(3), 'T', created, 'rule-b', 'loss breaker', 'USDG'))                # another rule's pick
+    assert not V._seen(db, db.one("SELECT * FROM strategy_trials"))
+    db.x("INSERT INTO paper_skips(token,symbol,ts,strategy,reason,pair) VALUES(?,?,?,?,?,?)",
+         (tok(1), 'T', created, 'rule-a', 'loss breaker', 'USDG'))                # its outcome is followed in public
+    monkeypatch.setattr(execution, 'PAPER_FILL', .02)
+    V.tick(db)
+    assert db.q("SELECT k,counted FROM strategy_trials ORDER BY id") == [{'k': 1, 'counted': 1}, {'k': 2, 'counted': 1}]
+
+
 def test_a_freed_k_is_reused_and_counted_attempts_keep_distinct_bars(db, monkeypatch):
     monkeypatch.setattr(watch, "STRATEGIES", [RULE, OTHER])
     V.tick(db)                                               # rule-a k=1, rule-b k=2

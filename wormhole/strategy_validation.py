@@ -86,15 +86,21 @@ def _sources(trial):
 
 def _seen(db, trial, until=None):
     """Could anyone have looked at this trial's evidence? True once it has a member, or once its rule opened any
-    paper position after its cutoff (USDG or not: every open position's P&L is on the public page from the moment
-    it opens). A void after that is peeking-then-restarting and costs its attempt; a void before it costs nothing."""
+    paper position after its cutoff, or had a pick turned away by the loss breaker since it began (USDG or not: every
+    such result is public). A void after that is peeking-then-restarting and costs its attempt; a void before it costs nothing."""
     if db.one('SELECT 1 FROM strategy_members WHERE trial=?', (trial['id'],)):
         return True
     if 'strategy' not in {r['name'] for r in db.q('PRAGMA table_info(paper)')}:
         return False
     names, _ = _sources(trial)
-    return bool(db.one(f"SELECT 1 FROM paper WHERE id>? AND strategy IN ({','.join('?' * len(names))}) AND opened_ts<=?",
-                       (trial['cutoff'] or 0, *names, until if until is not None else 2 ** 62)))
+    marks, until = ','.join('?' * len(names)), until if until is not None else 2 ** 62
+    if db.one(f"SELECT 1 FROM paper WHERE id>? AND strategy IN ({marks}) AND opened_ts<=?", (trial['cutoff'] or 0, *names, until)):
+        return True
+    # A pick the loss breaker turned away is public too (an event, and a lab case that follows its price).
+    if db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_skips'"):
+        return bool(db.one(f"SELECT 1 FROM paper_skips WHERE strategy IN ({marks}) AND ts>=? AND ts<=?",
+                           (*names, trial['created'] or 0, until)))
+    return False
 
 
 def attempt(db, rule, spec):
