@@ -63,6 +63,16 @@ def test_interrupted_preparation_is_abandoned_and_its_payment_owed_again(db, rpc
     assert len(rpc.raw) == 1
 
 
+def test_the_identical_payment_can_be_signed_again_after_its_intent_was_abandoned(db, rpc, acct, live):
+    """Signing is deterministic: rebuilt with the same nonce and gas, the retry has the abandoned intent's hash.
+    It takes that intent up again instead of failing on the journal key every cycle."""
+    h = crashed_while_preparing(rpc, acct, db)
+    assert tx.recover(rpc, db) and outbox.get(h)['state'] == 'abandoned'
+    again, _ = tx.send_tx(rpc, acct, C.UNIVERSAL_ROUTER, data='0x01')
+    assert again == h and len(rpc.raw) == 1 and tx_hash(rpc.raw[0]) == h
+    assert outbox.get(h)['state'] != 'abandoned'
+
+
 def test_without_the_database_an_interrupted_preparation_still_stops_everything(rpc, acct, live, db):
     crashed_while_preparing(rpc, acct, db)
     with pytest.raises(RuntimeError, match='preparation interrupted'):

@@ -17,7 +17,8 @@ Arming and idempotency. The program lives in the database (meta 'burn_program'),
   burn opportunity and still leaves in slices of at most WH_BURN_MAX_USD.
 - An id is used once. A finished program stays finished whatever the amount says later; arming its id again
   does nothing. A later program needs a new WH_SURPLUS_BURN_ID and starts only after the current one has
-  released and burned everything.
+  released and burned everything. While the environment names another id, an unfinished program is paused (never
+  resumed by the new id, which would release its catch-up without being asked); naming it again resumes it.
 - A release never takes the wallet's USDG below what is spoken for: every owed bucket and pending spend, the
   protected launch allocation and gas refills (treasury.owed_total), plus the 90-day runway reserve (budget).
   When the wallet is short the program waits and releases the rest later; it never borrows.
@@ -96,12 +97,15 @@ def arm(db, now=None):
     if amount <= 0:
         return p, True
     spent = json.loads(db.meta_get(SPENT) or '[]')
+    # From here the environment names another id than the saved program's. That program is paused, never resumed
+    # by the new id: resuming would release its whole catch-up at once, more than the operator asked for.
     if pid in spent:
         T._say_hourly(db, 'treasury', f'burn program {pid} already ran; a new program needs a new id')
-        return p, False
+        return p, True
     if p and not finished(db, p):
-        T._say_hourly(db, 'treasury', f'burn program {pid} waits for {p["id"]} to finish')
-        return p, False
+        T._say_hourly(db, 'treasury', f'burn program {pid} waits for {p["id"]} to finish; {p["id"]} is paused '
+                                      f'until WH_SURPLUS_BURN_ID names it again')
+        return p, True
     new = {'id': pid, 'total': round(amount, 2), 'days': days, 'started_ts': now, 'ends_ts': now + int(days * 86400)}
     with db.transaction():
         db.meta_set(KEY, json.dumps(new))
@@ -134,7 +138,10 @@ def release(rpc, db, now=None):
     if last is not None and now - last < T.BURN_EVERY_MIN * 60 and now < p['ends_ts']:
         return 0.0
     # Settle first: a pending spend or an unverified claim makes the balance and the reservations unknown.
-    if db.one("SELECT 1 FROM ledger WHERE kind LIKE '%_pending'"):
+    # Only sends with a transaction count, as in the treasury cycle: a compute_pending row paid in USDC on Base has
+    # no hash and can wait for days, and must not stall the program without a word.
+    if db.one("SELECT 1 FROM ledger WHERE kind LIKE '%_pending' AND tx IS NOT NULL"):
+        T._say_hourly(db, 'treasury', 'burn program waits: a payment is still settling')
         return 0.0
     usdg = T.usdg_balance(rpc, C.WALLET)
     room = usdg - T.owed_total(db) - reserve_usd()

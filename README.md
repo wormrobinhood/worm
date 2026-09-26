@@ -194,7 +194,8 @@ redeploy. The first treasury cycle records the program in the database: its id (
 - A restart or redeploy never restarts or re-counts it; editing the amount or the length does not change a
   running program and never re-runs a finished one. `WH_SURPLUS_BURN_USD=0` pauses releases (released money is
   still burned); setting it again resumes on the original schedule. A second program needs a new
-  `WH_SURPLUS_BURN_ID` and starts only after the first has released and burned everything.
+  `WH_SURPLUS_BURN_ID` and starts only after the first has released and burned everything; while the id names
+  another program the unfinished one is paused, and naming it again resumes it.
 - The public snapshot shows `treasury.burn_program` (active, state, total, released, burned, the program's own
   burns, the configured `interval_s`, start and end) and `treasury.burn_history` (the last 200 burns). It never
   shows when the next burn or claim happens.

@@ -152,8 +152,11 @@ def test_a_new_id_waits_for_the_running_program(db, rpc, armed, monkeypatch):
     BP.release(rpc, db, T0)
     monkeypatch.setenv('WH_SURPLUS_BURN_ID', 'surplus-2')
     BP.release(rpc, db, T0 + DAY)
-    assert BP.saved(db)['id'] == 'surplus-1' and released(db) == pytest.approx(75.71)
+    assert BP.saved(db)['id'] == 'surplus-1' and released(db) == 0.0         # another id pauses the running one
     assert 'waits for surplus-1' in db.one("SELECT text FROM events ORDER BY id DESC LIMIT 1")['text']
+    monkeypatch.setenv('WH_SURPLUS_BURN_ID', 'surplus-1')                  # naming it again resumes it
+    BP.release(rpc, db, T0 + DAY)
+    assert released(db) == pytest.approx(75.71)
 
 
 def test_invalid_settings_release_nothing(db, rpc, monkeypatch):
@@ -335,3 +338,40 @@ def test_state_endpoint_carries_the_program_without_timing(db, monkeypatch, arme
     assert tr['burn_program']['total_usd'] == 530.0 and tr['burn_program']['interval_s'] == 10800
     assert tr['burn_history'] == [] and tr['burn_max_usd'] == 25
     assert '1999999999' not in body.text and '1888888888' not in body.text and 'next_claim_after' not in body.text
+
+
+def test_arming_a_new_id_never_resumes_a_paused_program_with_its_catch_up(db, rpc, monkeypatch):
+    chain(rpc, usdg=5000)
+    monkeypatch.setenv('WH_SURPLUS_BURN_USD', '530')
+    monkeypatch.delenv('WH_SURPLUS_BURN_ID', raising=False)
+    BP.release(rpc, db, T0)
+    assert BP.release(rpc, db, T0 + DAY) == pytest.approx(75.71)
+    monkeypatch.setenv('WH_SURPLUS_BURN_USD', '0')                  # the operator pauses
+    assert BP.release(rpc, db, T0 + 2 * DAY) == 0.0
+    monkeypatch.setenv('WH_SURPLUS_BURN_USD', '50')                 # and arms a new, smaller program instead
+    monkeypatch.setenv('WH_SURPLUS_BURN_ID', 'surplus-2')
+    assert BP.release(rpc, db, T0 + 5 * DAY) == 0.0                 # the old one stays paused: nothing released
+    assert any('is paused until WH_SURPLUS_BURN_ID names it again' in e['text'] for e in db.q("SELECT text FROM events"))
+
+
+def test_a_pending_row_without_a_transaction_does_not_stall_the_program(db, rpc, monkeypatch):
+    chain(rpc, usdg=5000)
+    monkeypatch.setenv('WH_SURPLUS_BURN_USD', '530')
+    monkeypatch.delenv('WH_SURPLUS_BURN_ID', raising=False)
+    T.ensure_tables(db)
+    db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
+         (T0 - 10, 'compute_pending', 'USDC', 5.0, None, 'top-up on Base in flight'))
+    BP.release(rpc, db, T0)
+    assert BP.release(rpc, db, T0 + 3 * DAY) > 0
+
+
+def test_a_settling_payment_holds_the_release_and_says_so(db, rpc, monkeypatch):
+    chain(rpc, usdg=5000)
+    monkeypatch.setenv('WH_SURPLUS_BURN_USD', '530')
+    monkeypatch.delenv('WH_SURPLUS_BURN_ID', raising=False)
+    T.ensure_tables(db)
+    BP.release(rpc, db, T0)
+    db.x("INSERT INTO ledger(ts,kind,asset,amount,tx,note) VALUES(?,?,?,?,?,?)",
+         (T0 + 10, 'forward_pending', 'USDG', 5.0, '0x' + 'ab' * 32, 'to the creator'))
+    assert BP.release(rpc, db, T0 + 3 * DAY) == 0.0
+    assert any(e['text'] == 'burn program waits: a payment is still settling' for e in db.q("SELECT text FROM events"))

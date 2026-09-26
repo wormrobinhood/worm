@@ -411,7 +411,7 @@ def test_burn_buys_on_the_pool_and_sends_the_tokens_to_the_burn_address(db, rpc,
     assert rows(db, "burn_pending") == [] and abs(T.owed_to_burn(db)) < 1e-9
     texts = [e["text"] for e in db.q("SELECT text FROM events WHERE kind='treasury' ORDER BY id")]
     assert texts[-1] == "burned 12,345 $WORM bought with 6.00 USDG"
-    assert any(x.startswith("approved USDG for Permit2") for x in texts) and any("Universal Router" in x for x in texts)
+    assert not any("approved" in x for x in texts)      # approvals stay private: a public line would announce the swap
     s = T.summary(rpc, db)
     assert s["burned_total"] == 6.0 and s["burned_qty"] == 12_345.0 and s["owed_to_burn"] == 0.0
 

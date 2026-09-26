@@ -43,6 +43,14 @@ def journal():
 
 def record(h, sender, raw, fee, receipt_mode='finalized'):
     with journal() as db, db:
+        # Signing is deterministic: a payment rebuilt with the same nonce, gas and data after its intent was
+        # abandoned (never broadcast, not held by the node) has the same hash and the same bytes. Take that intent
+        # up again instead of failing on the key every cycle; any other clash still raises.
+        old = db.execute('SELECT state, raw FROM intents WHERE hash=?', (h,)).fetchone()
+        if old and old['state'] == 'abandoned' and old['raw'] == raw:
+            db.execute("UPDATE intents SET state='preparing', ts=?, fee=?, receipt_mode=?, note='' WHERE hash=?",
+                       (time.time(), fee, receipt_mode, h))
+            return
         db.execute('INSERT INTO intents(hash,sender,raw,state,ts,fee,receipt_mode) VALUES(?,?,?,?,?,?,?)',
                    (h, sender.lower(), raw, 'preparing', time.time(), fee, receipt_mode))
 

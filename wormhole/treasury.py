@@ -583,7 +583,7 @@ def approve_for_router(rpc, db, acct, need):
         h, rc = send_tx(rpc, acct, C.USDG, data)
         if not rc or rc.get("status") != "0x1":
             raise RuntimeError(f"USDG approval for Permit2 reverted: {h}")
-        db.add_event("treasury", f"approved USDG for Permit2 for this burn: {h}")
+        log.info("approved USDG for Permit2 for a burn: %s", h)   # private: a public line would announce the swap
     now = int(time.time())
     if amt != need or not now + SWAP_TTL_S <= exp <= now + PERMIT_TTL_S:
         data = selector("approve(address,address,uint160,uint48)") + encode(
@@ -591,7 +591,7 @@ def approve_for_router(rpc, db, acct, need):
         h, rc = send_tx(rpc, acct, C.PERMIT2, data)
         if not rc or rc.get("status") != "0x1":
             raise RuntimeError(f"Permit2 approval for the router reverted: {h}")
-        db.add_event("treasury", f"approved the Universal Router for this burn with a short expiry: {h}")
+        log.info("approved the Universal Router for a burn with a short expiry: %s", h)
     a, amt, exp = router_allowance(rpc, C.WALLET)
     now = int(time.time())
     if a != need or amt != need or not now + SWAP_TTL_S <= exp <= now + PERMIT_TTL_S:
