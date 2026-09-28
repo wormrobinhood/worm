@@ -185,6 +185,15 @@ def test_a_routed_fill_in_any_pair_qualifies_and_a_direct_eth_fallback_does_not(
     assert sorted(m['token'] for m in db.q('SELECT token FROM strategy_members')) == [tok(1), tok(2)]
 
 
+def test_a_member_with_a_fill_live_could_not_have_made_is_invalid_not_counted(db):
+    V.tick(db)
+    position(db, 1, .5)
+    db.x('UPDATE paper SET fallback_fills=1 WHERE token=?', (tok(1),))
+    V.tick(db)
+    result = json.loads(db.one('SELECT result FROM strategy_members WHERE token=?', (tok(1),))['result'])
+    assert result == {'valid': False, 'reason': 'a fill live could not have made'}
+
+
 def test_execution_cost_change_revokes_existing_pass(db, monkeypatch):
     V.tick(db)
     cohort(db, [.3 + .001 * i for i in range(V.COHORT_N)])

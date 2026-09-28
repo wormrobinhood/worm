@@ -192,7 +192,7 @@ def settle(db, trial):
     policy = json.loads(trial['spec'])['exit']
     deadline = (policy.get('max_age') or 48 * 3600) + SETTLEMENT_GRACE_S
     for m in db.q('SELECT token FROM strategy_members WHERE trial=? AND result IS NULL', (trial['id'],)):
-        p = db.one("SELECT status,pnl_usd,size_usd,opened_ts,closed_ts FROM paper WHERE token=?", (m['token'],))
+        p = db.one("SELECT * FROM paper WHERE token=?", (m['token'],))
         if not p or p['status'] != 'closed':
             if p and time.time() - p['opened_ts'] <= deadline:
                 continue
@@ -204,7 +204,12 @@ def settle(db, trial):
         # part of the actual book, but cannot establish timely execution of the frozen policy.
         timely = p['closed_ts'] is not None and 0 <= p['closed_ts'] - p['opened_ts'] <= deadline
         ok = timely and p['pnl_usd'] is not None and p['size_usd'] and math.isfinite(p['pnl_usd'] / p['size_usd'])
-        result = {'valid': True, 'ret': p['pnl_usd'] / p['size_usd']} if ok else {'valid': False}
+        # A fill live could not have made (an ETH pool quoted directly while every route was down) makes the result
+        # something live would not have had: the member is invalid, never silently counted and never replaced.
+        if ok and p.get('fallback_fills'):
+            result = {'valid': False, 'reason': 'a fill live could not have made'}
+        else:
+            result = {'valid': True, 'ret': p['pnl_usd'] / p['size_usd']} if ok else {'valid': False}
         db.x('UPDATE strategy_members SET result=? WHERE trial=? AND token=? AND result IS NULL',
              (json.dumps(result), trial['id'], m['token']))
 

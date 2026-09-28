@@ -606,4 +606,23 @@ def test_an_exit_is_asked_for_near_the_mid_that_triggered_it(db, feed, monkeypat
     exit_quote = P.execution.exit_quote
     monkeypatch.setattr(P.execution, 'exit_quote', lambda *a, **k: seen.append(k) or exit_quote(*a, **k))
     pb.mark(prices={TOKEN: .5}, value=False)
-    assert seen and seen[0]['reference'] == .5 and seen[0]['fallback'] and seen[0]['cached_prices']
+    assert seen and seen[0]['reference'] == .5 and seen[0]['fallback'] is False and seen[0]['cached_prices']   # live could hold it
+
+
+def test_a_position_live_could_hold_exits_only_as_live_could(db, feed, monkeypatch):
+    # every route and the direct exit fail; only an ETH pool quoted directly would answer, which live cannot use
+    def exit_quote(rpc, pk, token, amount, fallback=False, **k):
+        if not fallback:
+            raise P.execution.route.NoRoute('no executable route within limits')
+        return {'minimum_usd': amount / 1e18 * .5 * .95, 'paper_fill_usd': amount / 1e18 * .5 * .97, 'gas_usd': 0,
+                'provider': 'pool-eth', 'live_fill': False}
+    pb = enter(db, feed)
+    db.x("UPDATE paper SET live_fill=1, pool_key=?", (json.dumps(pool_of(TOKEN, C.ZERO)),))
+    monkeypatch.setattr(P.execution, 'exit_quote', exit_quote)
+    pb.mark(prices={TOKEN: .5}, value=False)
+    row = db.one('SELECT * FROM paper')
+    assert row['status'] == 'open' and row['exit_quote_failures'] == 1 and not row['fallback_fills']   # waits, as live would
+    db.x("UPDATE paper SET live_fill=0")                              # a row that is learning data anyway
+    pb.mark(prices={TOKEN: .5}, value=False)
+    row = db.one('SELECT * FROM paper')
+    assert row['status'] == 'closed' and row['fallback_fills'] == 1 and not P.live_comparable(row)

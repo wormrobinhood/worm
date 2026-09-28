@@ -45,6 +45,7 @@ def live_comparable(row, strategy=True):
     breaker is paused. A position filled straight from an ETH pool while every aggregator was down stays in the
     book as learning data: live holds no ETH and could not have made that fill."""
     return (execution.live_fill(row) and bool(row.get('execution_model')) and not row.get('opened_in_pause')
+            and not row.get('fallback_fills')                   # never for a row live can hold, but never counted if so
             and (not strategy or (row.get('strategy') or VERDICT_ENTRY) != VERDICT_ENTRY))
 
 
@@ -255,8 +256,11 @@ class Paper:
         narrows the aggregators (a valuation asks KyberSwap only)."""
         rpc = self.rpc.read_only(5) if hasattr(self.rpc, 'read_only') else self.rpc
         kw = {} if providers is None else {'providers': providers}
-        bid = execution.exit_quote(rpc, json.loads(p['pool_key']), p['token'], amount, cached_prices=True, fallback=True,
-                                   reference=reference, **kw)
+        # A position live could have held exits exactly as live would: the same routes and the direct exit, nothing
+        # else. When none of them answers, live could not sell at that moment, so neither does paper: the step waits
+        # for the next check. Only rows that are learning data anyway may still fill straight from an ETH pool.
+        bid = execution.exit_quote(rpc, json.loads(p['pool_key']), p['token'], amount, cached_prices=True,
+                                   fallback=not execution.live_fill(p), reference=reference, **kw)
         return (bid.get('paper_fill_usd', bid['minimum_usd']) - bid['gas_usd'], bid['gas_usd'],
                 bid.get('provider') or 'pons', bid.get('live_fill', True))
 
@@ -386,7 +390,7 @@ class Paper:
         tot = self.db.one("SELECT COALESCE(SUM(pnl_usd),0) s, COALESCE(SUM(pnl_usd>0),0) w, COUNT(*) n FROM paper WHERE status='closed'")
         cur, why = lab.current_policy(self.db)
         unpriced = sum(p['valuation_stale'] for p in opens)
-        every = self.db.q("SELECT status,pnl_usd,strategy,pool_key,execution_model,opened_in_pause,entry_shadow,pair,live_fill FROM paper")
+        every = self.db.q("SELECT status,pnl_usd,strategy,pool_key,execution_model,opened_in_pause,entry_shadow,pair,live_fill,fallback_fills FROM paper")
         skips = self.db.q("SELECT strategy, pair, reason, COUNT(*) n FROM paper_skips GROUP BY strategy, pair, reason ORDER BY strategy")
         return {"open": opens, "closed": closed, "realized_usd": round(tot["s"], 2),
                 # The headline for anything that stands in for live: fills live could have made (a checked route from
