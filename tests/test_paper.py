@@ -174,7 +174,7 @@ def test_failed_partial_quote_does_not_mark_take_profit_done(db, feed, monkeypat
 def test_missing_mark_is_unknown_not_fake_profit(db, feed, monkeypatch):
     pb = book(db)
     pb.consider(TOKEN, {'score': 80, 'verdict': 'looks healthy', 'metrics': {}})
-    db.x('UPDATE paper SET marked_ts=1')
+    db.x('UPDATE paper SET marked_ts=?', (int(time.time()) - 900,))     # the last good quote is 15 minutes old
     monkeypatch.setattr(P.execution, 'exit_quote', lambda *a, **k: (_ for _ in ()).throw(ValueError('quote outage')))
     pb.mark()
     s = pb.summary()
@@ -184,6 +184,16 @@ def test_missing_mark_is_unknown_not_fake_profit(db, feed, monkeypatch):
     assert s['risk']['allowed'] and s['risk']['loss_usd'] == pytest.approx(10 - 10 / 1.04 * (1 - P.trade_risk.STALE_HAIRCUT), abs=1e-3)
     db.x('UPDATE paper SET monitor_ts=1')                     # and without a fresh mid either: unknown, entries wait
     assert not pb.summary()['risk']['allowed']
+
+
+def test_the_stale_quote_allowance_expires_and_the_position_counts_as_unpriced_as_live_would(db, feed):
+    pb = enter(db, feed)
+    now = int(time.time())
+    for age, allowed in ((P.trade_risk.MARK_MAX_AGE_S + 60, True), (P.trade_risk.STALE_QUOTE_MAX_S - 60, True),
+                         (P.trade_risk.STALE_QUOTE_MAX_S + 60, False), (6 * 3600, False)):
+        db.x('UPDATE paper SET marked_ts=?, monitor_ts=?', (now - age, now))   # the mid is read every 15 s all along
+        risk = P.trade_risk.check(db, 'paper', latch=False, scope='live')
+        assert risk['allowed'] is allowed and risk['unpriced_positions'] is (not allowed), age
 
 
 def test_a_valuation_asks_kyberswap_and_the_pool_only(db, feed, monkeypatch):

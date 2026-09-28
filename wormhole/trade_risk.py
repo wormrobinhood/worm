@@ -6,6 +6,8 @@ import time
 STALE_HAIRCUT = 0.15     # a paper position whose quoted valuation is stale but whose pool mid is fresh is counted at that
                          # mid less the worst round trip an entry may cost: one slow provider must not pause every entry
 MARK_MAX_AGE_S = 600
+STALE_QUOTE_MAX_S = 1800 # ... but only while its last successful quote is this recent: a position nothing has quoted for
+                         # longer may be unsellable, and counts as unpriced, exactly as live's breaker counts it
 
 
 def loss_limit():
@@ -46,7 +48,8 @@ def check(db, book='live', marks=None, *, latch=True, scope=None):
                     # The quote is stale; the pool's own mid, read every 15 s, stands in at a conservative discount.
                     # Only with neither is the position unknown (and entries wait).
                     fresh_mid = row.get('monitor_ts') and now - row['monitor_ts'] <= MARK_MAX_AGE_S and row.get('last_usd')
-                    if fresh_mid:
+                    recent_quote = row['marked_ts'] and now - row['marked_ts'] <= STALE_QUOTE_MAX_S
+                    if fresh_mid and recent_quote:
                         value = float(row['qty_left'] if row['qty_left'] is not None else row['qty'] or 0) * float(row['last_usd']) * (1 - STALE_HAIRCUT)
                     else:
                         unknown = True
