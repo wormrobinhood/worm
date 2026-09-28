@@ -179,7 +179,20 @@ def test_missing_mark_is_unknown_not_fake_profit(db, feed, monkeypatch):
     pb.mark()
     s = pb.summary()
     assert s['open'][0]['pnl_usd'] is None and s['unpriced_count'] == 1
-    assert not s['risk']['allowed']
+    # the quote is stale but the pool's mid was just read: the breaker counts the position at that mid less the worst
+    # round trip, instead of pausing every entry because one provider was slow
+    assert s['risk']['allowed'] and s['risk']['loss_usd'] == pytest.approx(10 - 10 / 1.04 * (1 - P.trade_risk.STALE_HAIRCUT), abs=1e-3)
+    db.x('UPDATE paper SET monitor_ts=1')                     # and without a fresh mid either: unknown, entries wait
+    assert not pb.summary()['risk']['allowed']
+
+
+def test_a_valuation_asks_kyberswap_and_the_pool_only(db, feed, monkeypatch):
+    pb = enter(db, feed)
+    seen = []
+    exit_quote = P.execution.exit_quote
+    monkeypatch.setattr(P.execution, 'exit_quote', lambda *a, **k: seen.append(k.get('providers')) or exit_quote(*a, **k))
+    pb.mark()
+    assert seen == [P.execution.VALUE_PROVIDERS] == [('kyber',)]
 
 
 # ---- the default exit: the profit lock ------------------------------------------------------------
@@ -319,12 +332,12 @@ def test_slow_valuation_cannot_block_exit_or_resurrect_closed_value(db, feed, mo
     pb = enter(db, feed)
     waiting, release = threading.Event(), threading.Event()
     original = pb._quote
-    def quote(p, amount, reference=None):
+    def quote(p, amount, reference=None, providers=None):
         if threading.current_thread().name == 'slow-value':
             waiting.set()
             assert release.wait(3)
             return 999.0, 0.0
-        return original(p, amount, reference)
+        return original(p, amount, reference, providers)
     monkeypatch.setattr(pb, '_quote', quote)
     slow = threading.Thread(name='slow-value', target=pb.mark)
     slow.start()
@@ -367,10 +380,10 @@ def test_parallel_marks_never_double_sell_and_other_positions_progress(db, feed,
     pb.enter(OTHER, 'BBB', 1.0, 'rule-a', 'entry')
     waiting, release = threading.Event(), threading.Event()
     original = pb._quote
-    def quote(p, amount, reference=None):
+    def quote(p, amount, reference=None, providers=None):
         if p['token'] == TOKEN:
             waiting.set(); assert release.wait(3)
-        return original(p, amount, reference)
+        return original(p, amount, reference, providers)
     monkeypatch.setattr(pb, '_quote', quote)
     feed[TOKEN] = feed[OTHER] = .4
     first = threading.Thread(target=lambda: pb.mark(prices={TOKEN: .4}, value=False))

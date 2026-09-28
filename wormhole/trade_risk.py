@@ -3,6 +3,10 @@ import math
 import os
 import time
 
+STALE_HAIRCUT = 0.15     # a paper position whose quoted valuation is stale but whose pool mid is fresh is counted at that
+                         # mid less the worst round trip an entry may cost: one slow provider must not pause every entry
+MARK_MAX_AGE_S = 600
+
 
 def loss_limit():
     value = float(os.environ.get('WH_MAX_DAILY_LOSS_USD', '10'))
@@ -38,8 +42,14 @@ def check(db, book='live', marks=None, *, latch=True, scope=None):
             if book == 'paper':
                 value = (row['liquidation_usd'] if row.get('execution_model')
                          else float(row['qty_left'] or 0) * float(row['last_usd'] or row['entry_usd'] or 0))
-                if row.get('execution_model') and (not row['marked_ts'] or now - row['marked_ts'] > 600):
-                    unknown = True
+                if row.get('execution_model') and (not row['marked_ts'] or now - row['marked_ts'] > MARK_MAX_AGE_S or value is None):
+                    # The quote is stale; the pool's own mid, read every 15 s, stands in at a conservative discount.
+                    # Only with neither is the position unknown (and entries wait).
+                    fresh_mid = row.get('monitor_ts') and now - row['monitor_ts'] <= MARK_MAX_AGE_S and row.get('last_usd')
+                    if fresh_mid:
+                        value = float(row['qty_left'] if row['qty_left'] is not None else row['qty'] or 0) * float(row['last_usd']) * (1 - STALE_HAIRCUT)
+                    else:
+                        unknown = True
             else:
                 value = (marks or {}).get(row['token'])
             if value is None or not math.isfinite(value):

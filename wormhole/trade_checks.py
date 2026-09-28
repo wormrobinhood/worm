@@ -33,6 +33,10 @@ EXIT_TOLERANCE = 0.03          # a sell's minimum is the quote less this
 EXIT_TOLERANCE_RETRY = 0.10    # after a sell reverted: give up more to get out
 FALLBACK_HAIRCUT = 0.01        # a paper fill straight from an ETH pool while every aggregator is down also gives up this:
                                # the ETH-to-USDG leg a route would have paid, so a fallback never flatters a result
+EXIT_WAIT_S = 3.0              # an exit or a valuation waits this long for the aggregators, inside the paper book's 5 s read
+                               # budget: the pool's own quotes and the gas price are read before it, so a slow provider
+                               # costs its own answer, never the whole quote
+VALUE_PROVIDERS = ('kyber',)   # a valuation asks KyberSwap and the pool only: it must never spend LI.FI's request budget
 DIRECT_EXIT_FLOOR = 0.80       # an entry needs a direct exit (its own pool, then the other asset's v3 pool to USDG) paying at
                                # least this share of the best route's: no position the worm could only sell through an aggregator
 MODEL = 'routed-quote-v1'
@@ -133,7 +137,7 @@ def evidence_spec():
             'exit_tolerance_retry': EXIT_TOLERANCE_RETRY,
             'max_roundtrip_loss': MAX_ROUNDTRIP_LOSS, 'max_price_impact': MAX_PRICE_IMPACT,
             'max_gas_fraction': MAX_GAS_FRACTION, 'quote_ttl': QUOTE_TTL, 'fallback_haircut': FALLBACK_HAIRCUT,
-            'direct_exit_floor': DIRECT_EXIT_FLOOR,
+            'direct_exit_floor': DIRECT_EXIT_FLOOR, 'exit_wait_s': EXIT_WAIT_S, 'value_providers': list(VALUE_PROVIDERS),
             'route': route.evidence(),
             'gas': {'units_margin': GAS_UNITS_MARGIN, 'approval_units': APPROVAL_GAS_UNITS, 'price_margin': GAS_PRICE_MARGIN},
             'loss_limit_usd': trade_risk.loss_limit(), 'watch': watch.evidence_constants()}
@@ -209,8 +213,8 @@ def gas_cost(rpc, units):
     return _gas_cost_at_price(rpc, units, price)
 
 
-def _gas_cost_at_price(rpc, units, price):
-    gp = int(rpc.call('eth_gasPrice', []), 16)
+def _gas_cost_at_price(rpc, units, price, gp=None):
+    gp = int(rpc.call('eth_gasPrice', []), 16) if gp is None else gp
     if price is None or not math.isfinite(price) or price <= 0 or gp <= 0 or units <= 0:
         raise ValueError('fresh gas pricing unavailable')
     # Include two bounded approvals as well as the swap, even if an allowance can be reused.
@@ -346,10 +350,14 @@ def exit_quote(rpc, pk, token, amount, *, tolerance=None, cached_prices=False, f
     cached = eth_usd_cached() if cached_prices else None
     if cached_prices and cached is None:
         raise ValueError('fresh cached gas pricing unavailable')
+    # On the paper book's budgeted read: the gas price and the pool's own quotes first, the aggregators last and
+    # for at most EXIT_WAIT_S, so one slow provider cannot starve the reads the quote needs.
+    gas_price = int(rpc.call('eth_gasPrice', []), 16) if cached_prices else None
     expect = amount / 1e18 * reference * 1e6 if reference else None
     try:
         own = (_direct(rpc, pk, token, C.USDG, amount) or _direct_exit(rpc, pk, token, amount)) if direct else None
-        q = route.best_quote(token, C.USDG, amount, extra=[own], expect=expect, providers=providers, side='exit', lane=lane)
+        q = route.best_quote(token, C.USDG, amount, extra=[own], expect=expect, providers=providers, side='exit', lane=lane,
+                             wait_s=EXIT_WAIT_S)
         (unit, usd), out, gas, direction, haircut = (10 ** 6, 1.0), q['out'], q['gas'], q.get('direction'), 0.0
     except route.NoRoute:
         if not fallback or pk['quote'] != C.ZERO:
@@ -360,7 +368,7 @@ def exit_quote(rpc, pk, token, amount, *, tolerance=None, cached_prices=False, f
     minimum = out * (10000 - int(round(tolerance * 10000))) // 10000
     if minimum <= 0:
         raise ValueError('no executable sell quote')
-    fee = _gas_cost_at_price(rpc, gas, cached) if cached_prices else gas_cost(rpc, gas)
+    fee = _gas_cost_at_price(rpc, gas, cached, gas_price) if cached_prices else gas_cost(rpc, gas)
     if time.time() >= started + QUOTE_TTL:
         raise ValueError('sell quote expired')
     return {'amount_raw': amount, 'out_raw': out, 'minimum_raw': minimum,

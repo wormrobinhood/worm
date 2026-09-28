@@ -236,7 +236,7 @@ class Paper:
         qty = p['qty_left'] if p['qty_left'] is not None else p['qty']
         started = time.time()
         try:
-            liquidation = self._quote(p, int(qty * 1e18), p.get('last_usd'))[0]
+            liquidation = self._quote(p, int(qty * 1e18), p.get('last_usd'), providers=execution.VALUE_PROVIDERS)[0]
         except Exception:
             return                              # retain the last observation and its age, never invent a fill
         lock = self._position_lock(position_id)
@@ -249,12 +249,14 @@ class Paper:
         finally:
             lock.release()
 
-    def _quote(self, p, amount, reference=None):
+    def _quote(self, p, amount, reference=None, providers=None):
         """(proceeds after gas, gas, provider, live_fill) of selling `amount` into USDG by the best route now;
-        `reference` is the pool's mid, the band a route must sit in."""
+        `reference` is the pool's mid (a route paying suspiciously more than it is not believed); `providers`
+        narrows the aggregators (a valuation asks KyberSwap only)."""
         rpc = self.rpc.read_only(5) if hasattr(self.rpc, 'read_only') else self.rpc
+        kw = {} if providers is None else {'providers': providers}
         bid = execution.exit_quote(rpc, json.loads(p['pool_key']), p['token'], amount, cached_prices=True, fallback=True,
-                                   reference=reference)
+                                   reference=reference, **kw)
         return (bid.get('paper_fill_usd', bid['minimum_usd']) - bid['gas_usd'], bid['gas_usd'],
                 bid.get('provider') or 'pons', bid.get('live_fill', True))
 

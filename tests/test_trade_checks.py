@@ -355,3 +355,26 @@ def test_the_best_v3_tier_is_found_once_and_asked_alone_for_an_hour(monkeypatch)
     assert trader.best_v3(None, C.WETH, C.USDG, 1) == (500, 9) and asked == [500]
     outs.update({500: 0})
     assert trader.best_v3(None, C.WETH, C.USDG, 1) == (3000, 8)             # the cached tier dried up: all asked again
+
+
+
+def test_one_slow_provider_does_not_spend_the_paper_exit_read_budget(db, routed, monkeypatch):
+    """The reviewer's case: LI.FI answers after 5.5 s; the paper book's exit read has 5 s in all."""
+    import time as t
+    from wormhole import route
+    from wormhole.chain import ReadBudget, RpcError
+    token, pair, rates, _ = routed
+    slow = route.ASK['lifi']
+    monkeypatch.setattr(route, 'ASK', {**route.ASK, 'lifi': lambda *a: t.sleep(5.5) or slow(*a)})
+    monkeypatch.setattr(E, 'eth_usd_cached', lambda: 3000.0)
+    class Parent:
+        def call_with_deadline(self, method, params, deadline):
+            if deadline - t.monotonic() <= 0:
+                raise RpcError('quote read budget exhausted')
+            assert method == 'eth_gasPrice'
+            return '0x1'
+    started = t.monotonic()
+    bid = E.exit_quote(ReadBudget(Parent(), t.monotonic() + 5), trader.pool_key(), token, 1000 * 10 ** 18, reference=.01,
+                       cached_prices=True, fallback=True)
+    assert bid['provider'] == 'kyber' and bid['route']['failed'] == {'lifi': 'timed out'}
+    assert t.monotonic() - started < E.EXIT_WAIT_S + 1
