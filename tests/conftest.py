@@ -64,3 +64,21 @@ def live(monkeypatch):
 def private_outbox(tmp_path, monkeypatch):
     from wormhole import config as C
     monkeypatch.setattr(C, 'DATA_DIR', tmp_path / 'private')
+
+
+@pytest.fixture(autouse=True)
+def no_route_network(monkeypatch):
+    """Aggregator quotes never leave the test process: every provider request fails unless a test answers it,
+    and no provider's pacing or breaker carries from one test to the next."""
+    from wormhole import route
+    def offline(method, url, **kw):
+        raise route.ProviderError('network disabled in tests')
+    monkeypatch.setattr(route, '_request', offline)
+    from wormhole import prices
+    def no_price_api(*a, **k):
+        raise prices.requests.ConnectionError('network disabled in tests')
+    monkeypatch.setattr(prices.requests, 'get', no_price_api)   # a test that needs a price answer stubs it itself
+    monkeypatch.setattr(route, 'MIN_GAP_S', 0)
+    route.reset()
+    yield
+    route.reset()

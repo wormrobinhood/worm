@@ -14,3 +14,10 @@
 bb9fa58bac0f443d719a2100a3c9627f476184235ad5e3ab7a9daa8c4ea23267
 # $WORM Uniswap v4 PoolId on Robinhood Chain: keccak256 of the public pool key, pinned in tests/test_poolstate.py
 0x8c3e2408f38d22325e294e68303aae74bd18a130eaa1897d7839211472343389
+# keccak of the deployed code of KyberSwap's router and executor, LI.FI's diamond, swap facet and FeeCollector on
+# Robinhood Chain (eth_getCode, 2026-09-28): public, pinned in wormhole/route.py CODE_HASHES
+0xdc6eb20a6d4701d8f0f04f9a3342d254eb2698bbad281d8578d6efba21865867
+0xfc8bfd5c118d0c06e9ff71b223fc3ba9612ac167edbf7e7e6e22bec156a5e70d
+0xca0fd158089c97d9e77828a4254bc7037be8ee6f784e45d80204df0e56013101
+0xdb3f706ca7f78237a197ccab9300628db168f0bc6c509835771200f9c163daa5
+0x7ee455a6853068874bfd201f93d6383ed6d88934a922316db5575b057e2ebe74

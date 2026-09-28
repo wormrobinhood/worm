@@ -13,7 +13,7 @@ import logging
 import time
 
 from . import config as C, lab, poolstate, trade_checks as execution
-from .prices import eth_usd_last, eth_usd_cached
+from .prices import asset_usd, eth_usd_last, eth_usd_cached
 from .scorer import SWAP_TOPIC
 
 log = logging.getLogger("wormhole.watch")
@@ -141,11 +141,12 @@ def _resolve_pools(rpc, db):
         except Exception as e:
             log.info("watch pool lookup failed: %s", e)
             pk = None
-        if pk and execution.verified(pk, row["token"], execution.PAPER_QUOTES):
+        # Any Pons pool is watched, whatever it trades against: fills are routed from USDG (trade_checks.entry).
+        if pk and execution.verified(pk, row["token"]):
             db.x("UPDATE watch SET status='watching', pool_key=? WHERE token=?", (json.dumps(dict(pk)), row["token"]))
         elif pk or row["tries"] + 1 >= MAX_TRIES:
             db.x("UPDATE watch SET status='unsupported', note=? WHERE token=?",
-                 ("paired with an asset the book does not trade" if pk else "pool not found", row["token"]))
+                 ("not a Pons pool" if pk else "pool not found", row["token"]))
         else:
             db.x("UPDATE watch SET tries=tries+1 WHERE token=?", (row["token"],))
 
@@ -166,14 +167,17 @@ def _s256(word):
 
 def flow(rpc, pk, token, first, last, eth_usd=None):
     """The pool's swaps in blocks [first, last]: how many, how many were buys, and the USD that changed hands
-    (None for an ETH pool while no ETH price is known; the counts stand). Amounts are the swapper's deltas: a
-    positive token delta is a buy. None when the node did not answer."""
+    (None while the quote asset has no known price, ETH's or a stock's; the counts stand). Amounts are the
+    swapper's deltas: a positive token delta is a buy. None when the node did not answer."""
     if pk.get("quote") == C.USDG:
         unit, usd = 10 ** 6, 1.0
     elif pk.get("quote") == C.ZERO:
         unit, usd = 10 ** 18, eth_usd
     else:
-        return None
+        decimals = poolstate.quote_decimals(rpc, pk.get("quote"))
+        if decimals is None:
+            return None
+        unit, usd = 10 ** decimals, asset_usd(pk.get("quote"))
     try:
         logs = list(rpc.get_logs(C.POOL_MANAGER, [SWAP_TOPIC, poolstate.pool_id(pk)], first, last, 20_000, cap=FLOW_CAP))
     except Exception as e:
@@ -408,7 +412,7 @@ def sample_lab(rpc, db, now):
             pk = json.loads(c["pool_key"])
         except ValueError:
             continue
-        if execution.verified(pk, token, execution.PAPER_QUOTES) and "fee" in pk:
+        if execution.verified(pk, token) and "fee" in pk:
             pools[token], keys[token] = pk, c["token"]
     if not pools:
         return
@@ -439,7 +443,7 @@ class Watcher:
                 pk = json.loads(p["pool_key"] or "null")
             except ValueError:
                 continue
-            if pk and execution.verified(pk, p["token"], execution.PAPER_QUOTES) and "fee" in pk:
+            if pk and execution.verified(pk, p["token"]) and "fee" in pk:
                 pools[p["token"]] = pk
         return pools
 
@@ -450,7 +454,7 @@ class Watcher:
         if self.on_prices and self.db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='positions'"):
             held = self._pools(self.db.q("SELECT token, pool_key FROM positions WHERE status='open' AND pool_key IS NOT NULL"))
         if book or held:
-            mids = {t: m for t, m in poolstate.mids(self.rpc, {**held, **book}, eth_usd_cached(), budget_s=5).items() if m}
+            mids = {t: m for t, m in poolstate.mids(self.rpc, {**held, **book}, eth_usd_cached(), budget_s=5, cached=True).items() if m}
             if held and any(t in mids for t in held):
                 self.on_prices({t: mids[t] for t in held if t in mids})
             if book and any(t in mids for t in book):

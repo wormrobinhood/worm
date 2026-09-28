@@ -641,3 +641,25 @@ def test_swept_profit_is_reserved_like_any_other_burn_money(db):
     T.sweep_trading_profit(db)
     assert T.owed_to_burn(db) == pytest.approx(10.0 * C.BURN_SHARE + 8.0)
     assert T.free_usd(db, 100.0) == pytest.approx(100.0 - T.owed_total(db))
+
+
+def test_a_better_aggregator_route_is_logged_and_never_changes_the_burn(db, rpc, acct, live, monkeypatch, caplog):
+    import logging
+    from wormhole import route
+    monkeypatch.setattr(C, "TOKEN", TOKEN)
+    pool(db)
+    ledger(db, "claim", 30.0)
+    burn_chain(rpc, out_tokens=12_345)
+    burn_receipts(rpc, qty_tokens=12_345)
+    asked = []
+    def best(token_in, token_out, amount_in, **kw):
+        asked.append((token_in, token_out, amount_in))
+        return route.candidate("kyber", token_in, token_out, amount_in, 20_000 * 10 ** 18, 1, 0, route.KYBER_ROUTER, route.KYBER_ROUTER)
+    monkeypatch.setattr(route, "best_quote", best)
+    with caplog.at_level(logging.INFO, logger="wormhole.route"):
+        T.cycle(rpc, db, acct)
+    txs = [decode_tx(r) for r in rpc.raw]
+    assert [t["to"] for t in txs] == [C.USDG, C.USDG, C.PERMIT2, C.UNIVERSAL_ROUTER]      # the burn is exactly as before
+    assert asked == [(C.USDG, TOKEN, 6_000_000)] and rows(db, "burn")[0]["qty"] == 12_345.0
+    assert "burn route check" in caplog.text and "kyber" in caplog.text
+    assert not any("kyber" in e["text"] for e in db.q("SELECT text FROM events"))           # private log only

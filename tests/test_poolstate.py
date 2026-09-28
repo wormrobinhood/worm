@@ -113,3 +113,60 @@ def test_position_read_budget_does_not_fall_back_to_long_retries():
             assert deadline > 0
             return [None] * len(calls)
     assert poolstate.mids(Bounded(), {TOKEN_LOW: WORM_POOL}, 2000, budget_s=5) == {TOKEN_LOW: None}
+
+
+META = "0xc0d6457c16cc70d6790dd43521c899c87ce02f35"             # tokenized META on Robinhood Chain, 18 decimals
+
+
+class StockRpc(BatchRpc):
+    def __init__(self, answers, decimals="0x12"):
+        super().__init__(answers)
+        self.decimals, self.asked = decimals, []
+
+    def eth_call(self, to, data):
+        self.asked.append((to, data))
+        if isinstance(self.decimals, Exception):
+            raise self.decimals
+        return self.decimals
+
+
+def test_a_pool_against_a_stock_is_priced_through_the_stocks_own_price(monkeypatch):
+    poolstate._decimals.pop(META, None)
+    pk = {"c0": META, "c1": TOKEN_HIGH, "fee": 0, "tick_spacing": 200, "hooks": C.HOOK, "quote": META}
+    seen = []
+    monkeypatch.setattr(poolstate, "asset_usd", lambda a, cached=False: seen.append((a, cached)) or 740.0)
+    rpc = StockRpc([word(sqrt_for(10_000_000))])                    # 10M tokens per META share
+    out = poolstate.mids(rpc, {TOKEN_HIGH: pk}, None, cached=True)
+    assert abs(out[TOKEN_HIGH] / (740.0 / 10_000_000) - 1) < 1e-6
+    assert seen == [(META, True)] and rpc.asked == [(META, poolstate.DECIMALS)]
+    poolstate.mids(rpc, {TOKEN_HIGH: pk}, None)
+    assert len(rpc.asked) == 1                                      # decimals are read once
+    poolstate._decimals.pop(META, None)
+
+
+def test_a_stock_pool_without_a_price_or_decimals_has_no_mid(monkeypatch):
+    poolstate._decimals.pop(META, None)
+    pk = {"c0": META, "c1": TOKEN_HIGH, "fee": 0, "tick_spacing": 200, "hooks": C.HOOK, "quote": META}
+    monkeypatch.setattr(poolstate, "asset_usd", lambda a, cached=False: None)
+    assert poolstate.mids(StockRpc([word(sqrt_for(1e7))]), {TOKEN_HIGH: pk}, 2500.0) == {TOKEN_HIGH: None}
+    monkeypatch.setattr(poolstate, "asset_usd", lambda a, cached=False: 740.0)
+    poolstate._decimals.pop(META, None)
+    assert poolstate.mids(StockRpc([word(sqrt_for(1e7))], decimals=RuntimeError("down")), {TOKEN_HIGH: pk}, 2500.0) == {TOKEN_HIGH: None}
+    assert poolstate.mids(StockRpc([word(sqrt_for(1e7))], decimals="0x0"), {TOKEN_HIGH: pk}, 2500.0) == {TOKEN_HIGH: None}
+
+
+def test_asset_prices_are_one_for_usdg_eths_for_eth_and_the_apis_for_a_stock(monkeypatch):
+    from wormhole import prices
+    monkeypatch.setattr(prices, "eth_usd", lambda strict=False: 2600.0 if strict else _no_loose_eth_price())
+    monkeypatch.setattr(prices, "eth_usd_cached", lambda: 2500.0)
+    monkeypatch.setattr(prices, "token_prices", lambda addrs: {META: {"price_usd": 740.0, "age_s": 30}})
+    assert prices.asset_usd(C.USDG) == 1.0 and prices.asset_usd(C.ZERO) == 2600.0 and prices.asset_usd(C.ZERO, cached=True) == 2500.0
+    assert prices.asset_usd(META) == 740.0
+    monkeypatch.setattr(prices, "token_prices", lambda addrs: {META: {"price_usd": 740.0, "age_s": 5000}})
+    assert prices.asset_usd(META) is None                           # stale: no price, never a guess
+    monkeypatch.setitem(prices._cache, META, (0, {}))
+    assert prices.asset_usd(META, cached=True) is None              # nothing fetched: the fast path asks nobody
+
+
+def _no_loose_eth_price():
+    raise AssertionError("a non-strict ETH price was used")

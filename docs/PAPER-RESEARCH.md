@@ -68,3 +68,51 @@ Nothing here enables trading or loosens the gate: 50 positions per cohort, the s
 A USDG-only ranking sits next to the all-pools one. No ranking can choose the exit that new positions get. `current_policy` returns the code default until a paper cohort passes, and a test asserts it.
 
 **`shadow-keep-v1`.** This is a filtered rule (`watch.FILTERED`) and buys nothing. Its members are positions the four entry rules open whose `entry-risk-shadow-v1` decision, recorded at entry, was keep. It runs its own cohort under the unchanged gate, on USDG pools only. Its frozen spec contains the four rules and the filter thresholds. The existing rules keep every entry and every cohort member they had.
+
+
+## Routing: every pair can be evidence (September 28, 2026)
+
+Paper fills used to be the token's own pool quote, and only USDG pools counted as what live
+could have done (3 of the last 30 second-look trades). Now every paper entry and exit spends
+or receives USDG through the best checked route (see TRADING-HARDENING.md, "Routing any pair
+from USDG"): KyberSwap, LI.FI or the token's own USDG pool, with Relay compared only. The
+fill is the route's quote less 1% a side, plus gas, and the round trip counts every hop,
+creator tax, impact and aggregator fee. Paper and live choose from the same providers.
+
+- **Eligibility.** A token is live-comparable when a route within the caps exists (15% band
+  around the pool's mid, 1% aggregator fee, the 8% impact and 15% round-trip limits), not
+  when it is paired with USDG. The watcher now follows every Pons pool, stock-paired ones
+  included; their mids are converted through ETH's or the stock's own price (read-only;
+  decimals read once from the token).
+- **Fallback.** When every aggregator is down, a USDG pool is still its own route. An ETH
+  pool is quoted directly as before, charged a further 1% for the missing USDG leg, and
+  marked `live_fill=0`: learning data, never live-comparable, never a cohort member. A stock
+  pool is not traded then.
+- **Recorded on every position:** `pair` (USDG, ETH or the stock's symbol), `route_provider`,
+  `live_fill`, `route` (the chosen quote and what the others offered), `exit_provider` and
+  `fallback_fills` (exit fills live could not have made; the row is kept either way, since
+  an outage says nothing about the token's outcome). The summary adds `by_pair` to both
+  books and `routes` (each provider's breaker).
+- **Breaker.** The live-comparable breaker (`scope='live'`) counts every position whose fill
+  live could have made, any pair, and honours a pause the old USDG-only breaker still holds.
+- **Gate.** Unchanged: 50 positions, the shared error budget, the lower-bound rule. It now
+  admits routed fills in any pair (`trade_checks.live_fill`) instead of USDG pools only.
+- **Fingerprint.** `SEMANTICS='paper-evidence-4'`, `MODEL='routed-quote-v1'`, the route rules
+  in the evidence spec and the routing code in `EVIDENCE_CODE`. Deploying voids every running
+  cohort once (an attempt is kept by any cohort whose evidence was already visible). This
+  is intended: the fills changed meaning.
+- **Expected effect.** On the last 30 second-look trades, 27 were ETH pools: roughly ten
+  times as many live-comparable positions, plus the stock-paired graduations (about one in
+  eight) now watched at all, so a cohort can fill in weeks instead of months. Lab rankings
+  are unchanged (the lab's USDG table stays USDG-only).
+
+After the independent review (same day): a position live could hold now exits exactly as
+live could (the same routes and the direct exit, nothing else). When none answers the step
+waits, as live's would; the ETH-pool fallback with its haircut is kept only for rows that
+are learning data anyway, and a member with any fill live could not have made is settled
+invalid (never counted, never replaced). Exit and valuation quotes read the gas price and
+the pool first and wait at most 3 s for the aggregators; valuations ask KyberSwap and the
+pool only. The paper breaker counts a position whose quote is stale at its fresh pool mid
+less 15% instead of pausing every entry. Every entry needs a direct exit, so no position can
+overrun its maximum age for want of an aggregator. These change the fingerprint again; the
+cohorts void once on deploy either way.

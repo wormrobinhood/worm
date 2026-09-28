@@ -770,7 +770,13 @@ def burn(rpc, db, acct):
         log.warning("burn failed: %s", e)
         db.add_event("error", "burn failed; see private logs")
         return False
-    return finish(db, h, rc, C.WALLET)[0] == "burn"
+    settled = finish(db, h, rc, C.WALLET)[0] == "burn"
+    if settled:
+        # Log only, never acted on: what the best aggregator route would have given for the same slice. The burn
+        # itself stays on $WORM's own USDG pool, quoted, approved and swapped exactly as above.
+        from . import route
+        route.compare_log(C.USDG, C.TOKEN, n, out, "burn route check")
+    return settled
 
 
 def burn_step(rpc, db, acct, now=None):

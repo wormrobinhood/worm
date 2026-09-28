@@ -763,3 +763,64 @@ Risks and open points:
 - The code digests depend on the Python minor version (3.11 in the Dockerfile and CI): moving Python voids
   every cohort once.
 - Tests: 903 pass (872 before).
+
+
+## Any-pair routing (2026-09-28, local branch `claude/any-pair-routing`, not pushed, not deployed)
+
+Goal (operator): trade any graduation, not only USDG-paired ones, by routing USDG through ETH or a stock and back via
+an aggregator. Live trading stays OFF: WH_TRADING, LIVE_SELL_READY and the budget were not touched; the gate (50
+positions, error budget, lower bound) is unchanged. Write-ups: docs/TRADING-HARDENING.md "Routing any pair from
+USDG" and docs/PAPER-RESEARCH.md "Routing: every pair can be evidence".
+
+- **`wormhole/route.py`** (new). `best_quote(token_in, token_out, amount_in, extra=, expect=, max_fee_usd=, providers=)`
+  asks KyberSwap (`aggregator-api.kyberswap.com/robinhood`), LI.FI (`li.quest`) and Relay (`api.relay.link`) in a
+  6-thread pool: 4 s per request, 5 s overall, 0.25 s between requests per provider, breaker after 3 failures or one
+  429 (30 s doubling to 15 min, `route.status()`). Quotes name `DUMMY` (0x..dead), never the wallet. Executable:
+  `pons` (the token's own USDG pool, added by trade_checks), `kyber`, `lifi`; Relay is quote-only (its minimum is
+  inside third-party calls). `ALLOWED` pins router and spender per provider (Kyber 0x6131b5fa..., LI.FI 0xb477751b...);
+  a quote naming anything else is not executable. Live helpers: `build` (Kyber `route/build`, LI.FI quote with the
+  wallet, 2.5% slippage), `check` (decodes Kyber `swap(...)` and LI.FI `swapTokens{Single,Multiple}V3ERC20ToERC20`:
+  receiver, tokens, exact amount, minimum >= ours, allowlisted `to`, value 0), `simulate`/`verify_simulation`
+  (`eth_simulateV1`, supported by the Nitro node: balances before/after, optional exact approval), `compare_log`.
+- **trade_checks**: `entry` and `exit_quote` price through `route.best_quote` in USDG; `verified(pk, token)` accepts
+  any Pons pool; `live_fill(row)`; paper-only fallback `_entry_direct` / exit fallback for ETH pools (1% haircut,
+  provider `pool-eth`, `live_fill=False`). `MODEL='routed-quote-v1'`, `SEMANTICS='paper-evidence-4'`, evidence spec
+  carries `route.evidence()`; `LIVE_QUOTES`/`PAPER_QUOTES` removed.
+- **paper**: columns `pair, route_provider, live_fill, route, exit_provider, fallback_fills`; `pair_symbol`;
+  `live_comparable` = `live_fill` + quoted + second look + not in pause; breaker `scope='live'` for every candidate;
+  summary adds `by_pair`, `routes`, drops `route` from rows. **trade_risk** `scope='live'` (meta
+  `loss_pause_until_paper_live`, also honours `..._usdg`). **strategy_validation.admit** uses `live_fill`.
+- **poolstate/watch/prices**: `prices.asset_usd(asset, cached=)`; `poolstate.mids(..., cached=)` converts stock pools
+  (decimals read once, `quote_decimals`); watch follows every Pons pool; `flow` handles stock pools.
+- **live_trading** (dormant): `route_tx`, `approve_route` (exact ERC-20, zero first, never unlimited), `routers()`,
+  `submit(..., tx=)`, `sell(..., mid=)`, requote through the approved provider only, `prepare_exit` only for USDG
+  pools. Fixed a latent bug: `call_fn(...)[0]` on single outputs (balance and allowance reads) always raised, so no
+  live order could ever have passed its balance check (`read_uint`, `balance_of`).
+- **treasury.burn**: unchanged execution; after a settled burn, `route.compare_log` logs the best route privately.
+- **scripts/route-compare.py TOKEN [--usd 10]**: the three providers both ways (dummy address, reads no .env).
+- **web**: paper rows read "ETH · KyberSwap", "META · LI.FI", "USDG · own pool", "direct, learning only"; could-be-real
+  covers every pair with per-pair chips; docs page updated. Playwright-checked on a local preview (injected rows).
+
+Sample real quotes, $10 USDG, 2026-09-28 (tokens out, best = 100): ETH-paired KLV kyber 100 / lifi 99.74 / relay 99.84;
+META-paired GLORY 100 / 99.76 / 99.80; SPY-paired STOCKWALK 100 / 99.77 / 99.85; ORBIO-paired ORDESK lifi best by 0.12%.
+Round trips before gas: 93-97.5% of the USDG spent (creator tax, hook fees and impact).
+
+On first deploy: every collecting cohort is voided once (fingerprint changed; a cohort keeps its attempt only if its
+evidence was already visible). Expect roughly ten times more live-comparable entries (27 of the last 30 second-look
+trades were ETH pools) plus stock-paired graduations now watched. Tests: 976 offline (914 before), fixtures in
+tests/fixtures/route (real answers, 32-byte ids blanked for the leak check).
+
+### Review fixes on `claude/any-pair-routing` (2026-09-28, one commit per item, still local, live still OFF)
+
+1. Exits: one-sided exit band, own pool never banded (`route.best_quote(side='exit')`); direct exit `pons-v3`
+   (`trader.exit_calldata`, `best_v3`, `trade_checks._direct_exit`, `DIRECT_EXIT_FLOOR`); `live_trading._sell_own` /
+   `_sell_routed` with fallback and an error event; breakers per (provider, lane); LI.FI budget (`_admit`,
+   `WH_LIFI_API_KEY` in config, popped).
+2. `route.check_kyber` / `check_lifi` / `verify_contracts` (`CODE_HASHES`, allow-listed in scripts/leakcheck_allow.txt);
+   `live_trading.revoke_route` / `clear_route_allowance` / `_clear_after`.
+3. `trade_checks.EXIT_WAIT_S`, `VALUE_PROVIDERS`, gas price read first; `trade_risk.STALE_HAIRCUT`.
+4. `Paper._quote(fallback=not live_fill)`; `strategy_validation.settle` invalidates `fallback_fills`.
+5. `route.TRADE` default, Kyber pacing, no client id/UA, `live_trading.route_ready` before approval, one final build.
+6. `pool_mid` docstring and test for ETH pairs; docs/TRADING-HARDENING.md "After the independent review".
+Operator: to raise LI.FI's limit set `WH_LIFI_API_KEY` (optional). Before a live trial the funded rehearsal must also
+cover a routed buy, a routed sell and a direct-exit sell of an ETH- and a stock-paired token.

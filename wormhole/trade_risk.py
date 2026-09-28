@@ -3,6 +3,12 @@ import math
 import os
 import time
 
+STALE_HAIRCUT = 0.15     # a paper position whose quoted valuation is stale but whose pool mid is fresh is counted at that
+                         # mid less the worst round trip an entry may cost: one slow provider must not pause every entry
+MARK_MAX_AGE_S = 600
+STALE_QUOTE_MAX_S = 1800 # ... but only while its last successful quote is this recent: a position nothing has quoted for
+                         # longer may be unsellable, and counts as unpriced, exactly as live's breaker counts it
+
 
 def loss_limit():
     value = float(os.environ.get('WH_MAX_DAILY_LOSS_USD', '10'))
@@ -12,18 +18,22 @@ def loss_limit():
 
 
 def check(db, book='live', marks=None, *, latch=True, scope=None):
-    """scope='usdg' (paper only): the breaker live would run, over the paper positions in USDG pools, with its own
-    pause. Second-look USDG entries answer to it so that losses in ETH pools, which live never trades, do not pause
-    the evidence live is judged on. A position flagged as opened during an earlier pause still counts here: it is
-    out of the evidence, not out of the day's losses, and leaving an underwater one out would reopen entries."""
+    """scope='live' (paper only): the breaker live would run, over the paper positions whose fills live could have
+    made (a checked route from USDG, any pair: trade_checks.live_fill), with its own pause. Second-look entries
+    answer to it, so losses on fills live could not have made (an ETH pool quoted directly while the aggregators
+    were down) do not pause the evidence live is judged on. A position flagged as opened during an earlier pause
+    still counts here: it is out of the evidence, not out of the day's losses, and leaving an underwater one out
+    would reopen entries. It replaces the USDG-only breaker and honours a pause that one still holds."""
     now = int(time.time())
     key = 'loss_pause_until_' + book + ('_' + scope if scope else '')
     limit = loss_limit()
     rows = (db.q("SELECT * FROM paper") if book == 'paper'
             else db.q("SELECT size_usd,realized_usd,qty_left,entry_usd,status,closed_ts,token FROM positions WHERE mode=?", (book,)))
-    if scope == 'usdg':
-        from . import paper
-        rows = [r for r in rows if paper.pair(r) == 'USDG' and r.get('execution_model')]
+    if scope == 'live':
+        from . import trade_checks
+        rows = [r for r in rows if trade_checks.live_fill(r) and r.get('execution_model')]
+    elif scope is not None:
+        raise ValueError('unknown breaker scope')
     losses, unknown = 0.0, False
     for row in rows:
         if row['status'] != 'open' and (row['closed_ts'] or 0) < now - 86400:
@@ -34,8 +44,15 @@ def check(db, book='live', marks=None, *, latch=True, scope=None):
             if book == 'paper':
                 value = (row['liquidation_usd'] if row.get('execution_model')
                          else float(row['qty_left'] or 0) * float(row['last_usd'] or row['entry_usd'] or 0))
-                if row.get('execution_model') and (not row['marked_ts'] or now - row['marked_ts'] > 600):
-                    unknown = True
+                if row.get('execution_model') and (not row['marked_ts'] or now - row['marked_ts'] > MARK_MAX_AGE_S or value is None):
+                    # The quote is stale; the pool's own mid, read every 15 s, stands in at a conservative discount.
+                    # Only with neither is the position unknown (and entries wait).
+                    fresh_mid = row.get('monitor_ts') and now - row['monitor_ts'] <= MARK_MAX_AGE_S and row.get('last_usd')
+                    recent_quote = row['marked_ts'] and now - row['marked_ts'] <= STALE_QUOTE_MAX_S
+                    if fresh_mid and recent_quote:
+                        value = float(row['qty_left'] if row['qty_left'] is not None else row['qty'] or 0) * float(row['last_usd']) * (1 - STALE_HAIRCUT)
+                    else:
+                        unknown = True
             else:
                 value = (marks or {}).get(row['token'])
             if value is None or not math.isfinite(value):
@@ -51,6 +68,8 @@ def check(db, book='live', marks=None, *, latch=True, scope=None):
     if latch and losses >= limit:
         db.meta_set(key, max(int(db.meta_get(key, '0')), now + 86400))
     until = int(db.meta_get(key, '0'))
+    if scope == 'live':
+        until = max(until, int(db.meta_get('loss_pause_until_paper_usdg', '0')))   # the USDG breaker's pause, if one stands
     return {'allowed': not unknown and losses < limit and now >= until,
             'loss_usd': round(losses, 4), 'limit_usd': limit, 'paused_until': until,
             'unpriced_positions': unknown}

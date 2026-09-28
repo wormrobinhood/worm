@@ -143,6 +143,69 @@ def swap_calldata(pk, zero_for_one, amount_in, min_out, currency_in, currency_ou
                                                              [V4_SWAP, inputs, deadline if deadline is not None else int(time.time()) + 600]).hex()
 
 
+# ---- the direct exit: the token's own pool, then the other asset's Uniswap v3 pool to USDG, one transaction ----
+V3_SWAP_EXACT_IN, WRAP_ETH, TAKE = b"\x00", b"\x0b", b"\x0e"
+MSG_SENDER = "0x0000000000000000000000000000000000000001"      # Universal Router: the caller
+ADDRESS_THIS = "0x0000000000000000000000000000000000000002"    # Universal Router: the router itself
+CONTRACT_BALANCE = 1 << 255                                     # Universal Router: all the router holds
+V3_FEES = (100, 500, 3000, 10000)
+V3_QUOTE_T = "(address,address,uint256,uint24,uint160)"
+V3_GAS = 200_000                                                # the v3 leg and the wrap, on top of the v4 swap's own estimate
+V3_BAND = 0.03                                                  # the v3 leg must pay within this of the asset's own USD price
+
+
+def quote_v3(rpc, token_in, token_out, amount_in, fee):
+    """QuoterV2.quoteExactInputSingle on one Uniswap v3 pool: the amount out (0 when it has no liquidity)."""
+    data = "0x" + keccak(text=f"quoteExactInputSingle({V3_QUOTE_T})")[:4].hex() + encode(
+        [V3_QUOTE_T], [(token_in, token_out, amount_in, fee, 0)]).hex()
+    raw = rpc.eth_call(C.QUOTER_V3, data)
+    return int(decode(["uint256", "uint160", "uint32", "uint256"], bytes.fromhex(raw[2:]))[0])
+
+
+def best_v3(rpc, token_in, token_out, amount_in, fair_out):
+    """(fee tier, amount out) of the best Uniswap v3 pool from token_in to token_out, every tier asked on every call:
+    anyone can create a pool at a new tier, seed it generously and drain it, so no earlier answer is trusted. A tier
+    paying less than `fair_out` (what the asset's own USD price says) less V3_BAND is refused, however it quoted
+    before. Raises when no tier is left."""
+    if not fair_out or fair_out <= 0:
+        raise ValueError("no fair price for the v3 leg")
+    found = []
+    for fee in V3_FEES:
+        try:
+            out = quote_v3(rpc, token_in, token_out, amount_in, fee)
+        except Exception:
+            continue
+        if out >= fair_out * (1 - V3_BAND):
+            found.append((out, fee))
+    if not found:
+        raise ValueError("no v3 pool to USDG near the asset's price")
+    out, fee = max(found)
+    return fee, out
+
+
+def exit_calldata(pk, token, amount_in, min_out, v3_fee, deadline):
+    """One Universal Router call that sells `amount_in` of `token` on its own Pons pool for the pool's other asset
+    (ETH is wrapped), kept inside the router, and swaps all of it to USDG on that asset's Uniswap v3 pool, paid to
+    the caller. It reverts below `min_out` USDG: the whole exit happens or none of it. Nothing but the Universal
+    Router and the pools is involved, so no aggregator has to be up for a position to be sold."""
+    quote = pk["quote"]
+    if quote in (C.USDG, None) or not 0 < min_out:
+        raise ValueError("the direct exit is for a pool against ETH or a stock")
+    actions = SWAP_EXACT_IN_SINGLE + SETTLE_ALL + TAKE
+    params = [encode([SWAP_T], [(_key_tuple(pk), pk["c0"] == token, amount_in, 0, 0, b"")]),
+              encode(["address", "uint256"], [token, amount_in]),
+              encode(["address", "address", "uint256"], [quote, ADDRESS_THIS, 0])]
+    commands, inputs, middle = V4_SWAP, [encode(["bytes", "bytes[]"], [actions, params])], quote
+    if quote == C.ZERO:
+        commands += WRAP_ETH
+        inputs.append(encode(["address", "uint256"], [ADDRESS_THIS, CONTRACT_BALANCE]))
+        middle = C.WETH
+    path = bytes.fromhex(middle[2:]) + int(v3_fee).to_bytes(3, "big") + bytes.fromhex(C.USDG[2:])
+    commands += V3_SWAP_EXACT_IN
+    inputs.append(encode(["address", "uint256", "uint256", "bytes", "bool"], [MSG_SENDER, CONTRACT_BALANCE, min_out, path, False]))
+    return selector("execute(bytes,bytes[],uint256)") + encode(["bytes", "bytes[]", "uint256"], [commands, inputs, deadline]).hex()
+
+
 def simulate_buy(rpc, wallet, pk, token, amount_in, min_out, zero_for_one):
     """eth_call of the real router call with a pretend ETH balance. Only meaningful for ETH-quoted pools."""
     if pk["quote"] != C.ZERO:
@@ -372,7 +435,7 @@ def _mark(rpc, db, live, acct, mids):
         if p["mode"] == "live":
             db.x("UPDATE positions SET peak_usd=? WHERE token=?", (st["peak"], p["token"]))
             if live and acct and LIVE_SELL_READY:
-                live_trading.sell(rpc, db, acct, p, st, frac, why)
+                live_trading.sell(rpc, db, acct, p, st, frac, why, mid=px)
             else:
                 _say_once(db, "trade", f"sell ${p['symbol']} ({why}): live selling needs a verified rehearsal; deferred", p["token"])
             continue
@@ -401,5 +464,5 @@ def summary(db):
             "budget": live_trading.budget(db),
             "policy": ("" if C.TRADING else "off by policy until the strategy is proven on paper; only the creator turns it on; when on: ")
                       + f"readiness ≥ {RD.READY_AT}% first (evidence only, see the readiness panel); live follows paper: only a token the paper book has just bought under an entry rule whose paper cohort passed; size min(${MAX_POSITION_USD:.0f}, 10% of surplus, what is left of the lifetime budget); "
-                      f"≤ {MAX_OPEN} open; ≤ ${MAX_DAILY_USD:.0f} a day; only from the surplus above the 90-day reserve; verified USDG pools only; losses use the lifetime budget up and profits never refill it (they go to the burn); daily gross loss breaker applies to entries"
+                      f"≤ {MAX_OPEN} open; ≤ ${MAX_DAILY_USD:.0f} a day; only from the surplus above the 90-day reserve; any Pons pool, bought and sold from USDG by the best checked route (an allowlisted aggregator or the token's own USDG pool), simulated before signing; losses use the lifetime budget up and profits never refill it (they go to the burn); daily gross loss breaker applies to entries"
                       + ("" if LIVE_SELL_READY else "; live buys wait for live sells")}
