@@ -74,6 +74,10 @@ def no_route_network(monkeypatch):
     def offline(method, url, **kw):
         raise route.ProviderError('network disabled in tests')
     monkeypatch.setattr(route, '_request', offline)
+    from wormhole import prices
+    def no_price_api(*a, **k):
+        raise prices.requests.ConnectionError('network disabled in tests')
+    monkeypatch.setattr(prices.requests, 'get', no_price_api)   # a test that needs a price answer stubs it itself
     monkeypatch.setattr(route, 'MIN_GAP_S', 0)
     route.reset()
     yield

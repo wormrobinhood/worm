@@ -151,8 +151,7 @@ CONTRACT_BALANCE = 1 << 255                                     # Universal Rout
 V3_FEES = (100, 500, 3000, 10000)
 V3_QUOTE_T = "(address,address,uint256,uint24,uint160)"
 V3_GAS = 200_000                                                # the v3 leg and the wrap, on top of the v4 swap's own estimate
-V3_FEE_TTL_S = 3600
-_v3_fee = {}                                                    # asset -> (fee tier, when it was found best)
+V3_BAND = 0.03                                                  # the v3 leg must pay within this of the asset's own USD price
 
 
 def quote_v3(rpc, token_in, token_out, amount_in, fee):
@@ -163,27 +162,24 @@ def quote_v3(rpc, token_in, token_out, amount_in, fee):
     return int(decode(["uint256", "uint160", "uint32", "uint256"], bytes.fromhex(raw[2:]))[0])
 
 
-def best_v3(rpc, token_in, token_out, amount_in):
-    """(fee tier, amount out) of the best Uniswap v3 pool from token_in to token_out. The tier found best is asked
-    alone for an hour; when it fails, every tier is asked again. Raises when no pool quotes."""
-    cached = _v3_fee.get(token_in)
-    if cached and time.time() - cached[1] < V3_FEE_TTL_S:
-        try:
-            out = quote_v3(rpc, token_in, token_out, amount_in, cached[0])
-            if out > 0:
-                return cached[0], out
-        except Exception:
-            pass
+def best_v3(rpc, token_in, token_out, amount_in, fair_out):
+    """(fee tier, amount out) of the best Uniswap v3 pool from token_in to token_out, every tier asked on every call:
+    anyone can create a pool at a new tier, seed it generously and drain it, so no earlier answer is trusted. A tier
+    paying less than `fair_out` (what the asset's own USD price says) less V3_BAND is refused, however it quoted
+    before. Raises when no tier is left."""
+    if not fair_out or fair_out <= 0:
+        raise ValueError("no fair price for the v3 leg")
     found = []
     for fee in V3_FEES:
         try:
-            found.append((quote_v3(rpc, token_in, token_out, amount_in, fee), fee))
+            out = quote_v3(rpc, token_in, token_out, amount_in, fee)
         except Exception:
             continue
-    out, fee = max(found, default=(0, None))
-    if out <= 0:
-        raise ValueError("no v3 pool to USDG")
-    _v3_fee[token_in] = (fee, time.time())
+        if out >= fair_out * (1 - V3_BAND):
+            found.append((out, fee))
+    if not found:
+        raise ValueError("no v3 pool to USDG near the asset's price")
+    out, fee = max(found)
     return fee, out
 
 

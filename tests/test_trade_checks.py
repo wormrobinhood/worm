@@ -188,7 +188,8 @@ def test_the_evidence_spec_moves_with_every_parameter(monkeypatch):
 
 # ---- routed fills: any pair ------------------------------------------------------------------------
 
-STOCK = '0x' + 'c0' * 20            # a tokenized stock a token's pool trades against
+STOCK = '0x' + 'c0' * 20
+REAL_BEST_V3 = trader.best_v3            # a tokenized stock a token's pool trades against
 
 
 @pytest.fixture
@@ -212,7 +213,10 @@ def routed(db, monkeypatch):
     monkeypatch.setattr(route, 'ASK', {p: provider(p) for p in rates})
     # the direct exit: the token's own pool to its pair, then that asset's v3 pool to USDG, 3% a side all told
     monkeypatch.setattr(trader, 'quote_buy', lambda rpc, pool, target, amount: (amount, 150_000, True))
-    monkeypatch.setattr(trader, 'best_v3', lambda rpc, tin, tout, amount: (500, int(amount / 1e18 * .01 * 1e6 * .97)))
+    monkeypatch.setattr(trader, 'best_v3', lambda rpc, tin, tout, amount, fair: (500, int(amount / 1e18 * .01 * 1e6 * .97)))
+    monkeypatch.setattr(E, 'asset_usd', lambda asset, cached=False: 1.0)
+    from wormhole import poolstate
+    monkeypatch.setattr(poolstate, 'quote_decimals', lambda rpc, asset: 18)
     return token, pair, rates, fees
 
 
@@ -275,7 +279,7 @@ def test_an_entry_needs_a_direct_exit_within_the_floor(db, routed, monkeypatch):
     token, pair, rates, _ = routed
     q = E.entry(object(), db, token, 10., reference=.01)
     assert q['direct_exit'] == 'pons-v3'
-    monkeypatch.setattr(trader, 'best_v3', lambda rpc, tin, tout, amount: (500, int(amount / 1e18 * .01 * 1e6 * .7)))
+    monkeypatch.setattr(trader, 'best_v3', lambda rpc, tin, tout, amount, fair: (500, int(amount / 1e18 * .01 * 1e6 * .7)))
     with pytest.raises(ValueError, match='direct exit'):                  # the pair's v3 pool is too thin to rely on
         E.entry(object(), db, token, 10., reference=.01)
     monkeypatch.setattr(trader, 'best_v3', lambda *a: (_ for _ in ()).throw(ValueError('no v3 pool to USDG')))
@@ -342,19 +346,44 @@ def test_the_direct_exit_is_one_router_call_ending_in_usdg_to_the_caller():
         trader.exit_calldata({**pk, 'quote': C.USDG}, token, 1, 1, 500, 1)
 
 
-def test_the_best_v3_tier_is_found_once_and_asked_alone_for_an_hour(monkeypatch):
+def test_every_v3_tier_is_asked_every_time_and_one_far_under_the_assets_price_is_refused(monkeypatch):
     asked = []
-    outs = {100: 7, 500: 9, 3000: 8, 10000: 0}
+    book = {100: 2000 * 10**6, 500: 1990 * 10**6}          # the reviewer's case: a fresh tier-100 pool seeded generously
     def q(rpc, tin, tout, amount, fee):
         asked.append(fee)
-        return outs[fee]
+        return book.get(fee, 0)
     monkeypatch.setattr(trader, 'quote_v3', q)
-    monkeypatch.setattr(trader, '_v3_fee', {})
-    assert trader.best_v3(None, C.WETH, C.USDG, 1) == (500, 9) and asked == [100, 500, 3000, 10000]
+    fair = 2000 * 10**6                                     # one share at $2,000 by the stock's own price
+    assert trader.best_v3(None, C.WETH, C.USDG, 10**18, fair) == (100, 2000 * 10**6) and asked == [100, 500, 3000, 10000]
+    book[100] = 20_000                                       # then drained: it still "has liquidity"
     asked.clear()
-    assert trader.best_v3(None, C.WETH, C.USDG, 1) == (500, 9) and asked == [500]
-    outs.update({500: 0})
-    assert trader.best_v3(None, C.WETH, C.USDG, 1) == (3000, 8)             # the cached tier dried up: all asked again
+    assert trader.best_v3(None, C.WETH, C.USDG, 10**18, fair) == (500, 1990 * 10**6) and asked == [100, 500, 3000, 10000]
+    book[500] = int(fair * (1 - trader.V3_BAND)) - 1         # every tier more than 3% under the price: no v3 leg at all
+    with pytest.raises(ValueError, match='near'):
+        trader.best_v3(None, C.WETH, C.USDG, 10**18, fair)
+    with pytest.raises(ValueError, match='fair'):
+        trader.best_v3(None, C.WETH, C.USDG, 10**18, None)   # no price for the asset: no guess
+
+
+def test_a_drained_v3_tier_never_becomes_the_way_out_with_the_aggregators_down(db, routed, monkeypatch):
+    token, pair, rates, _ = routed
+    for p in rates:
+        rates[p] = None
+    pair[0] = STOCK
+    monkeypatch.setattr(trader, 'best_v3', REAL_BEST_V3)
+    monkeypatch.setattr(trader, 'quote_buy', lambda rpc, pool, target, amount: (10**18, 150_000, True))   # 1,000 tokens -> 1 share
+    monkeypatch.setattr(E, 'asset_usd', lambda asset, cached=False: 2000.0)
+    book = {100: 20_000, 500: 1990 * 10**6}
+    monkeypatch.setattr(trader, 'quote_v3', lambda rpc, tin, tout, amount, fee: book.get(fee, 0))
+    bid = E.exit_quote(object(), trader.pool_key(), token, 1000 * 10**18, reference=.01)
+    assert bid['provider'] == 'pons-v3' and bid['route']['v3_fee'] == 500 and bid['out_raw'] == 1990 * 10**6
+    book[500] = 0                                            # only the drained tier left: no direct exit, no $0.02 sale
+    with pytest.raises(ValueError):
+        E.exit_quote(object(), trader.pool_key(), token, 1000 * 10**18, reference=.01)
+    monkeypatch.setattr(E, 'asset_usd', lambda asset, cached=False: None)
+    book[500] = 1990 * 10**6                                 # no price for the stock: the v3 leg is not trusted either
+    with pytest.raises(ValueError):
+        E.exit_quote(object(), trader.pool_key(), token, 1000 * 10**18, reference=.01)
 
 
 

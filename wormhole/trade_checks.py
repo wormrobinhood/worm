@@ -17,7 +17,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from . import config as C, route
-from .prices import eth_usd, eth_usd_cached, token_prices, usable_price
+from .prices import asset_usd, eth_usd, eth_usd_cached, token_prices, usable_price
 
 MIN_SCORE = max(70, int(os.environ.get('WH_BUY_MIN_SCORE', '70')))
 SLIPPAGE = 0.03
@@ -122,7 +122,7 @@ EVIDENCE_CODE = {
     'watch': ('features', 'passes', 'flow', '_flows', 'holders_kept', 'sample_bucket', '_needs_flow', '_needs_holders',
               'all_looks', '_resolve_pools', '_sample', 'filtered_member', 'Watcher._pools', 'Watcher.mark_positions'),
     'poolstate': ('pool_id', 'state_slot', 'sqrt_price', 'quote_decimals', 'token_price', 'mids', 'position_mids'),
-    'trader': ('pool_key', 'quote_buy', 'quote_v3', 'best_v3'),
+    'trader': ('pool_key', 'quote_buy', 'quote_v3', 'best_v3', 'V3_FEES', 'V3_BAND'),
     'prices': ('usable_price', 'observed_at', 'token_prices', 'eth_usd', 'eth_usd_cached', 'eth_usd_last', 'asset_usd'),
     'paper_research': ('FILTER_VERSION', 'FEATURES', 'LIMITS', 'entry_features', 'risk_filter'),
 }
@@ -235,10 +235,14 @@ def _direct(rpc, pk, token_in, token_out, amount):
         return None
 
 
-def _direct_exit(rpc, pk, token, amount):
+def _direct_exit(rpc, pk, token, amount, cached=False):
     """The direct exit for a pool against ETH or a stock: the token sold on its own pool for that asset, then the
     asset sold for USDG on its best Uniswap v3 pool, in one Universal Router call (trader.exit_calldata). Needs no
-    aggregator: the path every position can always be sold by. None for a USDG pool, or when a leg does not quote."""
+    aggregator: the path every position can always be sold by. The Pons leg keeps its rules (on an exit it is the
+    token's own pool); the v3 leg must pay within trader.V3_BAND of the asset's own USD price (ETH's, or the stock's
+    from the price API; cached: no request), so a drained or freshly seeded fee tier is never the way out. None for
+    a USDG pool, when a leg does not quote, or when no fair price for the asset is known."""
+    from .poolstate import quote_decimals
     from .trader import V3_GAS, best_v3, quote_buy
     quote = pk.get('quote')
     if quote in (None, C.USDG):
@@ -247,7 +251,11 @@ def _direct_exit(rpc, pk, token, amount):
         middle, gas, direction = quote_buy(rpc, pk, quote, amount)
         if middle <= 0:
             return None
-        fee, out = best_v3(rpc, C.WETH if quote == C.ZERO else quote, C.USDG, middle)
+        usd = asset_usd(quote, cached=cached)
+        decimals = 18 if quote == C.ZERO else quote_decimals(rpc, quote)
+        if not usd or not decimals:
+            return None
+        fee, out = best_v3(rpc, C.WETH if quote == C.ZERO else quote, C.USDG, middle, middle / 10 ** decimals * usd * 1e6)
         return route.candidate('pons-v3', token, C.USDG, amount, out, gas + V3_GAS, 0.0, C.UNIVERSAL_ROUTER, C.PERMIT2,
                                direction=direction, v3_fee=fee)
     except Exception:
@@ -355,7 +363,7 @@ def exit_quote(rpc, pk, token, amount, *, tolerance=None, cached_prices=False, f
     gas_price = int(rpc.call('eth_gasPrice', []), 16) if cached_prices else None
     expect = amount / 1e18 * reference * 1e6 if reference else None
     try:
-        own = (_direct(rpc, pk, token, C.USDG, amount) or _direct_exit(rpc, pk, token, amount)) if direct else None
+        own = (_direct(rpc, pk, token, C.USDG, amount) or _direct_exit(rpc, pk, token, amount, cached_prices)) if direct else None
         q = route.best_quote(token, C.USDG, amount, extra=[own], expect=expect, providers=providers, side='exit', lane=lane,
                              wait_s=EXIT_WAIT_S)
         (unit, usd), out, gas, direction, haircut = (10 ** 6, 1.0), q['out'], q['gas'], q.get('direction'), 0.0
