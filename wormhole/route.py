@@ -433,13 +433,14 @@ def verify_simulation(rpc, wallet, q, tx, min_out, approve_to=None):
     return received
 
 
-def compare_later(token_in, token_out, amount_in, direct_out, label):
-    """Log (never act on) how the best aggregator route compares with a direct pool fill: the burn's check."""
-    def run():
-        try:
-            q = best_quote(token_in, token_out, amount_in)
-            log.info("%s: direct pool %d, best route %s %s (%+.2f%%)", label, direct_out, q["provider"], q["out"],
-                     100 * (q["out"] / direct_out - 1) if direct_out else 0.0)
-        except Exception as e:
-            log.info("%s: route comparison unavailable (%s)", label, type(e).__name__)
-    threading.Thread(target=run, daemon=True, name="route-compare").start()
+def compare_log(token_in, token_out, amount_in, direct_out, label, wait_s=3.0):
+    """Log privately (never act on) how the best aggregator route compares with a direct pool fill: the burn's
+    check. Returns the best route seen, or None. Waits at most `wait_s`; never raises."""
+    try:
+        q = best_quote(token_in, token_out, amount_in, wait_s=wait_s)
+        log.info("%s: direct pool %d, best route %s %s (%+.2f%%)", label, direct_out, q["provider"], q["out"],
+                 100 * (q["out"] / direct_out - 1) if direct_out else 0.0)
+        return q
+    except Exception as e:
+        log.info("%s: route comparison unavailable (%s)", label, type(e).__name__)
+        return None

@@ -32,7 +32,7 @@ def setup(db, monkeypatch):
     monkeypatch.setattr(L.execution, 'entry', lambda *args, **kw: dict(quote))
     monkeypatch.setattr(L, 'pool_mid', lambda rpc, pk, token: .01)
     monkeypatch.setattr(L, 'approve_exact', lambda *args, **kw: int(time.time()) + 600)
-    monkeypatch.setattr(L, 'call_fn', lambda *args: [10**30])
+    monkeypatch.setattr(L, 'call_fn', lambda *args: 10**30)     # chain.call_fn: one output comes back as the value itself
     monkeypatch.setattr(trader, 'token_prices', lambda tokens: {})
     calls = []
     def sender(*args, **kwargs):
@@ -619,7 +619,7 @@ def test_routed_approvals_are_exact_zeroed_first_and_never_unlimited(monkeypatch
     sent = []
     def call_fn(rpc, to, sig, out, types, args):
         assert sig == 'allowance(address,address)' and args == [C.WALLET, KYBER]
-        return [state['allowance']]
+        return state['allowance']
     def send(rpc, acct, to, data, **kw):
         spender, amount = abi_decode(['address', 'uint256'], bytes.fromhex(data[10:]))
         sent.append((to, spender.lower(), amount))
@@ -653,3 +653,15 @@ def test_no_standing_exit_approval_for_a_pool_not_against_usdg(db, monkeypatch):
     db.x("INSERT INTO positions(token,symbol,status,mode,pool_key) VALUES(?,?,?,?,?)", (tok(1), 'T', 'open', 'live', json.dumps({'quote': C.ZERO})))
     monkeypatch.setattr(L, 'approve_exact', lambda *a, **k: pytest.fail('a Permit2 approval for a pool the router cannot sell into'))
     assert L.prepare_exit(None, db, SimpleNamespace(address=C.WALLET), tok(1), 10**18) is False
+
+
+def test_a_balance_read_decodes_the_single_value_chain_call_fn_returns():
+    class Answer:
+        def eth_call(self, to, data, block='latest'):
+            return '0x' + (123).to_bytes(32, 'big').hex()
+    class Silent:
+        def eth_call(self, to, data, block='latest'):
+            return '0x'
+    assert L.balance_of(Answer(), C.USDG) == 123 and L.erc20_allowance(Answer(), C.USDG, KYBER) == 123
+    with pytest.raises(ValueError):
+        L.balance_of(Silent(), C.USDG)

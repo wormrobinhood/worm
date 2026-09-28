@@ -67,8 +67,21 @@ def realized_pnl(db):
     return float(closed) - float(wasted)
 
 
+def read_uint(rpc, token, sig, arg_types, args):
+    """One uint256 read (a balance, an allowance). chain.call_fn returns a single output as the value itself, not a
+    list; indexing it raised on every read, so no live order could have got past its balance check. No answer raises."""
+    value = call_fn(rpc, token, sig, ['uint256'], arg_types, args)
+    if value is None:
+        raise ValueError('no answer from the token')
+    return int(value)
+
+
+def balance_of(rpc, token):
+    return read_uint(rpc, token, 'balanceOf(address)', ['address'], [C.WALLET])
+
+
 def allowance(rpc, wallet, currency):
-    erc = call_fn(rpc, currency, 'allowance(address,address)', ['uint256'], ['address', 'address'], [wallet, C.PERMIT2])[0]
+    erc = read_uint(rpc, currency, 'allowance(address,address)', ['address', 'address'], [wallet, C.PERMIT2])
     amount, expiry, _ = call_fn(rpc, C.PERMIT2, 'allowance(address,address,address)', ['uint160', 'uint48', 'uint48'],
                               ['address', 'address', 'address'], [wallet, currency, C.UNIVERSAL_ROUTER])
     return int(erc), int(amount), int(expiry)
@@ -102,7 +115,7 @@ def approve_exact(rpc, acct, currency, need, ttl=None):
 
 
 def erc20_allowance(rpc, currency, spender):
-    return int(call_fn(rpc, currency, 'allowance(address,address)', ['uint256'], ['address', 'address'], [C.WALLET, spender])[0])
+    return read_uint(rpc, currency, 'allowance(address,address)', ['address', 'address'], [C.WALLET, spender])
 
 
 def approve_route(rpc, acct, currency, spender, need):
@@ -306,7 +319,7 @@ def decide(rpc, db, runway, acct, ready):
             # The impact check measures against the pool's own mid, read now, as the paper entry it follows did;
             # the price API lags a thin pool and would judge the same quote differently.
             quote = execution.entry(rpc, db, r['token'], size, reference=pool_mid(rpc, pk, r['token']))
-            balance = call_fn(rpc, C.USDG, 'balanceOf(address)', ['uint256'], ['address'], [C.WALLET])[0]
+            balance = balance_of(rpc, C.USDG)
             if balance < quote['amount_raw']:
                 continue
             provider = quote.get('provider') or 'pons'
@@ -377,7 +390,7 @@ def sell(rpc, db, acct, p, st, frac, why, mid=None):
     try:
         remaining, initial = int(p['qty_left_raw']), int(p['qty_raw'])
         amount = remaining if frac >= st['qty_left'] - 1e-9 else min(remaining, int(Decimal(str(frac)) * initial))
-        balance = call_fn(rpc, p['token'], 'balanceOf(address)', ['uint256'], ['address'], [C.WALLET])[0]
+        balance = balance_of(rpc, p['token'])
         if balance < remaining or amount <= 0:
             raise ValueError('tracked holdings do not match available balance')
         pk = json.loads(p['pool_key'])
