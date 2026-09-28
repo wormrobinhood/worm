@@ -40,13 +40,13 @@ def chain(monkeypatch, db):
     from wormhole import trader
     monkeypatch.setattr(trader, "pool_key", lambda rpc, database, token: pool(token))
 
-    def entry(rpc, database, token, dollars, quotes=None, reference=None):
+    def entry(rpc, database, token, dollars, reference=None, **k):
         qty = dollars / reference / 1.02
         return {"price": reference, "pool": pool(token), "minimum_raw": int(qty * 1e18), "gas_usd": 0.0,
                 "liquidation_usd": qty * reference * 0.98}
     monkeypatch.setattr(P.execution, "entry", entry)
     monkeypatch.setattr(P.execution, "exit_quote",
-                        lambda rpc, pk, token, amount, quotes=None, cached_prices=False: {"minimum_usd": amount / 1e18 * mids[token] * 0.98, "gas_usd": 0.0})
+                        lambda rpc, pk, token, amount, **k: {"minimum_usd": amount / 1e18 * mids[token] * 0.98, "gas_usd": 0.0})
     return mids
 
 
@@ -76,10 +76,18 @@ def test_partial_and_own_tokens_are_not_watched(db, monkeypatch):
 
 def test_a_pool_the_book_cannot_trade_is_not_watched(db, chain, monkeypatch):
     from wormhole import trader
+    monkeypatch.setattr(trader, "pool_key", lambda rpc, database, token: {**pool(token), "hooks": "0x" + "99" * 20})
+    W.add(db, TOKEN, verdict(), "AAA", now=T0)
+    W.Watcher(None, db, P.Paper(db)).step(T0 + 1)
+    assert db.one("SELECT status, note FROM watch") == {"status": "unsupported", "note": "not a Pons pool"}
+
+
+def test_a_pool_paired_with_a_stock_is_watched_like_any_other(db, chain, monkeypatch):
+    from wormhole import trader
     monkeypatch.setattr(trader, "pool_key", lambda rpc, database, token: pool(token, quote="0x" + "cd" * 20))
     W.add(db, TOKEN, verdict(), "AAA", now=T0)
     W.Watcher(None, db, P.Paper(db)).step(T0 + 1)
-    assert db.one("SELECT status FROM watch")["status"] == "unsupported"
+    assert db.one("SELECT status FROM watch")["status"] == "watching"
 
 
 def test_nothing_is_bought_before_the_first_look(db, chain):

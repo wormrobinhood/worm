@@ -173,6 +173,18 @@ def test_eth_and_legacy_execution_cannot_qualify_usdg_trading(db):
     assert [m['token'] for m in db.q('SELECT token FROM strategy_members')] == [tok(1)]
 
 
+def test_a_routed_fill_in_any_pair_qualifies_and_a_direct_eth_fallback_does_not(db):
+    V.tick(db)
+    for i in range(1, 5):
+        position(db, i, .5)
+    db.x('UPDATE paper SET pool_key=?, live_fill=1 WHERE token=?', (json.dumps({'quote': C.ZERO}), tok(1)))        # routed, ETH pool
+    db.x('UPDATE paper SET pool_key=?, live_fill=1 WHERE token=?', (json.dumps({'quote': '0x' + 'c0' * 20}), tok(2)))  # routed, a stock's
+    db.x('UPDATE paper SET pool_key=?, live_fill=0 WHERE token=?', (json.dumps({'quote': C.ZERO}), tok(3)))        # aggregators down
+    db.x('UPDATE paper SET live_fill=0 WHERE token=?', (tok(4),))                                               # never, whatever the pool
+    V.tick(db)
+    assert sorted(m['token'] for m in db.q('SELECT token FROM strategy_members')) == [tok(1), tok(2)]
+
+
 def test_execution_cost_change_revokes_existing_pass(db, monkeypatch):
     V.tick(db)
     cohort(db, [.3 + .001 * i for i in range(V.COHORT_N)])

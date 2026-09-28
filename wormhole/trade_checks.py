@@ -1,6 +1,9 @@
 """Shared, read-only execution checks for the USDG trading pilot and its paper book.
 
-Quotes are observations, not guaranteed fills. No function in this module signs or sends.
+Every fill, paper or live, spends or receives USDG through the best checked route (route.best_quote): an
+aggregator (USDG to ETH or a stock and on to the token, in one transaction) or the token's own USDG pool. So a
+token paired with anything can be traded, and its paper result is what live would have had. Quotes are
+observations, not guaranteed fills. No function in this module signs or sends.
 """
 import ast
 import copy
@@ -13,7 +16,7 @@ import time
 from functools import lru_cache
 from pathlib import Path
 
-from . import config as C
+from . import config as C, route
 from .prices import eth_usd, eth_usd_cached, token_prices, usable_price
 
 MIN_SCORE = max(70, int(os.environ.get('WH_BUY_MIN_SCORE', '70')))
@@ -28,7 +31,9 @@ PAPER_FILL = 0.01              # a paper fill is the quote less this, a side: wh
                                # plausibly loses. The 3% tolerance is a live order's revert bound, not an expected fill.
 EXIT_TOLERANCE = 0.03          # a sell's minimum is the quote less this
 EXIT_TOLERANCE_RETRY = 0.10    # after a sell reverted: give up more to get out
-MODEL = 'quoted-pool-v2'
+FALLBACK_HAIRCUT = 0.01        # a paper fill straight from an ETH pool while every aggregator is down also gives up this:
+                               # the ETH-to-USDG leg a route would have paid, so a fallback never flatters a result
+MODEL = 'routed-quote-v1'
 
 
 # What a paper position's evidence was produced under. A cohort compares this, not whole source files: the old
@@ -36,7 +41,7 @@ MODEL = 'quoted-pool-v2'
 # cost an attempt, so the gate could never finish. Constants are listed by value; the code that makes fills, features
 # and exits is covered by a digest of its syntax (EVIDENCE_CODE), blind to comments and docstrings, computed at run
 # time. SEMANTICS is bumped by hand only for a change of meaning outside that code (a new data source, say).
-SEMANTICS = 'paper-evidence-3'
+SEMANTICS = 'paper-evidence-4'     # 4: fills are route quotes for any pair (2026-09-28)
 GAS_UNITS_MARGIN = 1.3          # the swap's estimated gas units, padded
 APPROVAL_GAS_UNITS = 240_000    # two bounded approvals, charged on every swap even when an allowance could be reused
 GAS_PRICE_MARGIN = 1.25         # the node's gas price, padded
@@ -99,17 +104,19 @@ def _code_digest(parts):
 # The entry rules' own definitions are frozen per rule (strategy_validation.frozen), not here: adding a rule must not
 # void the others. A new Python minor version changes every digest and so voids every cohort once.
 EVIDENCE_CODE = {
-    'trade_checks': ('entry', 'exit_quote', 'quote_unit', 'gas_cost', '_gas_cost_at_price', 'entry_basis', 'verified',
-                     'pool', 'eligible', 'LIVE_QUOTES', 'PAPER_QUOTES'),
-    'paper': ('pair', 'live_comparable', 'pause_windows', 'Paper._consider', 'Paper.enter', 'Paper._open', 'Paper._mark',
-              'Paper._mark_position', 'Paper._quote', 'Paper._value'),
+    'trade_checks': ('entry', '_entry_direct', 'exit_quote', '_direct', '_limits', 'quote_unit', 'gas_cost',
+                     '_gas_cost_at_price', 'entry_basis', 'verified', 'live_fill', 'pool', 'eligible'),
+    'route': ('candidate', 'parse_kyber', 'parse_lifi', 'parse_relay', '_kyber', '_lifi', '_relay', '_lifi_params', '_ask',
+              '_record', '_available', '_pace', 'best_quote', 'ALLOWED', 'PROVIDERS', 'EXECUTABLE', 'TRADE'),
+    'paper': ('pair', 'pair_symbol', 'live_comparable', 'pause_windows', 'Paper._consider', 'Paper.enter', 'Paper._open',
+              'Paper._mark', 'Paper._mark_position', 'Paper._quote', 'Paper._value'),
     'trade_risk': ('loss_limit', 'check'),
     'lab': ('parse_arm', 'side_cost', 'token_cost', 'trail_pct', 'exit_step'),
     'watch': ('features', 'passes', 'flow', '_flows', 'holders_kept', 'sample_bucket', '_needs_flow', '_needs_holders',
               'all_looks', '_resolve_pools', '_sample', 'filtered_member', 'Watcher._pools', 'Watcher.mark_positions'),
-    'poolstate': ('pool_id', 'state_slot', 'sqrt_price', 'token_price', 'mids', 'position_mids'),
+    'poolstate': ('pool_id', 'state_slot', 'sqrt_price', 'quote_decimals', 'token_price', 'mids', 'position_mids'),
     'trader': ('pool_key', 'quote_buy'),
-    'prices': ('usable_price', 'observed_at', 'token_prices', 'eth_usd', 'eth_usd_cached', 'eth_usd_last'),
+    'prices': ('usable_price', 'observed_at', 'token_prices', 'eth_usd', 'eth_usd_cached', 'eth_usd_last', 'asset_usd'),
     'paper_research': ('FILTER_VERSION', 'FEATURES', 'LIMITS', 'entry_features', 'risk_filter'),
 }
 
@@ -122,8 +129,8 @@ def evidence_spec():
             'paper_fill': PAPER_FILL, 'slippage': SLIPPAGE, 'exit_tolerance': EXIT_TOLERANCE,
             'exit_tolerance_retry': EXIT_TOLERANCE_RETRY,
             'max_roundtrip_loss': MAX_ROUNDTRIP_LOSS, 'max_price_impact': MAX_PRICE_IMPACT,
-            'max_gas_fraction': MAX_GAS_FRACTION, 'quote_ttl': QUOTE_TTL, 'live_quotes': list(LIVE_QUOTES),
-            'paper_quotes': list(PAPER_QUOTES),
+            'max_gas_fraction': MAX_GAS_FRACTION, 'quote_ttl': QUOTE_TTL, 'fallback_haircut': FALLBACK_HAIRCUT,
+            'route': route.evidence(),
             'gas': {'units_margin': GAS_UNITS_MARGIN, 'approval_units': APPROVAL_GAS_UNITS, 'price_margin': GAS_PRICE_MARGIN},
             'loss_limit_usd': trade_risk.loss_limit(), 'watch': watch.evidence_constants()}
 
@@ -150,19 +157,30 @@ def eligible(token, result):
                 and not result.get('partial') and not metrics.get('partial'))
 
 
-LIVE_QUOTES = (C.USDG,)            # what the live pilot may spend
-PAPER_QUOTES = (C.USDG, C.ZERO)    # the paper book also reads ETH pools: most graduations pair with ETH
-
-
-def verified(pk, token, quotes=LIVE_QUOTES):
-    """The token's own Pons pool against an asset the caller accepts."""
-    return bool(pk and pk.get('quote') in quotes and pk.get('hooks') == C.HOOK
+def verified(pk, token):
+    """The token's own Pons pool: the hook's, holding the token against one other asset (USDG, ETH or a stock).
+    Its mid prices exits and valuations; fills are routed, so the other asset may be anything."""
+    return bool(pk and pk.get('quote') and pk.get('hooks') == C.HOOK
                 and {pk.get('c0'), pk.get('c1')} == {token, pk['quote']})
 
 
+def live_fill(row):
+    """Could live have made this paper position's entry fill? Yes for a route an executable provider quoted from
+    USDG, or the token's own USDG pool; no for an ETH pool filled directly while every aggregator was down (live
+    holds no ETH to spend). A row from before routing: a USDG pool only, as then."""
+    value = row.get('live_fill')
+    if value is not None:
+        return bool(value)
+    try:
+        quote = (json.loads(row.get('pool_key') or 'null') or {}).get('quote')
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return quote == C.USDG
+
+
 def quote_unit(pk):
-    """(base units per whole quote asset, USD per whole quote asset). ETH needs a fresh price; a stale or
-    missing one raises, so nothing is ever sized or valued from a guess."""
+    """(base units per whole quote asset, USD per whole quote asset) for a pool quoted directly: USDG, or ETH
+    with a fresh price; a stale or missing one raises, so nothing is ever sized or valued from a guess."""
     if pk['quote'] == C.USDG:
         return 10 ** 6, 1.0
     if pk['quote'] == C.ZERO:
@@ -173,12 +191,12 @@ def quote_unit(pk):
     raise ValueError('unsupported quote asset')
 
 
-def pool(rpc, db, token, quotes=LIVE_QUOTES):
+def pool(rpc, db, token):
     from .trader import pool_key, ensure_tables
     ensure_tables(db)
     pk = pool_key(rpc, db, token)
-    if not verified(pk, token, quotes):
-        raise ValueError('pilot requires a verified USDG pool' if quotes == LIVE_QUOTES else 'no verified pool in a supported asset')
+    if not verified(pk, token):
+        raise ValueError('no verified Pons pool')
     return pk
 
 
@@ -195,18 +213,72 @@ def _gas_cost_at_price(rpc, units, price):
     return (math.ceil(units * GAS_UNITS_MARGIN) + APPROVAL_GAS_UNITS) * math.ceil(gp * GAS_PRICE_MARGIN) / 1e18 * price
 
 
-def entry(rpc, db, token, dollars, *, quotes=LIVE_QUOTES, reference=None):
-    """A buy quote with its round trip. `reference` is the mid the caller just read from the pool; without
-    one the price API's reading is used. Raw amounts are in the pool's quote asset."""
+def _direct(rpc, pk, token_in, token_out, amount):
+    """The token's own pool as a fourth route, when it trades against USDG: the Universal Router path the pilot
+    has always had. None for any other pool, or when the quoter does not answer."""
     from .trader import quote_buy
+    if pk.get('quote') != C.USDG:
+        return None
+    try:
+        out, gas, direction = quote_buy(rpc, pk, token_out, amount)
+        return route.candidate('pons', token_in, token_out, amount, out, gas, 0.0, C.UNIVERSAL_ROUTER, C.PERMIT2,
+                               direction=direction)
+    except Exception:
+        return None
+
+
+def _limits(impact, roundtrip, fee, dollars):
+    if (not math.isfinite(impact) or abs(impact) > MAX_PRICE_IMPACT
+            or roundtrip < 1 - MAX_ROUNDTRIP_LOSS or fee > dollars * MAX_GAS_FRACTION):
+        raise ValueError('price impact, round-trip loss or gas exceeds the pilot limit')
+
+
+def entry(rpc, db, token, dollars, *, reference=None, fallback=False, providers=route.PROVIDERS):
+    """A buy of `dollars` USDG of `token` by the best checked route, with its round trip back to USDG by the
+    best route for the tokens it would at least get: every hop's fee, the creator tax, the impact, the
+    aggregator's own fee and gas on both legs. `reference` is the mid the caller just read from the token's
+    pool; without one the price API's reading is used. A route further than route.MID_BAND from that mid is not
+    believed. Raw amounts are USDG (6 decimals) and the token (18).
+
+    fallback (paper only): when no route answers and the pool trades against ETH, the pool is quoted directly as
+    before routing; that fill is marked live_fill=False, since live holds no ETH to make it."""
     if rpc is None or not math.isfinite(dollars) or dollars <= 0:
         raise ValueError('execution quotes unavailable')
     started = time.time()
-    pk = pool(rpc, db, token, quotes)
-    unit, usd = quote_unit(pk)
+    pk = pool(rpc, db, token)
     price = reference if reference is not None else usable_price(token_prices([token]).get(token))
     if price is None or not math.isfinite(price) or price <= 0:
         raise ValueError('fresh reference price unavailable')
+    amount = int(round(dollars * 10 ** 6))
+    try:
+        buy = route.best_quote(C.USDG, token, amount, extra=[_direct(rpc, pk, C.USDG, token, amount)],
+                               expect=dollars / price * 1e18, max_fee_usd=dollars * route.MAX_FEE, providers=providers)
+    except route.NoRoute:
+        if not fallback or pk['quote'] != C.ZERO:
+            raise
+        return _entry_direct(rpc, pk, token, dollars, price, started)
+    out = buy['out']
+    minimum = out * 9700 // 10000
+    sell = route.best_quote(token, C.USDG, minimum, extra=[_direct(rpc, pk, token, C.USDG, minimum)],
+                            expect=minimum / 1e18 * price * 1e6, max_fee_usd=dollars * route.MAX_FEE, providers=providers)
+    fee, sell_fee = gas_cost(rpc, buy['gas']), gas_cost(rpc, sell['gas'])
+    impact = 1 - (out / 1e18 * price / dollars)
+    roundtrip = (sell['out'] * (1 - SLIPPAGE) / 1e6 - fee - sell_fee) / dollars
+    _limits(impact, roundtrip, fee, dollars)
+    if time.time() >= started + QUOTE_TTL:
+        raise ValueError('execution quote expired')
+    return {'pool': pk, 'amount_raw': amount, 'out_raw': out, 'minimum_raw': minimum,
+            'paper_fill_raw': int(out * (1 - PAPER_FILL)),
+            'gas_usd': fee, 'quoted_at': started, 'expires_at': started + QUOTE_TTL,
+            'direction': buy.get('direction'), 'price': price, 'roundtrip_ratio': roundtrip,
+            'liquidation_usd': sell['out'] * 9700 // 10000 / 1e6 - sell_fee, 'model': MODEL,
+            'route': buy, 'provider': buy['provider'], 'live_fill': True}
+
+
+def _entry_direct(rpc, pk, token, dollars, price, started):
+    """Paper only, no route answering: the token's own ETH pool, quoted both ways as before routing."""
+    from .trader import quote_buy
+    unit, usd = quote_unit(pk)
     amount = int(dollars / usd * unit)
     out, gas, direction = quote_buy(rpc, pk, token, amount)
     if out <= 0:
@@ -215,39 +287,55 @@ def entry(rpc, db, token, dollars, *, quotes=LIVE_QUOTES, reference=None):
     impact = 1 - (out / 1e18 * price / dollars)
     back, sell_gas, _ = quote_buy(rpc, pk, pk['quote'], minimum)
     fee = gas_cost(rpc, gas)
-    roundtrip = (back * (1 - SLIPPAGE) / unit * usd - fee - gas_cost(rpc, sell_gas)) / dollars
-    if (not math.isfinite(impact) or abs(impact) > MAX_PRICE_IMPACT
-            or roundtrip < 1 - MAX_ROUNDTRIP_LOSS or fee > dollars * MAX_GAS_FRACTION):
-        raise ValueError('price impact, round-trip loss or gas exceeds the pilot limit')
+    back_usd = back * (1 - FALLBACK_HAIRCUT) / unit * usd
+    roundtrip = (back_usd * (1 - SLIPPAGE) - fee - gas_cost(rpc, sell_gas)) / dollars
+    _limits(impact, roundtrip, fee, dollars)
     if time.time() >= started + QUOTE_TTL:
         raise ValueError('execution quote expired')
     return {'pool': pk, 'amount_raw': amount, 'out_raw': out, 'minimum_raw': minimum,
             'paper_fill_raw': int(out * (1 - PAPER_FILL)),
             'gas_usd': fee, 'quoted_at': started, 'expires_at': started + QUOTE_TTL,
             'direction': direction, 'price': price, 'roundtrip_ratio': roundtrip,
-            'liquidation_usd': back * 9700 // 10000 / unit * usd - gas_cost(rpc, sell_gas), 'model': MODEL}
+            'liquidation_usd': back_usd * .97 - gas_cost(rpc, sell_gas), 'model': MODEL,
+            'route': None, 'provider': 'pool-eth', 'live_fill': False}
 
 
-def exit_quote(rpc, pk, token, amount, *, quotes=LIVE_QUOTES, tolerance=None, cached_prices=False):
+def exit_quote(rpc, pk, token, amount, *, tolerance=None, cached_prices=False, fallback=False, reference=None,
+               providers=route.TRADE):
+    """A sell of `amount` tokens into USDG by the best checked route (the token's own pool included when it
+    trades against USDG). `reference`, the pool's USD mid when the caller has it, sets the band a route must sit
+    in. fallback (paper only): with no route and an ETH pool, the pool is quoted directly, less FALLBACK_HAIRCUT,
+    and marked live_fill=False. cached_prices: no price request on the exit path."""
     from .trader import quote_buy
     tolerance = EXIT_TOLERANCE if tolerance is None else tolerance
     if not 0 < tolerance <= EXIT_TOLERANCE_RETRY:
         raise ValueError('sell tolerance out of bounds')
-    if rpc is None or not verified(pk, token, quotes) or amount <= 0:
+    if rpc is None or not verified(pk, token) or amount <= 0:
         raise ValueError('sell quote unavailable')
     started = time.time()
     cached = eth_usd_cached() if cached_prices else None
     if cached_prices and cached is None:
         raise ValueError('fresh cached gas pricing unavailable')
-    unit, usd = ((10 ** 6, 1.0) if pk['quote'] == C.USDG else (10 ** 18, cached)) if cached_prices else quote_unit(pk)
-    out, gas, direction = quote_buy(rpc, pk, pk['quote'], amount)
+    expect = amount / 1e18 * reference * 1e6 if reference else None
+    try:
+        q = route.best_quote(token, C.USDG, amount, extra=[_direct(rpc, pk, token, C.USDG, amount)], expect=expect,
+                             providers=providers)
+        (unit, usd), out, gas, direction, haircut = (10 ** 6, 1.0), q['out'], q['gas'], q.get('direction'), 0.0
+    except route.NoRoute:
+        if not fallback or pk['quote'] != C.ZERO:
+            raise
+        q, haircut = None, FALLBACK_HAIRCUT
+        unit, usd = (10 ** 18, cached) if cached_prices else quote_unit(pk)
+        out, gas, direction = quote_buy(rpc, pk, pk['quote'], amount)
     minimum = out * (10000 - int(round(tolerance * 10000))) // 10000
     if minimum <= 0:
         raise ValueError('no executable sell quote')
     fee = _gas_cost_at_price(rpc, gas, cached) if cached_prices else gas_cost(rpc, gas)
     if time.time() >= started + QUOTE_TTL:
         raise ValueError('sell quote expired')
-    return {'amount_raw': amount, 'out_raw': out, 'minimum_raw': minimum, 'minimum_usd': minimum / unit * usd,
-            'paper_fill_usd': out * (1 - PAPER_FILL) / unit * usd,
+    return {'amount_raw': amount, 'out_raw': out, 'minimum_raw': minimum,
+            'minimum_usd': minimum / unit * usd * (1 - haircut),
+            'paper_fill_usd': out * (1 - PAPER_FILL) / unit * usd * (1 - haircut),
             'gas_usd': fee, 'quoted_at': started, 'expires_at': started + QUOTE_TTL,
-            'direction': direction, 'pool': pk}
+            'direction': direction, 'pool': pk, 'route': q, 'provider': q['provider'] if q else 'pool-eth',
+            'live_fill': q is not None}

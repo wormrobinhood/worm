@@ -53,6 +53,7 @@ ALLOWED = {"pons": {"to": (C.UNIVERSAL_ROUTER,), "spender": (C.PERMIT2,)},
            "relay": {"to": (RELAY_PROXY,), "spender": (RELAY_PROXY,)}}
 PROVIDERS = ("kyber", "lifi", "relay")      # asked by best_quote
 EXECUTABLE = ("pons", "kyber", "lifi")      # may be chosen, on paper and live alike
+TRADE = ("kyber", "lifi")                   # asked on the exit and valuation paths: only what could be chosen
 
 KYBER_SWAP = selector("swap((address,address,bytes,(address,address,address[],uint256[],address[],uint256[],"
                       "address,uint256,uint256,uint256,bytes),bytes))")

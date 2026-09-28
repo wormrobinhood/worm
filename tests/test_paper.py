@@ -1,5 +1,6 @@
 """The paper book: one row per token, the token's own cost, the close reason kept, totals over the
 whole book. The price feed is stubbed; no network."""
+import json
 import sqlite3
 import threading
 import time
@@ -19,13 +20,13 @@ TRAIL = "trailing stop 40% below the peak"
 def feed(monkeypatch, db):
     prices = {TOKEN: 1.0, OTHER: 1.0}
     monkeypatch.setattr(P, "token_prices", lambda addrs: {a: {"price_usd": prices.get(a)} for a in addrs})
-    def entry(rpc, database, token, dollars, quotes=None, reference=None):
+    def entry(rpc, database, token, dollars, reference=None, **k):
         cost = lab.token_cost(database, token)
         price = reference or prices[token]
         qty = dollars / price / (1 + cost)
         return {'price': price, 'pool': {'cost': cost}, 'minimum_raw': int(qty * 1e18), 'gas_usd': 0,
                 'liquidation_usd': qty * price * (1 - cost)}
-    def exit_quote(rpc, pool, token, amount, quotes=None, cached_prices=False):
+    def exit_quote(rpc, pool, token, amount, **k):
         return {'minimum_usd': amount / 1e18 * prices[token] * (1 - pool.get('cost', 0.04)), 'gas_usd': 0}
     monkeypatch.setattr(P.execution, 'entry', entry)
     monkeypatch.setattr(P.execution, 'exit_quote', exit_quote)
@@ -318,12 +319,12 @@ def test_slow_valuation_cannot_block_exit_or_resurrect_closed_value(db, feed, mo
     pb = enter(db, feed)
     waiting, release = threading.Event(), threading.Event()
     original = pb._quote
-    def quote(p, amount):
+    def quote(p, amount, reference=None):
         if threading.current_thread().name == 'slow-value':
             waiting.set()
             assert release.wait(3)
             return 999.0, 0.0
-        return original(p, amount)
+        return original(p, amount, reference)
     monkeypatch.setattr(pb, '_quote', quote)
     slow = threading.Thread(name='slow-value', target=pb.mark)
     slow.start()
@@ -366,10 +367,10 @@ def test_parallel_marks_never_double_sell_and_other_positions_progress(db, feed,
     pb.enter(OTHER, 'BBB', 1.0, 'rule-a', 'entry')
     waiting, release = threading.Event(), threading.Event()
     original = pb._quote
-    def quote(p, amount):
+    def quote(p, amount, reference=None):
         if p['token'] == TOKEN:
             waiting.set(); assert release.wait(3)
-        return original(p, amount)
+        return original(p, amount, reference)
     monkeypatch.setattr(pb, '_quote', quote)
     feed[TOKEN] = feed[OTHER] = .4
     first = threading.Thread(target=lambda: pb.mark(prices={TOKEN: .4}, value=False))
@@ -425,39 +426,45 @@ def pool_of(token, quote):
     return {'token': token, 'c0': quote, 'c1': token, 'fee': 0, 'tick_spacing': 200, 'hooks': C.HOOK, 'quote': quote}
 
 
-def lost(db, token, quote, pnl, strategy='rule-a', closed=None, opened=None):
-    """A closed quoted position in a `quote` pool that lost `pnl`."""
+def lost(db, token, quote, pnl, strategy='rule-a', closed=None, opened=None, live_fill=None):
+    """A closed quoted position in a `quote` pool that lost `pnl`. live_fill None: a row from before routing."""
     import json
     closed = closed or int(time.time()) - 60
-    db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,closed_ts,pnl_usd,realized_usd,execution_model,pool_key,strategy)"
-         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,closed_ts,pnl_usd,realized_usd,execution_model,pool_key,strategy,live_fill)"
+         " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
          (token, 'L', opened or closed - 600, 1.0, 10.0, 10.0, 'closed', closed, pnl, 10.0 + pnl, 'quoted-pool-v2',
-          json.dumps(pool_of(token, quote)), strategy))
+          json.dumps(pool_of(token, quote)), strategy, live_fill))
 
 
 def test_a_paused_breaker_turns_second_look_entries_away_and_records_them(db, feed):
     pb = book(db)
-    db.meta_set('loss_pause_until_paper', int(time.time()) + 3600)
+    db.meta_set('loss_pause_until_paper_live', int(time.time()) + 3600)
     assert not pb.enter(TOKEN, 'AAA', 1.0, 'rule-a', 'second look', features={'snipe_pct': 1})
     assert pb.last_skip == 'loss breaker'
     assert db.one('SELECT COUNT(*) n FROM paper')['n'] == 0
     skip = db.one('SELECT token,strategy,reason,reference FROM paper_skips')
     assert skip == {'token': TOKEN, 'strategy': 'rule-a', 'reason': 'loss breaker', 'reference': 1.0}
-    db.meta_set('loss_pause_until_paper', 0)
+    db.meta_set('loss_pause_until_paper_live', 0)
+    db.meta_set('loss_pause_until_paper_usdg', int(time.time()) + 3600)     # a pause the USDG-only breaker still holds
+    assert not pb.enter(TOKEN, 'AAA', 1.0, 'rule-a', 'second look')
+    db.meta_set('loss_pause_until_paper_usdg', 0)
     assert pb.enter(TOKEN, 'AAA', 1.0, 'rule-a', 'second look') and pb.last_skip is None
 
 
-def test_eth_losses_do_not_pause_usdg_candidates_but_usdg_losses_do(db, feed):
+def test_losses_live_could_not_have_had_do_not_pause_it_but_routed_losses_in_any_pair_do(db, feed):
     pb = book(db)
-    lost(db, '0x' + 'e1' * 20, C.ZERO, -12.0)                 # the whole book is over its limit, in an ETH pool
-    assert not pb.enter(OTHER, 'BBB', 1.0, 'rule-a', 'eth candidate', pool=pool_of(OTHER, C.ZERO))
-    assert pb.enter(TOKEN, 'AAA', 1.0, 'rule-a', 'usdg candidate', pool=pool_of(TOKEN, C.USDG))   # live never saw that loss
-    lost(db, '0x' + 'e2' * 20, C.USDG, -11.0)
+    lost(db, '0x' + 'e1' * 20, C.ZERO, -12.0)                 # an ETH-pool fill from before routing: live never had it
+    lost(db, '0x' + 'e3' * 20, C.ZERO, -12.0, live_fill=0)    # an ETH pool quoted directly while the aggregators were down
+    assert pb.enter(OTHER, 'BBB', 1.0, 'rule-a', 'eth candidate', pool=pool_of(OTHER, C.ZERO))   # a route reaches it
+    lost(db, '0x' + 'e2' * 20, C.ZERO, -11.0, live_fill=1)    # a routed ETH-pool loss: live would have had it
     third = '0x' + 'cc' * 20
     db.x("INSERT INTO launches(token,symbol) VALUES(?,?)", (third, 'CCC'))
     feed[third] = 1.0
     assert not pb.enter(third, 'CCC', 1.0, 'rule-a', 'usdg candidate', pool=pool_of(third, C.USDG))
-    assert [r['pair'] for r in db.q('SELECT pair FROM paper_skips ORDER BY id')] == ['ETH', 'USDG']
+    stock = '0x' + 'cd' * 20
+    db.x("INSERT INTO launches(token,symbol,pair_symbol) VALUES(?,?,?)", (stock, 'DDD', 'META'))
+    assert not pb.enter(stock, 'DDD', 1.0, 'rule-a', 'stock candidate', pool=pool_of(stock, '0x' + 'c0' * 20))
+    assert [r['pair'] for r in db.q('SELECT pair FROM paper_skips ORDER BY id')] == ['USDG', 'META']
 
 
 def test_an_underwater_position_flagged_as_opened_in_a_pause_still_counts_against_the_usdg_breaker(db, feed):
@@ -467,7 +474,7 @@ def test_an_underwater_position_flagged_as_opened_in_a_pause_still_counts_agains
     db.x("INSERT INTO paper(token,symbol,opened_ts,entry_usd,size_usd,qty,status,execution_model,pool_key,strategy,"
          "liquidation_usd,marked_ts,realized_usd,opened_in_pause) VALUES(?,?,?,?,?,?,'open','quoted-pool-v2',?,'rule-a',?,?,0,1)",
          (token, 'U', int(time.time()) - 600, 1.0, 10.0, 10.0, json.dumps(pool_of(token, C.USDG)), 1.0, int(time.time())))
-    risk = P.trade_risk.check(db, 'paper', latch=False, scope='usdg')
+    risk = P.trade_risk.check(db, 'paper', latch=False, scope='live')
     assert risk['loss_usd'] == 9.0 and risk['allowed']                     # out of the evidence, not out of the losses
     lost(db, '0x' + 'e8' * 20, C.USDG, -2.0)
     assert not pb.enter(TOKEN, 'AAA', 1.0, 'rule-a', 'usdg candidate', pool=pool_of(TOKEN, C.USDG))
@@ -526,3 +533,64 @@ def test_the_rebuilt_pause_lasts_a_day_after_losses_fall_back():
     P.Paper(db)
     lost(db, '0x' + 'e1' * 20, C.ZERO, -11.0, closed=1000)
     assert P.pause_windows(db, 10.0) == [(1000, 1000 + 2 * 86400)]         # over the limit for a day, paused a day more
+
+
+# ---- routed fills: any pair --------------------------------------------------------------------------
+
+META = '0x' + 'c0' * 20
+
+
+def routed_feed(feed, monkeypatch, provider='kyber', live=True, exit_provider='lifi', exit_live=True):
+    """The feed's fills, as if a route had made them in a META-paired pool."""
+    entry, exit_quote = P.execution.entry, P.execution.exit_quote
+    def routed_entry(rpc, database, token, dollars, reference=None, **k):
+        q = entry(rpc, database, token, dollars, reference=reference)
+        return {**q, 'pool': pool_of(token, META), 'provider': provider, 'live_fill': live,
+                'route': {'provider': provider, 'amount_in': 10_000_000, 'out': 10**21, 'to': '0x' + '61' * 20,
+                          'compared': [{'provider': 'relay', 'out': '1', 'executable': False}]} if live else None}
+    def routed_exit(rpc, pk, token, amount, **k):
+        return {**exit_quote(rpc, pk, token, amount), 'provider': exit_provider, 'live_fill': exit_live}
+    monkeypatch.setattr(P.execution, 'entry', routed_entry)
+    monkeypatch.setattr(P.execution, 'exit_quote', routed_exit)
+
+
+def test_a_routed_position_keeps_its_pair_and_route_and_counts_as_could_be_real(db, feed, monkeypatch):
+    routed_feed(feed, monkeypatch)
+    pb = book(db)
+    db.x("UPDATE launches SET pair_symbol='META' WHERE token=?", (TOKEN,))
+    assert pb.enter(TOKEN, 'AAA', 1.0, 'rule-a', 'second look', pool=pool_of(TOKEN, META))
+    row = db.one('SELECT * FROM paper')
+    assert (row['pair'], row['route_provider'], row['live_fill']) == ('META', 'kyber', 1)
+    assert json.loads(row['route'])['compared'][0]['provider'] == 'relay'
+    assert 'META pool, filled via kyber' in db.one("SELECT text FROM events WHERE text LIKE 'paper buy%'")['text']
+    s = pb.summary()
+    shown = s['open'][0]
+    assert shown['pair'] == 'META' and shown['live_comparable'] and shown['route_provider'] == 'kyber' and 'route' not in shown
+    assert s['live_comparable']['open_count'] == 1 and s['live_comparable']['by_pair'][0]['pair'] == 'META'
+    feed[TOKEN] = .5                                                    # the stop: sold by the best route, recorded
+    pb.mark(prices={TOKEN: .5}, value=False)
+    row = db.one('SELECT * FROM paper')
+    assert row['status'] == 'closed' and row['exit_provider'] == 'lifi' and row['fallback_fills'] == 0
+    assert 'via lifi' in db.one("SELECT text FROM events WHERE text LIKE 'paper sell%'")['text']
+
+
+def test_a_direct_eth_fill_while_the_aggregators_were_down_is_marked_and_is_learning_data(db, feed, monkeypatch):
+    routed_feed(feed, monkeypatch, provider='pool-eth', live=False, exit_provider='pool-eth', exit_live=False)
+    pb = book(db)
+    assert pb.enter(TOKEN, 'AAA', 1.0, 'rule-a', 'second look', pool=pool_of(TOKEN, C.ZERO))
+    row = db.one('SELECT * FROM paper')
+    assert (row['route_provider'], row['live_fill']) == ('pool-eth', 0) and not P.live_comparable(row)
+    feed[TOKEN] = .5
+    pb.mark(prices={TOKEN: .5}, value=False)
+    assert db.one('SELECT fallback_fills FROM paper')['fallback_fills'] == 1
+    s = pb.summary()
+    assert s['live_comparable']['closed_count'] == 0 and s['all_pools']['closed_count'] == 1
+
+
+def test_an_exit_is_asked_for_near_the_mid_that_triggered_it(db, feed, monkeypatch):
+    pb = enter(db, feed)
+    seen = []
+    exit_quote = P.execution.exit_quote
+    monkeypatch.setattr(P.execution, 'exit_quote', lambda *a, **k: seen.append(k) or exit_quote(*a, **k))
+    pb.mark(prices={TOKEN: .5}, value=False)
+    assert seen and seen[0]['reference'] == .5 and seen[0]['fallback'] and seen[0]['cached_prices']

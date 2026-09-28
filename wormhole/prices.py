@@ -146,6 +146,21 @@ def eth_usd_last():
     return _eth[1] if _eth[0] else None
 
 
+def asset_usd(asset, cached=False):
+    """USD per whole unit of a pool's quote asset: 1 for USDG, ETH's price for ETH, the price API's for anything
+    else (a tokenized stock such as META). None without a fresh reading, never a guess. cached=True reads only
+    what was already fetched: no request and no wait on the rate gate (the fast exit path)."""
+    a = (asset or "").lower()
+    if a == C.USDG:
+        return 1.0
+    if a in (C.ZERO, C.WETH):
+        return eth_usd_cached() if cached else eth_usd(strict=True)
+    if cached:
+        ts, d = _cache.get(a, (0, {}))
+        return usable_price({**d, "age_s": max(0, int(time.time() - ts))}) if ts else None
+    return usable_price(token_prices([a]).get(a))
+
+
 def refresh_scored(db, hours=24):
     """Batch-price every token scored in the last `hours`: fills price/fdv/volume on the cards and the
     outcome baseline the brain compares against. One or two API calls per cycle instead of one per token.

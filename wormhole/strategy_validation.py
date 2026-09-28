@@ -163,7 +163,7 @@ def admit(db, trial):
     have = db.one('SELECT COUNT(*) n FROM strategy_members WHERE trial=?', (trial['id'],))['n']
     names, filtered = _sources(trial)
     rows = db.q("SELECT p.id,p.token,p.opened_ts,p.policy_spec,p.gas_usd,p.cost,p.execution_model,p.execution_spec,p.pool_key,"
-                "p.strategy,p.entry_shadow,l.deployer FROM paper p LEFT JOIN launches l ON l.token=p.token"
+                "p.live_fill,p.strategy,p.entry_shadow,l.deployer FROM paper p LEFT JOIN launches l ON l.token=p.token"
                 f" WHERE p.id>? AND p.strategy IN ({','.join('?' * len(names))}) AND p.token NOT IN"
                 " (SELECT token FROM strategy_members WHERE trial=?) ORDER BY p.id",
                 (trial['cutoff'], *names, trial['id']))
@@ -175,9 +175,9 @@ def admit(db, trial):
         try:
             same_exit = json.dumps(json.loads(r['policy_spec'] or 'null'), sort_keys=True) == exit_spec
             spec = json.loads(trial['spec'])['execution']
+            # A fill live could have made: a checked route from USDG (any pair) or the token's own USDG pool.
             same_execution = (r['execution_model'] == spec['model'] and
-                              json.loads(r['execution_spec'] or 'null') == spec and
-                              json.loads(r['pool_key'] or '{}').get('quote') in spec['live_quotes'])
+                              json.loads(r['execution_spec'] or 'null') == spec and execution.live_fill(r))
         except (ValueError, KeyError, TypeError, AttributeError):
             same_exit = False
             same_execution = False
