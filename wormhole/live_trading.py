@@ -304,7 +304,9 @@ def liquidation_marks(rpc, db):
     marks = {}
     for p in db.q("SELECT * FROM positions WHERE mode='live' AND status='open'"):
         try:
-            quote = execution.exit_quote(rpc, json.loads(p['pool_key']), p['token'], int(p['qty_left_raw']), lane='live')
+            # a mark, not a sale: KyberSwap and the pool only, so every buy check leaves live's LI.FI reserve alone
+            quote = execution.exit_quote(rpc, json.loads(p['pool_key']), p['token'], int(p['qty_left_raw']), lane='live',
+                                         providers=execution.VALUE_PROVIDERS)
             marks[p['token']] = quote['minimum_raw'] / 1e6 - quote['gas_usd']
         except Exception:
             pass

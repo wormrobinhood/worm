@@ -811,3 +811,15 @@ def test_the_price_api_check_holds_for_a_pool_against_eth(monkeypatch):
     monkeypatch.setattr(L, 'eth_usd', lambda strict=False: None)             # no fresh ETH price: no mid, no order
     with pytest.raises(ValueError, match='unavailable'):
         L.pool_mid(None, pk, tok(1))
+
+
+
+def test_live_marks_ask_kyberswap_and_the_pool_only(db, monkeypatch):
+    trader.ensure_tables(db)
+    db.x("INSERT INTO positions(token,symbol,status,mode,pool_key,qty_left_raw) VALUES(?,?,?,?,?,?)",
+         (tok(1), 'T', 'open', 'live', json.dumps({'quote': C.ZERO}), str(10**21)))
+    seen = []
+    monkeypatch.setattr(L.execution, 'exit_quote', lambda rpc, pk, token, amount, **kw: seen.append(kw) or
+                        {'minimum_raw': 9_000_000, 'gas_usd': .05})
+    assert L.liquidation_marks(None, db) == {tok(1): pytest.approx(8.95)}
+    assert seen == [{'lane': 'live', 'providers': ('kyber',)}]
