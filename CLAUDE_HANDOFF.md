@@ -809,3 +809,18 @@ On first deploy: every collecting cohort is voided once (fingerprint changed; a 
 evidence was already visible). Expect roughly ten times more live-comparable entries (27 of the last 30 second-look
 trades were ETH pools) plus stock-paired graduations now watched. Tests: 976 offline (914 before), fixtures in
 tests/fixtures/route (real answers, 32-byte ids blanked for the leak check).
+
+### Review fixes on `claude/any-pair-routing` (2026-09-28, one commit per item, still local, live still OFF)
+
+1. Exits: one-sided exit band, own pool never banded (`route.best_quote(side='exit')`); direct exit `pons-v3`
+   (`trader.exit_calldata`, `best_v3`, `trade_checks._direct_exit`, `DIRECT_EXIT_FLOOR`); `live_trading._sell_own` /
+   `_sell_routed` with fallback and an error event; breakers per (provider, lane); LI.FI budget (`_admit`,
+   `WH_LIFI_API_KEY` in config, popped).
+2. `route.check_kyber` / `check_lifi` / `verify_contracts` (`CODE_HASHES`, allow-listed in scripts/leakcheck_allow.txt);
+   `live_trading.revoke_route` / `clear_route_allowance` / `_clear_after`.
+3. `trade_checks.EXIT_WAIT_S`, `VALUE_PROVIDERS`, gas price read first; `trade_risk.STALE_HAIRCUT`.
+4. `Paper._quote(fallback=not live_fill)`; `strategy_validation.settle` invalidates `fallback_fills`.
+5. `route.TRADE` default, Kyber pacing, no client id/UA, `live_trading.route_ready` before approval, one final build.
+6. `pool_mid` docstring and test for ETH pairs; docs/TRADING-HARDENING.md "After the independent review".
+Operator: to raise LI.FI's limit set `WH_LIFI_API_KEY` (optional). Before a live trial the funded rehearsal must also
+cover a routed buy, a routed sell and a direct-exit sell of an ETH- and a stock-paired token.

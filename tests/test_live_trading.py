@@ -794,3 +794,20 @@ def test_a_settled_routed_order_is_checked_for_a_standing_allowance(routed, monk
     s.rpc.receipts[HASH]['logs'].append(transfer(C.USDG, C.WALLET, C.HOOK, 10_000_000))
     trader.reconcile(s.rpc, s.db, s.acct)
     assert s.cleared == [(C.USDG, KYBER, True)]
+
+
+
+def test_the_price_api_check_holds_for_a_pool_against_eth(monkeypatch):
+    pk = {'c0': C.ZERO, 'c1': tok(1), 'fee': 0, 'tick_spacing': 200, 'hooks': C.HOOK, 'quote': C.ZERO}
+    seen = []
+    monkeypatch.setattr(L, 'eth_usd', lambda strict=False: seen.append(strict) or 2500.0)
+    monkeypatch.setattr(L.poolstate, 'mids', lambda rpc, pools, eth: {t: .02 if eth == 2500.0 else None for t in pools})
+    monkeypatch.setattr(L, 'token_prices', lambda tokens: {tok(1): {'price_usd': .016}})     # 25% apart
+    with pytest.raises(ValueError, match='disagree'):
+        L.pool_mid(None, pk, tok(1))
+    assert seen == [True]                                                    # converted through a fresh ETH price only
+    monkeypatch.setattr(L, 'token_prices', lambda tokens: {tok(1): {'price_usd': .019}})
+    assert L.pool_mid(None, pk, tok(1)) == .02
+    monkeypatch.setattr(L, 'eth_usd', lambda strict=False: None)             # no fresh ETH price: no mid, no order
+    with pytest.raises(ValueError, match='unavailable'):
+        L.pool_mid(None, pk, tok(1))

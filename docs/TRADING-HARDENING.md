@@ -161,3 +161,41 @@ approval (bounded by that order's amount). A route can move between simulation a
 inclusion; the decoded on-chain minimum is what bounds it. Before a live trial, the funded
 rehearsal above must also cover one routed buy and one routed sell (an ETH-paired and a
 stock-paired token).
+
+### After the independent review (same day)
+
+- **Exits can always be made.** An exit refuses only a route paying suspiciously more than the
+  mid (+15%); the token's own pool is never banded. Every pair has a **direct exit**: one
+  Universal Router call selling the token on its Pons pool for ETH or the stock (kept in the
+  router, ETH wrapped) and all of it for USDG on that asset's best Uniswap v3 pool, reverting
+  below our minimum. It needs no aggregator and no simulation service. An entry needs a
+  direct exit paying at least 80% of the best route. A live sell whose aggregator route fails
+  before it is sent falls back to it at once; failing on every path is an error event.
+  Simulated on chain (read-only): $10 into KLV (ETH), GLORY (META), STOCKWALK (SPY) through
+  KyberSwap and straight back through the direct exit returned $9.38, $9.26 and $9.18.
+- **Simulation outage.** Decided: an aggregator route is never sent without its simulation;
+  the direct exit (Permit2 to the Universal Router, on-chain minimum) needs none, so an
+  outage of `eth_simulateV1` or of every aggregator never blocks a sell.
+- **Exactly our trade.** KyberSwap: the whole input to the pinned executor only, no approve
+  target, no fee receivers, no permit, flags within the pinned set (0x200; no partial fill).
+  LI.FI: one deposit, on the first step, in the token sold; steps chained; the only fee step
+  first, the pinned FeeCollector paying the pinned recipient at most 1%, the next step
+  spending the rest. Before any approval the router, executor, diamond, its swap facet
+  (`facetAddress`) and FeeCollector must hold their pinned code hashes (fail closed; a new
+  pin is a code change). The allowance is reset in a `finally` on any abort, checked after
+  every swap (one left is an error) and again at settlement.
+- **Lanes and budgets.** Breakers are per provider and lane: paper traffic cannot stand a
+  provider down for live. KyberSwap is paced to 25 requests per 10 s. LI.FI without a key
+  (`WH_LIFI_API_KEY`, optional, popped from the environment) allows 75 per two hours; paper
+  may use 50. Valuations ask KyberSwap and the pool only.
+- **Privacy.** No client id or custom User-Agent is sent (KyberSwap wrote "Source":"wormhole"
+  into built transactions). Nothing is built for the real wallet before the order is decided
+  and approved; that one build is checked and simulated as it will run. Relay is asked only
+  by `scripts/route-compare.py`.
+- **What the bands do not stop.** The pool-mid band and the price-API check (15%, kept, and
+  applied to every pair: the pool's mid converted through ETH's or the stock's price is
+  compared with the API's price of the token) catch a pool pushed moments before an entry.
+  They do not stop a pump positioned earlier: the API reads the same pool and follows it,
+  and every route prices the pushed pool too. What limits that is the entry rules (none buys
+  a fresh spike), the impact and round-trip limits, the stop, and the position, daily and
+  lifetime caps.

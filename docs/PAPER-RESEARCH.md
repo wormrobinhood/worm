@@ -105,3 +105,14 @@ creator tax, impact and aggregator fee. Paper and live choose from the same prov
   times as many live-comparable positions, plus the stock-paired graduations (about one in
   eight) now watched at all, so a cohort can fill in weeks instead of months. Lab rankings
   are unchanged (the lab's USDG table stays USDG-only).
+
+After the independent review (same day): a position live could hold now exits exactly as
+live could (the same routes and the direct exit, nothing else). When none answers the step
+waits, as live's would; the ETH-pool fallback with its haircut is kept only for rows that
+are learning data anyway, and a member with any fill live could not have made is settled
+invalid (never counted, never replaced). Exit and valuation quotes read the gas price and
+the pool first and wait at most 3 s for the aggregators; valuations ask KyberSwap and the
+pool only. The paper breaker counts a position whose quote is stale at its fresh pool mid
+less 15% instead of pausing every entry. Every entry needs a direct exit, so no position can
+overrun its maximum age for want of an aggregator. These change the fingerprint again; the
+cohorts void once on deploy either way.

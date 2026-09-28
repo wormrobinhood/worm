@@ -317,7 +317,14 @@ def pool_mid(rpc, pk, token):
     not answer or no fresh price converts it: no order is measured against a guess. For real money the pool is
     also checked against an independent reading: when the price API has a fresh price and the two disagree by
     more than MID_API_BAND, the pool may be mid-manipulation (one swap moves a thin pool) and nothing is bought.
-    No API price is no veto: the pool's own quote still has to pass every check in trade_checks.entry."""
+    This holds for every pair: for a pool against ETH or a stock the API's price of the token is compared with the
+    pool's mid converted through that asset's price, so a wrong ETH or stock price is caught as well. No API price is
+    no veto: the pool's own quote still has to pass every check in trade_checks.entry.
+
+    What neither band stops: a pump positioned before the look. The price API reads the same pool and follows it
+    within minutes, and every route prices the pushed pool too, so mid, API and route agree on the inflated price.
+    What limits that is elsewhere: the entry rules (none buys a fresh spike), the impact and round-trip limits, the
+    exit rule's stop, and the per-position, daily and lifetime caps."""
     mid = poolstate.mids(rpc, {token: pk}, eth_usd(strict=True) if pk.get('quote') == C.ZERO else None).get(token)
     if not mid:
         raise ValueError('pool price unavailable')
