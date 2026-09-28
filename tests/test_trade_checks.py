@@ -152,7 +152,7 @@ def test_the_evidence_spec_carries_the_code_digest_and_ignores_runtime_patches(m
     from wormhole import paper, trade_risk
     spec = E.evidence_spec()
     assert spec['code'] == E.code_digest(E.EVIDENCE_CODE) and len(spec['code']) == 32
-    assert spec['exit_tolerance_retry'] == E.EXIT_TOLERANCE_RETRY and spec['route']['executable'] == ['pons', 'kyber', 'lifi']
+    assert spec['exit_tolerance_retry'] == E.EXIT_TOLERANCE_RETRY and spec['route']['executable'] == ['pons', 'pons-v3', 'kyber', 'lifi']
     assert spec['semantics'] == 'paper-evidence-4' and spec['model'] == 'routed-quote-v1'
     monkeypatch.setattr(E, 'entry', lambda *a, **k: {})                 # a test double is not an edit
     monkeypatch.setattr(trade_risk, 'check', lambda *a, **k: {'allowed': True})
@@ -210,6 +210,9 @@ def routed(db, monkeypatch):
                                    route.ALLOWED[p]['spender'][0])
         return ask
     monkeypatch.setattr(route, 'ASK', {p: provider(p) for p in rates})
+    # the direct exit: the token's own pool to its pair, then that asset's v3 pool to USDG, 3% a side all told
+    monkeypatch.setattr(trader, 'quote_buy', lambda rpc, pool, target, amount: (amount, 150_000, True))
+    monkeypatch.setattr(trader, 'best_v3', lambda rpc, tin, tout, amount: (500, int(amount / 1e18 * .01 * 1e6 * .97)))
     return token, pair, rates, fees
 
 
@@ -260,8 +263,34 @@ def test_a_routed_exit_is_booked_in_usdg_and_must_sit_near_the_mid(db, routed):
     assert bid['provider'] == 'kyber' and bid['live_fill'] and bid['out_raw'] == int(10 * .98 * 1e6)
     assert bid['paper_fill_usd'] == pytest.approx(10 * .98 * .99) and bid['minimum_usd'] == pytest.approx(9.8 * .97, rel=1e-6)
     assert E.exit_quote(object(), pk, token, 1000 * 10**18, reference=.01)['provider'] == 'kyber'
-    with pytest.raises(ValueError):
-        E.exit_quote(object(), pk, token, 1000 * 10**18, reference=.05)     # every route 80% under the mid
+    # a dump: every route pays 80% under the mid that triggered the stop. The stop still fills: an exit refuses
+    # only what pays suspiciously MORE than the mid
+    assert E.exit_quote(object(), pk, token, 1000 * 10**18, reference=.05)['provider'] == 'kyber'
+    # every aggregator pays twice the mid: not believed; the direct exit, never banded, sells the position
+    bid = E.exit_quote(object(), pk, token, 1000 * 10**18, reference=.005)
+    assert bid['provider'] == 'pons-v3' and bid['route']['v3_fee'] == 500 and bid['live_fill']
+
+
+def test_an_entry_needs_a_direct_exit_within_the_floor(db, routed, monkeypatch):
+    token, pair, rates, _ = routed
+    q = E.entry(object(), db, token, 10., reference=.01)
+    assert q['direct_exit'] == 'pons-v3'
+    monkeypatch.setattr(trader, 'best_v3', lambda rpc, tin, tout, amount: (500, int(amount / 1e18 * .01 * 1e6 * .7)))
+    with pytest.raises(ValueError, match='direct exit'):                  # the pair's v3 pool is too thin to rely on
+        E.entry(object(), db, token, 10., reference=.01)
+    monkeypatch.setattr(trader, 'best_v3', lambda *a: (_ for _ in ()).throw(ValueError('no v3 pool to USDG')))
+    with pytest.raises(ValueError, match='direct exit'):                  # none at all
+        E.entry(object(), db, token, 10., reference=.01)
+
+
+def test_with_every_aggregator_down_a_position_in_any_pair_can_still_be_sold(db, routed):
+    token, pair, rates, _ = routed
+    for p in rates:
+        rates[p] = None
+    for quote in (C.ZERO, STOCK):
+        pair[0] = quote
+        bid = E.exit_quote(object(), trader.pool_key(), token, 1000 * 10**18, reference=.01)
+        assert bid['provider'] == 'pons-v3' and bid['live_fill'] and bid['out_raw'] == int(10 * .97 * 1e6)
 
 
 def test_the_relay_quote_is_asked_on_entries_but_never_on_exits(db, routed, monkeypatch):
@@ -280,3 +309,49 @@ def test_live_fill_is_read_from_the_row_and_old_rows_count_only_in_usdg_pools():
     assert not E.live_fill({'live_fill': 0, 'pool_key': j.dumps({'quote': C.USDG})})
     assert E.live_fill({'pool_key': j.dumps({'quote': C.USDG})}) and not E.live_fill({'pool_key': j.dumps({'quote': C.ZERO})})
     assert not E.live_fill({'pool_key': 'broken'})
+
+
+
+def test_a_usdg_pool_exit_fills_from_its_own_pool_after_a_dump(db, quotes, monkeypatch):
+    # every aggregator down; the pool itself fills 20% under the mid that triggered the stop: the stop still sells
+    token, pk = quotes
+    monkeypatch.setattr(trader, 'quote_buy', lambda rpc, pool, target, amount: (int(amount / 1e18 * .01 * 1e6 * .8), 150_000, False))
+    bid = E.exit_quote(object(), pk, token, 1000 * 10**18, reference=.01, tolerance=E.EXIT_TOLERANCE_RETRY)
+    assert bid['provider'] == 'pons' and bid['out_raw'] == 8_000_000
+
+
+def test_the_direct_exit_is_one_router_call_ending_in_usdg_to_the_caller():
+    from eth_abi import decode as d
+    token, meta = tok(2), '0x' + 'c0' * 20
+    for quote, commands in ((C.ZERO, trader.V4_SWAP + trader.WRAP_ETH + trader.V3_SWAP_EXACT_IN),
+                            (meta, trader.V4_SWAP + trader.V3_SWAP_EXACT_IN)):
+        c0, c1 = sorted([token, quote], key=lambda a: int(a, 16))
+        pk = {'c0': c0, 'c1': c1, 'fee': 0, 'tick_spacing': 200, 'hooks': C.HOOK, 'quote': quote}
+        data = trader.exit_calldata(pk, token, 10**21, 9_000_000, 500, 1_900_000_000)
+        cmds, inputs, deadline = d(['bytes', 'bytes[]', 'uint256'], bytes.fromhex(data[10:]))
+        assert cmds == commands and deadline == 1_900_000_000
+        actions, params = d(['bytes', 'bytes[]'], inputs[0])
+        assert actions == trader.SWAP_EXACT_IN_SINGLE + trader.SETTLE_ALL + trader.TAKE
+        cur, to, amount = d(['address', 'address', 'uint256'], params[2])
+        assert (cur.lower(), to.lower(), amount) == (quote, trader.ADDRESS_THIS, 0)     # the middle asset stays in the router
+        recipient, amount_in, min_out, path, payer_is_user = d(['address', 'uint256', 'uint256', 'bytes', 'bool'], inputs[-1])
+        middle = C.WETH if quote == C.ZERO else quote
+        assert recipient.lower() == trader.MSG_SENDER and amount_in == trader.CONTRACT_BALANCE and min_out == 9_000_000
+        assert path == bytes.fromhex(middle[2:]) + (500).to_bytes(3, 'big') + bytes.fromhex(C.USDG[2:]) and payer_is_user is False
+    with pytest.raises(ValueError):
+        trader.exit_calldata({**pk, 'quote': C.USDG}, token, 1, 1, 500, 1)
+
+
+def test_the_best_v3_tier_is_found_once_and_asked_alone_for_an_hour(monkeypatch):
+    asked = []
+    outs = {100: 7, 500: 9, 3000: 8, 10000: 0}
+    def q(rpc, tin, tout, amount, fee):
+        asked.append(fee)
+        return outs[fee]
+    monkeypatch.setattr(trader, 'quote_v3', q)
+    monkeypatch.setattr(trader, '_v3_fee', {})
+    assert trader.best_v3(None, C.WETH, C.USDG, 1) == (500, 9) and asked == [100, 500, 3000, 10000]
+    asked.clear()
+    assert trader.best_v3(None, C.WETH, C.USDG, 1) == (500, 9) and asked == [500]
+    outs.update({500: 0})
+    assert trader.best_v3(None, C.WETH, C.USDG, 1) == (3000, 8)             # the cached tier dried up: all asked again

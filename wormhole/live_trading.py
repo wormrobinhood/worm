@@ -123,7 +123,7 @@ def approve_route(rpc, acct, currency, spender, need):
     `need` of `currency`, never more and never "unlimited". A different allowance left from before is first set
     to zero (some tokens refuse to move a non-zero allowance to another non-zero one). Read back before anything
     relies on it. The router pulls all of it in the swap, which the simulation checks, so nothing stands after."""
-    routers = {s for p in route.EXECUTABLE if p != 'pons' for s in route.ALLOWED[p]['spender']}
+    routers = {s for p in route.EXECUTABLE if p not in route.OWN for s in route.ALLOWED[p]['spender']}
     if acct.address.lower() != C.WALLET or spender not in routers or not 0 < need < 2 ** 255:
         raise ValueError('invalid routed approval')
     current = erc20_allowance(rpc, currency, spender)
@@ -177,7 +177,14 @@ def submit(rpc, db, acct, token, symbol, side, usd, quote, snapshot, approval_ex
     if time.time() >= quote['expires_at'] or deadline <= time.time():
         raise ValueError('stale swap quote')
     currency_in, currency_out = (C.USDG, token) if side == 'buy' else (token, C.USDG)
-    if tx is None:
+    if tx is None and quote.get('provider') == 'pons-v3':
+        # the direct exit: the token's own pool, then the other asset's v3 pool to USDG, one router call
+        if side != 'sell':
+            raise ValueError('the direct exit only sells')
+        to = C.UNIVERSAL_ROUTER
+        data = trader.exit_calldata(quote['pool'], token, quote['amount_raw'], quote['minimum_raw'],
+                                    quote['route']['v3_fee'], deadline)
+    elif tx is None:
         to = C.UNIVERSAL_ROUTER
         data = trader.swap_calldata(quote['pool'], quote['direction'], quote['amount_raw'], quote['minimum_raw'],
                                    currency_in, currency_out, deadline=deadline)
@@ -261,7 +268,7 @@ def liquidation_marks(rpc, db):
     marks = {}
     for p in db.q("SELECT * FROM positions WHERE mode='live' AND status='open'"):
         try:
-            quote = execution.exit_quote(rpc, json.loads(p['pool_key']), p['token'], int(p['qty_left_raw']))
+            quote = execution.exit_quote(rpc, json.loads(p['pool_key']), p['token'], int(p['qty_left_raw']), lane='live')
             marks[p['token']] = quote['minimum_raw'] / 1e6 - quote['gas_usd']
         except Exception:
             pass
@@ -318,7 +325,7 @@ def decide(rpc, db, runway, acct, ready):
         try:
             # The impact check measures against the pool's own mid, read now, as the paper entry it follows did;
             # the price API lags a thin pool and would judge the same quote differently.
-            quote = execution.entry(rpc, db, r['token'], size, reference=pool_mid(rpc, pk, r['token']))
+            quote = execution.entry(rpc, db, r['token'], size, reference=pool_mid(rpc, pk, r['token']), lane='live')
             balance = balance_of(rpc, C.USDG)
             if balance < quote['amount_raw']:
                 continue
@@ -335,7 +342,7 @@ def decide(rpc, db, runway, acct, ready):
                 expiry = int(time.time()) + execution.SWAP_TTL
             # approvals may take time; refresh both directions, through the provider approved, and the mid they are
             # measured against. A different winner now would need another approval: the order waits instead.
-            quote = execution.entry(rpc, db, r['token'], size, reference=pool_mid(rpc, pk, r['token']),
+            quote = execution.entry(rpc, db, r['token'], size, reference=pool_mid(rpc, pk, r['token']), lane='live',
                                     providers=() if provider == 'pons' else (provider,), direct=provider == 'pons')
             if (quote.get('provider') or 'pons') != provider or quote['amount_raw'] > balance:
                 raise ValueError('the route changed after approval')
@@ -356,14 +363,9 @@ def decide(rpc, db, runway, acct, ready):
 def prepare_exit(rpc, db, acct, token, qty_raw):
     """Stand the sell approvals as soon as a buy settles, for exactly what was bought, so a stop is one
     transaction instead of three. The router can only pull what this wallet's own swap spends. A failure here
-    costs nothing but time: sell() approves again when it has to. Only for a USDG pool, where the pool's own
-    route may sell: an aggregator's exact allowance is granted at the sell, to whichever router wins then."""
-    try:
-        pk = json.loads((db.one("SELECT pool_key FROM positions WHERE token=?", (token,)) or {}).get('pool_key') or 'null') or {}
-    except ValueError:
-        pk = {}
-    if pk.get('quote') != C.USDG:
-        return False
+    costs nothing but time: sell() approves again when it has to. It serves the direct exit, which every pool has
+    (its own USDG pool, or its own pool and the other asset's v3 pool, both through the Universal Router); an
+    aggregator's exact allowance is granted at the sell, to whichever router wins then."""
     try:
         approve_exact(rpc, acct, token, int(qty_raw), ttl=EXIT_APPROVAL_S)
         return True
@@ -372,9 +374,42 @@ def prepare_exit(rpc, db, acct, token, qty_raw):
         return False
 
 
+def _sell_own(rpc, db, acct, p, pk, amount, tolerance, mid, snapshot, quote=None):
+    """The direct exit, through the Universal Router with a Permit2 allowance: no aggregator and no simulation
+    service involved, so a position can be sold while every aggregator (or eth_simulateV1) is down. The router
+    reverts below the minimum, so it fills whole or not at all."""
+    quote = quote or execution.exit_quote(rpc, pk, p['token'], amount, tolerance=tolerance, reference=mid, providers=(), lane='live')
+    attempt = db.insert('INSERT INTO trade_attempts(ts,token,side,gas_usd) VALUES(?,?,?,?)',
+                        (int(time.time()), p['token'], 'sell', quote['gas_usd']))
+    expiry = approve_exact(rpc, acct, p['token'], amount, ttl=EXIT_APPROVAL_S)
+    quote = execution.exit_quote(rpc, pk, p['token'], amount, tolerance=tolerance, reference=mid, providers=(), lane='live')
+    tid = submit(rpc, db, acct, p['token'], p['symbol'], 'sell', 0, quote, snapshot, expiry)
+    db.x('UPDATE trade_attempts SET trade_id=? WHERE id=?', (tid, attempt))
+    return tid
+
+
+def _sell_routed(rpc, db, acct, p, pk, amount, tolerance, mid, snapshot, quote):
+    provider = quote['provider']
+    route_tx(rpc, quote, approved=False)
+    attempt = db.insert('INSERT INTO trade_attempts(ts,token,side,gas_usd) VALUES(?,?,?,?)',
+                        (int(time.time()), p['token'], 'sell', quote['gas_usd']))
+    approve_route(rpc, acct, p['token'], quote['route']['spender'], amount)
+    expiry = int(time.time()) + execution.SWAP_TTL
+    quote = execution.exit_quote(rpc, pk, p['token'], amount, tolerance=tolerance, reference=mid,
+                                 providers=(provider,), direct=False, lane='live')
+    if quote.get('provider') != provider:
+        raise ValueError('the route changed after approval')
+    tx = route_tx(rpc, quote, approved=True)
+    tid = submit(rpc, db, acct, p['token'], p['symbol'], 'sell', 0, quote, snapshot, expiry, tx=tx)
+    db.x('UPDATE trade_attempts SET trade_id=? WHERE id=?', (tid, attempt))
+    return tid
+
+
 def sell(rpc, db, acct, p, st, frac, why, mid=None):
     """Sell `frac` of a live position into USDG by the best checked route; `mid` is the pool's price that
-    triggered the exit, the band a route must sit in."""
+    triggered the exit (a route paying suspiciously more than it is not believed). When an aggregator's route
+    fails anywhere before it is sent (its build, the checks, the simulation), the direct exit is tried at once;
+    when that fails too, the failure is written as an error, not only deferred."""
     from . import trader
     if not trader.LIVE_SELL_READY or not acct or acct.address.lower() != C.WALLET:
         return
@@ -394,31 +429,28 @@ def sell(rpc, db, acct, p, st, frac, why, mid=None):
         if balance < remaining or amount <= 0:
             raise ValueError('tracked holdings do not match available balance')
         pk = json.loads(p['pool_key'])
-        # check liquidity (and a routed transaction, in simulation) before spending approval gas
-        quote = execution.exit_quote(rpc, pk, p['token'], amount, tolerance=tolerance, reference=mid)
-        provider = quote.get('provider') or 'pons'
-        if provider != 'pons':
-            route_tx(rpc, quote, approved=False)
-        attempt = db.insert('INSERT INTO trade_attempts(ts,token,side,gas_usd) VALUES(?,?,?,?)',
-                            (int(time.time()), p['token'], 'sell', quote['gas_usd']))
-        tx = None
-        if provider == 'pons':
-            expiry = approve_exact(rpc, acct, p['token'], amount, ttl=EXIT_APPROVAL_S)
+        snapshot = {'state': st, 'reason': why, 'expected_remaining': str(remaining)}
+    except Exception:
+        trader._say_once(db, 'error', f"exit for ${p['symbol']} failed: holdings need review", p['token'])
+        return
+    try:
+        quote = execution.exit_quote(rpc, pk, p['token'], amount, tolerance=tolerance, reference=mid, lane='live')
+    except Exception:
+        quote = None                             # no route at all: the direct exit is still asked below
+    try:
+        if quote and (quote.get('provider') or 'pons') not in route.OWN:
+            try:
+                _sell_routed(rpc, db, acct, p, pk, amount, tolerance, mid, snapshot, quote)
+            except Exception:
+                if db.one("SELECT 1 FROM trades WHERE token=? AND note IN ('PENDING','REVIEW')", (p['token'],)):
+                    raise                        # it may have been sent: never a second order on top of it
+                trader._say_once(db, 'trade', f"routed exit for ${p['symbol']} refused; selling through its own pool", p['token'])
+                _sell_own(rpc, db, acct, p, pk, amount, tolerance, mid, snapshot)
         else:
-            approve_route(rpc, acct, p['token'], quote['route']['spender'], amount)
-            expiry = int(time.time()) + execution.SWAP_TTL
-        quote = execution.exit_quote(rpc, pk, p['token'], amount, tolerance=tolerance, reference=mid,
-                                     providers=() if provider == 'pons' else (provider,), direct=provider == 'pons')
-        if (quote.get('provider') or 'pons') != provider:
-            raise ValueError('the route changed after approval')
-        if provider != 'pons':
-            tx = route_tx(rpc, quote, approved=True)
-        tid = submit(rpc, db, acct, p['token'], p['symbol'], 'sell', 0, quote,
-               {'state': st, 'reason': why, 'expected_remaining': str(remaining)}, expiry, tx=tx)
-        db.x('UPDATE trade_attempts SET trade_id=? WHERE id=?', (tid, attempt))
+            _sell_own(rpc, db, acct, p, pk, amount, tolerance, mid, snapshot, quote)
         reconcile(rpc, db, acct)
     except Exception:
-        trader._say_once(db, 'trade', f"exit for ${p['symbol']} deferred: sell quote, holdings or approvals need review", p['token'])
+        trader._say_once(db, 'error', f"exit for ${p['symbol']} failed on every path (routes and its own pool); retrying", p['token'])
 
 
 def reconcile(rpc, db, acct=None):

@@ -166,6 +166,7 @@ COMPUTE_PROVIDER = os.environ.get("WH_COMPUTE_PROVIDER", "aisurplus").strip().lo
 if COMPUTE_PROVIDER not in ("aisurplus", "venice"):
     raise SystemExit("WH_COMPUTE_PROVIDER must be aisurplus or venice")
 AISURPLUS_KEY = (os.environ.pop("WH_AISURPLUS_KEY", None) or "").strip()     # popped like WH_SECRET: no child process sees it
+LIFI_KEY = (os.environ.pop("WH_LIFI_API_KEY", None) or "").strip()             # optional LI.FI API key; popped: no child process sees it
 AISURPLUS_DEPOSIT = os.environ.get("WH_AISURPLUS_DEPOSIT", "").strip().lower()   # the deposit address AI Surplus shows for the account
 if AISURPLUS_DEPOSIT and not re.fullmatch(r"0x[0-9a-f]{40}", AISURPLUS_DEPOSIT):
     raise SystemExit("WH_AISURPLUS_DEPOSIT is not an address")

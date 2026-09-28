@@ -648,11 +648,13 @@ def test_only_allowlisted_routers_are_journaled_or_sent_to():
                  tx={'to': R.RELAY_PROXY, 'data': '0x', 'value': 0})
 
 
-def test_no_standing_exit_approval_for_a_pool_not_against_usdg(db, monkeypatch):
+def test_a_standing_exit_approval_serves_the_direct_exit_of_any_pool(db, monkeypatch):
     trader.ensure_tables(db)
     db.x("INSERT INTO positions(token,symbol,status,mode,pool_key) VALUES(?,?,?,?,?)", (tok(1), 'T', 'open', 'live', json.dumps({'quote': C.ZERO})))
-    monkeypatch.setattr(L, 'approve_exact', lambda *a, **k: pytest.fail('a Permit2 approval for a pool the router cannot sell into'))
-    assert L.prepare_exit(None, db, SimpleNamespace(address=C.WALLET), tok(1), 10**18) is False
+    seen = []
+    monkeypatch.setattr(L, 'approve_exact', lambda rpc, acct, token, need, ttl=None: seen.append((token, need, ttl)))
+    assert L.prepare_exit(None, db, SimpleNamespace(address=C.WALLET), tok(1), 10**18) is True
+    assert seen == [(tok(1), 10**18, L.EXIT_APPROVAL_S)]                  # Permit2 to the Universal Router, exact
 
 
 def test_a_balance_read_decodes_the_single_value_chain_call_fn_returns():
@@ -665,3 +667,71 @@ def test_a_balance_read_decodes_the_single_value_chain_call_fn_returns():
     assert L.balance_of(Answer(), C.USDG) == 123 and L.erc20_allowance(Answer(), C.USDG, KYBER) == 123
     with pytest.raises(ValueError):
         L.balance_of(Silent(), C.USDG)
+
+
+
+# ---- availability: every aggregator down, or the simulation service -----------------------------------
+
+def open_eth_position(s, monkeypatch, mid=.003):
+    buy(s); settle_buy(s)
+    pk = {**json.loads(s.db.one('SELECT pool_key FROM positions')['pool_key']), 'quote': C.ZERO}
+    s.db.x('UPDATE positions SET pool_key=?', (json.dumps(pk),))
+    monkeypatch.setattr(trader.poolstate, 'position_mids', lambda rpc, rows: ({s.token: mid}, {s.token}))
+    s.rpc.receipts.clear()
+    return pk
+
+
+def own_quote(s, amount, **kw):
+    pk = json.loads(s.db.one('SELECT pool_key FROM positions')['pool_key'])
+    return {**s.quote, 'pool': pk, 'amount_raw': amount, 'minimum_raw': 2_000_000, 'provider': 'pons-v3',
+            'route': R.candidate('pons-v3', s.token, C.USDG, amount, 2_060_000, 300_000, 0, C.UNIVERSAL_ROUTER, C.PERMIT2, v3_fee=500)}
+
+
+def test_with_every_aggregator_and_the_simulator_down_a_live_position_still_sells_through_its_own_pools(routed, monkeypatch):
+    s = routed
+    open_eth_position(s, monkeypatch)
+    seen = []
+    def quote(rpc, pk, token, amount, **kw):
+        seen.append(kw.get('providers'))
+        if kw.get('providers') != ():
+            raise R.NoRoute('no executable route within limits')           # every aggregator down
+        return own_quote(s, amount)
+    monkeypatch.setattr(L.execution, 'exit_quote', quote)
+    monkeypatch.setattr(R, 'simulate', lambda *a, **k: pytest.fail('the direct exit needs no simulation service'))
+    permits = []
+    monkeypatch.setattr(L, 'approve_exact', lambda rpc, acct, token, need, ttl=None: permits.append((token, need)) or int(time.time()) + 600)
+    s.sent.clear(); s.approvals.clear()
+    trader.mark(s.rpc, s.db, True, s.acct)
+    assert permits == [(s.token, 970 * 10**18)] and not s.approvals          # Permit2 to the Universal Router only
+    assert len(s.sent) == 1 and s.sent[0]['to'] == C.UNIVERSAL_ROUTER and s.sent[0]['value'] == 0
+    from eth_abi import decode as d
+    cmds, inputs, _ = d(['bytes', 'bytes[]', 'uint256'], bytes.fromhex(s.sent[0]['data'][10:]))
+    assert cmds == trader.V4_SWAP + trader.WRAP_ETH + trader.V3_SWAP_EXACT_IN
+    assert json.loads(s.db.one("SELECT execution FROM trades WHERE side='sell'")['execution'])['provider'] == 'pons-v3'
+
+
+def test_a_routed_exit_the_simulator_refuses_falls_back_to_its_own_pools(routed, monkeypatch):
+    s = routed
+    open_eth_position(s, monkeypatch)
+    def quote(rpc, pk, token, amount, **kw):
+        if kw.get('providers') == ():
+            return own_quote(s, amount)
+        return {**s.quote, 'amount_raw': amount, 'minimum_raw': 2_000_000, 'provider': 'kyber',
+                'route': R.candidate('kyber', token, C.USDG, amount, 2_060_000, 500_000, 0, KYBER, KYBER, route_summary={})}
+    monkeypatch.setattr(L.execution, 'exit_quote', quote)
+    monkeypatch.setattr(R, 'simulate', lambda *a, **k: (_ for _ in ()).throw(RuntimeError('eth_simulateV1: method not found')))
+    monkeypatch.setattr(L, 'approve_exact', lambda *a, **k: int(time.time()) + 600)
+    s.sent.clear()
+    trader.mark(s.rpc, s.db, True, s.acct)
+    assert len(s.sent) == 1 and s.sent[0]['to'] == C.UNIVERSAL_ROUTER
+    assert s.db.one("SELECT COUNT(*) n FROM events WHERE text LIKE 'routed exit for%selling through its own pool'")['n'] == 1
+
+
+def test_an_exit_that_fails_on_every_path_is_written_as_an_error(routed, monkeypatch):
+    s = routed
+    open_eth_position(s, monkeypatch)
+    monkeypatch.setattr(L.execution, 'exit_quote', lambda *a, **k: (_ for _ in ()).throw(R.NoRoute('nothing')))
+    s.sent.clear()
+    trader.mark(s.rpc, s.db, True, s.acct)
+    assert not s.sent
+    assert s.db.one("SELECT kind FROM events WHERE text LIKE 'exit for%failed on every path%'")['kind'] == 'error'

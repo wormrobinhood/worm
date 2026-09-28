@@ -161,23 +161,23 @@ def test_the_breaker_stands_a_failing_provider_down_and_backs_off(monkeypatch):
     asked = sum(provider_of(u) == 'kyber' for _, u, _ in calls)
     q = R.best_quote(USDG, KLV, 10_000_000)
     assert q['failed']['kyber'] == 'backing off' and sum(provider_of(u) == 'kyber' for _, u, _ in calls) == asked
-    first = R._state['kyber'].open_until - time.time()
+    first = R._state[('kyber', 'paper')].open_until - time.time()
     assert R.BREAK_BASE_S - 2 < first <= R.BREAK_BASE_S
-    R._state['kyber'].open_until = 0                    # the pause is over: one probe, which fails again
+    R._state[('kyber', 'paper')].open_until = 0                    # the pause is over: one probe, which fails again
     R.best_quote(USDG, KLV, 10_000_000)
-    assert R._state['kyber'].open_until - time.time() > 2 * R.BREAK_BASE_S - 2     # doubled
-    R._state['kyber'].fails = 99
+    assert R._state[('kyber', 'paper')].open_until - time.time() > 2 * R.BREAK_BASE_S - 2     # doubled
+    R._state[('kyber', 'paper')].fails = 99
     R._record('kyber', False)
-    assert R._state['kyber'].open_until - time.time() <= R.BREAK_MAX_S             # capped
+    assert R._state[('kyber', 'paper')].open_until - time.time() <= R.BREAK_MAX_S             # capped
     answer(monkeypatch, buys())                          # recovered: the probe succeeds and closes the breaker
-    R._state['kyber'].open_until = 0
-    assert R.best_quote(USDG, KLV, 10_000_000)['provider'] == 'kyber' and R._state['kyber'].fails == 0
+    R._state[('kyber', 'paper')].open_until = 0
+    assert R.best_quote(USDG, KLV, 10_000_000)['provider'] == 'kyber' and R._state[('kyber', 'paper')].fails == 0
 
 
 def test_a_rate_limit_stands_the_provider_down_at_once(monkeypatch):
     answer(monkeypatch, {**buys(), 'lifi': R.RateLimited('rate limited')})
     R.best_quote(USDG, KLV, 10_000_000)
-    assert not R._available('lifi') and R.status()['lifi']['backing_off_s'] > 0
+    assert not R._available('lifi') and R.status()['paper']['lifi']['backing_off_s'] > 0
 
 
 def test_requests_to_one_provider_are_spaced(monkeypatch):
@@ -314,5 +314,67 @@ def test_a_simulated_approval_is_exact_never_unlimited():
 
 def test_the_evidence_names_every_provider_rule():
     e = R.evidence()
-    assert e['executable'] == ['pons', 'kyber', 'lifi'] and e['mid_band'] == .15
+    assert e['executable'] == ['pons', 'pons-v3', 'kyber', 'lifi'] and e['mid_band'] == .15
     assert e['allowed']['kyber']['to'] == [R.KYBER_ROUTER]
+
+
+# ---- lanes, budgets and the exit band ---------------------------------------------------------------
+
+def test_paper_failures_never_stand_a_provider_down_for_live(monkeypatch):
+    answer(monkeypatch, {**buys(), 'kyber': R.ProviderError('http 502')})
+    for _ in range(R.BREAK_AFTER + 1):
+        R.best_quote(USDG, KLV, 10_000_000)
+    assert not R._available('kyber', 'paper') and R._available('kyber', 'live')
+    answer(monkeypatch, buys())
+    assert R.best_quote(USDG, KLV, 10_000_000, lane='live')['provider'] == 'kyber'
+    assert R.best_quote(USDG, KLV, 10_000_000)['failed']['kyber'] == 'backing off'
+
+
+def test_lifi_without_a_key_keeps_part_of_its_two_hour_budget_for_live(monkeypatch):
+    calls = answer(monkeypatch, buys())
+    monkeypatch.setattr(R.C, 'LIFI_KEY', '')
+    for _ in range(R.LIFI_FREE_LIMIT - R.LIFI_LIVE_RESERVE):
+        R.best_quote(USDG, KLV, 10_000_000, providers=('lifi',))
+    q = R.best_quote(USDG, KLV, 10_000_000, providers=('kyber', 'lifi'))
+    assert q['failed'] == {'lifi': 'request budget spent'}                   # paper has used its share
+    for _ in range(R.LIFI_LIVE_RESERVE):
+        assert R.best_quote(USDG, KLV, 10_000_000, providers=('lifi',), lane='live')['provider'] == 'lifi'
+    with pytest.raises(R.NoRoute) as e:
+        R.best_quote(USDG, KLV, 10_000_000, providers=('lifi',), lane='live')
+    assert e.value.failed == {'lifi': 'request budget spent'}
+    assert sum(provider_of(u) == 'lifi' for _, u, _ in calls) == R.LIFI_FREE_LIMIT
+    assert R.status()['lifi_budget'] == {'limit': 75, 'used': 75, 'paper': 50}
+    R._spent['lifi'].rotate(0)
+    for i in range(len(R._spent['lifi'])):                                    # two hours later the window is free again
+        ts, lane = R._spent['lifi'][i]
+        R._spent['lifi'][i] = (ts - R.LIFI_WINDOW_S, lane)
+    assert R.best_quote(USDG, KLV, 10_000_000, providers=('lifi',))['provider'] == 'lifi'
+
+
+def test_a_lifi_key_lifts_the_budget_and_goes_to_lifi_only(monkeypatch):
+    sent = []
+    class Session:
+        def request(self, method, url, timeout=None, headers=None, **kw):
+            sent.append((url, dict(headers)))
+            return type('R', (), {'status_code': 200, 'json': lambda self: {}})()
+    monkeypatch.setattr(R, '_session', Session())
+    monkeypatch.undo()                                   # the real _request, the fake session
+    monkeypatch.setattr(R, '_session', Session())
+    monkeypatch.setattr(R.C, 'LIFI_KEY', 'test-key-not-real')
+    R._request('GET', R.LIFI + '/quote')
+    R._request('GET', R.KYBER + '/routes')
+    assert sent[0][1].get('x-lifi-api-key') == 'test-key-not-real' and 'x-lifi-api-key' not in sent[1][1]
+    assert all(R._admit('lifi', 'paper') for _ in range(R.LIFI_FREE_LIMIT + 5))
+    R.reset()
+
+
+def test_an_exit_refuses_only_a_route_paying_suspiciously_more_than_the_mid(monkeypatch):
+    answer(monkeypatch, {'kyber': R.ProviderError('x'), 'lifi': R.ProviderError('x'), 'relay': R.ProviderError('x')})
+    thin = R.candidate('kyber', KLV, USDG, 10**24, 8_000_000, 1, 0, R.KYBER_ROUTER, R.KYBER_ROUTER)
+    rich = R.candidate('lifi', KLV, USDG, 10**24, 12_000_000, 1, 0, R.LIFI_DIAMOND, R.LIFI_DIAMOND)
+    own = R.candidate('pons', KLV, USDG, 10**24, 30_000_000, 1, 0, C.UNIVERSAL_ROUTER, C.PERMIT2)
+    # the mid says $10: 20% under is a dump, and still sells; 20% over is not believed
+    assert R.best_quote(KLV, USDG, 10**24, extra=[thin, rich], expect=10_000_000, side='exit')['provider'] == 'kyber'
+    with pytest.raises(R.NoRoute):
+        R.best_quote(KLV, USDG, 10**24, extra=[thin, rich], expect=10_000_000)            # an entry: both ways
+    assert R.best_quote(KLV, USDG, 10**24, extra=[own], expect=10_000_000, side='exit')['provider'] == 'pons'   # never banded

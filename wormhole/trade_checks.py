@@ -33,6 +33,8 @@ EXIT_TOLERANCE = 0.03          # a sell's minimum is the quote less this
 EXIT_TOLERANCE_RETRY = 0.10    # after a sell reverted: give up more to get out
 FALLBACK_HAIRCUT = 0.01        # a paper fill straight from an ETH pool while every aggregator is down also gives up this:
                                # the ETH-to-USDG leg a route would have paid, so a fallback never flatters a result
+DIRECT_EXIT_FLOOR = 0.80       # an entry needs a direct exit (its own pool, then the other asset's v3 pool to USDG) paying at
+                               # least this share of the best route's: no position the worm could only sell through an aggregator
 MODEL = 'routed-quote-v1'
 
 
@@ -104,10 +106,11 @@ def _code_digest(parts):
 # The entry rules' own definitions are frozen per rule (strategy_validation.frozen), not here: adding a rule must not
 # void the others. A new Python minor version changes every digest and so voids every cohort once.
 EVIDENCE_CODE = {
-    'trade_checks': ('entry', '_entry_direct', 'exit_quote', '_direct', '_limits', 'quote_unit', 'gas_cost',
+    'trade_checks': ('entry', '_entry_direct', 'exit_quote', '_direct', '_direct_exit', '_limits', 'quote_unit', 'gas_cost',
                      '_gas_cost_at_price', 'entry_basis', 'verified', 'live_fill', 'pool', 'eligible'),
     'route': ('candidate', 'parse_kyber', 'parse_lifi', 'parse_relay', '_kyber', '_lifi', '_relay', '_lifi_params', '_ask',
-              '_record', '_available', '_pace', 'best_quote', 'ALLOWED', 'PROVIDERS', 'EXECUTABLE', 'TRADE'),
+              '_record', '_available', '_admit', '_gap', '_pace', 'best_quote', 'ALLOWED', 'PROVIDERS', 'EXECUTABLE', 'OWN',
+              'TRADE'),
     'paper': ('pair', 'pair_symbol', 'live_comparable', 'pause_windows', 'Paper._consider', 'Paper.enter', 'Paper._open',
               'Paper._mark', 'Paper._mark_position', 'Paper._quote', 'Paper._value'),
     'trade_risk': ('loss_limit', 'check'),
@@ -115,7 +118,7 @@ EVIDENCE_CODE = {
     'watch': ('features', 'passes', 'flow', '_flows', 'holders_kept', 'sample_bucket', '_needs_flow', '_needs_holders',
               'all_looks', '_resolve_pools', '_sample', 'filtered_member', 'Watcher._pools', 'Watcher.mark_positions'),
     'poolstate': ('pool_id', 'state_slot', 'sqrt_price', 'quote_decimals', 'token_price', 'mids', 'position_mids'),
-    'trader': ('pool_key', 'quote_buy'),
+    'trader': ('pool_key', 'quote_buy', 'quote_v3', 'best_v3'),
     'prices': ('usable_price', 'observed_at', 'token_prices', 'eth_usd', 'eth_usd_cached', 'eth_usd_last', 'asset_usd'),
     'paper_research': ('FILTER_VERSION', 'FEATURES', 'LIMITS', 'entry_features', 'risk_filter'),
 }
@@ -130,6 +133,7 @@ def evidence_spec():
             'exit_tolerance_retry': EXIT_TOLERANCE_RETRY,
             'max_roundtrip_loss': MAX_ROUNDTRIP_LOSS, 'max_price_impact': MAX_PRICE_IMPACT,
             'max_gas_fraction': MAX_GAS_FRACTION, 'quote_ttl': QUOTE_TTL, 'fallback_haircut': FALLBACK_HAIRCUT,
+            'direct_exit_floor': DIRECT_EXIT_FLOOR,
             'route': route.evidence(),
             'gas': {'units_margin': GAS_UNITS_MARGIN, 'approval_units': APPROVAL_GAS_UNITS, 'price_margin': GAS_PRICE_MARGIN},
             'loss_limit_usd': trade_risk.loss_limit(), 'watch': watch.evidence_constants()}
@@ -227,13 +231,32 @@ def _direct(rpc, pk, token_in, token_out, amount):
         return None
 
 
+def _direct_exit(rpc, pk, token, amount):
+    """The direct exit for a pool against ETH or a stock: the token sold on its own pool for that asset, then the
+    asset sold for USDG on its best Uniswap v3 pool, in one Universal Router call (trader.exit_calldata). Needs no
+    aggregator: the path every position can always be sold by. None for a USDG pool, or when a leg does not quote."""
+    from .trader import V3_GAS, best_v3, quote_buy
+    quote = pk.get('quote')
+    if quote in (None, C.USDG):
+        return None
+    try:
+        middle, gas, direction = quote_buy(rpc, pk, quote, amount)
+        if middle <= 0:
+            return None
+        fee, out = best_v3(rpc, C.WETH if quote == C.ZERO else quote, C.USDG, middle)
+        return route.candidate('pons-v3', token, C.USDG, amount, out, gas + V3_GAS, 0.0, C.UNIVERSAL_ROUTER, C.PERMIT2,
+                               direction=direction, v3_fee=fee)
+    except Exception:
+        return None
+
+
 def _limits(impact, roundtrip, fee, dollars):
     if (not math.isfinite(impact) or abs(impact) > MAX_PRICE_IMPACT
             or roundtrip < 1 - MAX_ROUNDTRIP_LOSS or fee > dollars * MAX_GAS_FRACTION):
         raise ValueError('price impact, round-trip loss or gas exceeds the pilot limit')
 
 
-def entry(rpc, db, token, dollars, *, reference=None, fallback=False, providers=route.PROVIDERS, direct=True):
+def entry(rpc, db, token, dollars, *, reference=None, fallback=False, providers=route.PROVIDERS, direct=True, lane='paper'):
     """A buy of `dollars` USDG of `token` by the best checked route, with its round trip back to USDG by the
     best route for the tokens it would at least get: every hop's fee, the creator tax, the impact, the
     aggregator's own fee and gas on both legs. `reference` is the mid the caller just read from the token's
@@ -242,7 +265,9 @@ def entry(rpc, db, token, dollars, *, reference=None, fallback=False, providers=
 
     fallback (paper only): when no route answers and the pool trades against ETH, the pool is quoted directly as
     before routing; that fill is marked live_fill=False, since live holds no ETH to make it. `providers` and
-    `direct` narrow the candidates (live, re-quoting through the provider it has just approved)."""
+    `direct` narrow the candidates (live, re-quoting through the provider it has just approved). Every entry also
+    needs a direct exit (the pool itself, or it and the other asset's v3 pool) paying at least DIRECT_EXIT_FLOOR of
+    the best route's sell: a position is never bought that only an aggregator could sell."""
     if rpc is None or not math.isfinite(dollars) or dollars <= 0:
         raise ValueError('execution quotes unavailable')
     started = time.time()
@@ -253,15 +278,18 @@ def entry(rpc, db, token, dollars, *, reference=None, fallback=False, providers=
     amount = int(round(dollars * 10 ** 6))
     try:
         buy = route.best_quote(C.USDG, token, amount, extra=[_direct(rpc, pk, C.USDG, token, amount) if direct else None],
-                               expect=dollars / price * 1e18, max_fee_usd=dollars * route.MAX_FEE, providers=providers)
+                               expect=dollars / price * 1e18, max_fee_usd=dollars * route.MAX_FEE, providers=providers, lane=lane)
     except route.NoRoute:
         if not fallback or pk['quote'] != C.ZERO:
             raise
         return _entry_direct(rpc, pk, token, dollars, price, started)
     out = buy['out']
     minimum = out * 9700 // 10000
-    sell = route.best_quote(token, C.USDG, minimum, extra=[_direct(rpc, pk, token, C.USDG, minimum)],
-                            expect=minimum / 1e18 * price * 1e6, max_fee_usd=dollars * route.MAX_FEE)
+    own_exit = _direct(rpc, pk, token, C.USDG, minimum) or _direct_exit(rpc, pk, token, minimum)
+    sell = route.best_quote(token, C.USDG, minimum, extra=[own_exit], expect=minimum / 1e18 * price * 1e6,
+                            max_fee_usd=dollars * route.MAX_FEE, lane=lane)
+    if not own_exit or own_exit['out'] < DIRECT_EXIT_FLOOR * sell['out']:
+        raise ValueError('no direct exit path within the floor')
     fee, sell_fee = gas_cost(rpc, buy['gas']), gas_cost(rpc, sell['gas'])
     impact = 1 - (out / 1e18 * price / dollars)
     roundtrip = (sell['out'] * (1 - SLIPPAGE) / 1e6 - fee - sell_fee) / dollars
@@ -273,7 +301,7 @@ def entry(rpc, db, token, dollars, *, reference=None, fallback=False, providers=
             'gas_usd': fee, 'quoted_at': started, 'expires_at': started + QUOTE_TTL,
             'direction': buy.get('direction'), 'price': price, 'roundtrip_ratio': roundtrip,
             'liquidation_usd': sell['out'] * 9700 // 10000 / 1e6 - sell_fee, 'model': MODEL,
-            'route': buy, 'provider': buy['provider'], 'live_fill': True}
+            'route': buy, 'provider': buy['provider'], 'live_fill': True, 'direct_exit': own_exit['provider']}
 
 
 def _entry_direct(rpc, pk, token, dollars, price, started):
@@ -302,11 +330,12 @@ def _entry_direct(rpc, pk, token, dollars, price, started):
 
 
 def exit_quote(rpc, pk, token, amount, *, tolerance=None, cached_prices=False, fallback=False, reference=None,
-               providers=route.TRADE, direct=True):
-    """A sell of `amount` tokens into USDG by the best checked route (the token's own pool included when it
-    trades against USDG). `reference`, the pool's USD mid when the caller has it, sets the band a route must sit
-    in. fallback (paper only): with no route and an ETH pool, the pool is quoted directly, less FALLBACK_HAIRCUT,
-    and marked live_fill=False. cached_prices: no price request on the exit path."""
+               providers=route.TRADE, direct=True, lane='paper'):
+    """A sell of `amount` tokens into USDG by the best checked route, the direct exit included: the token's own
+    USDG pool, or its own pool and the other asset's v3 pool to USDG. `reference`, the pool's USD mid when the
+    caller has it, refuses only a route paying suspiciously more than it (never the direct exit). fallback (paper
+    rows live could not have made only): with no route and an ETH pool, the pool is quoted directly, less
+    FALLBACK_HAIRCUT, and marked live_fill=False. cached_prices: no price request on the exit path."""
     from .trader import quote_buy
     tolerance = EXIT_TOLERANCE if tolerance is None else tolerance
     if not 0 < tolerance <= EXIT_TOLERANCE_RETRY:
@@ -319,8 +348,8 @@ def exit_quote(rpc, pk, token, amount, *, tolerance=None, cached_prices=False, f
         raise ValueError('fresh cached gas pricing unavailable')
     expect = amount / 1e18 * reference * 1e6 if reference else None
     try:
-        q = route.best_quote(token, C.USDG, amount, extra=[_direct(rpc, pk, token, C.USDG, amount) if direct else None],
-                             expect=expect, providers=providers)
+        own = (_direct(rpc, pk, token, C.USDG, amount) or _direct_exit(rpc, pk, token, amount)) if direct else None
+        q = route.best_quote(token, C.USDG, amount, extra=[own], expect=expect, providers=providers, side='exit', lane=lane)
         (unit, usd), out, gas, direction, haircut = (10 ** 6, 1.0), q['out'], q['gas'], q.get('direction'), 0.0
     except route.NoRoute:
         if not fallback or pk['quote'] != C.ZERO:

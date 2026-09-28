@@ -14,6 +14,7 @@ import logging
 import math
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, wait as _wait
 
 import requests
@@ -27,7 +28,12 @@ log = logging.getLogger("wormhole.route")
 DUMMY = "0x000000000000000000000000000000000000dead"   # the address every read-only quote names
 TIMEOUT_S = 4.0            # one provider request
 WAIT_S = 5.0               # best_quote waits this long for every provider; a late answer is dropped
-MIN_GAP_S = 0.25           # per provider: at most four requests a second, whatever the callers
+MIN_GAP_S = 0.25           # per provider, at least this between requests, whatever the callers (0: no pacing, tests)
+MIN_GAP = {"kyber": 0.4}   # KyberSwap allows 30 requests in 10 s: 25 used, the rest is headroom
+LANES = ("paper", "live")  # live keeps breakers of its own: paper traffic can never stand a provider down for live
+LIFI_WINDOW_S = 7200       # LI.FI without a key: 75 requests per two hours
+LIFI_FREE_LIMIT = 75
+LIFI_LIVE_RESERVE = 25     # ... of which paper may use at most 50: the rest is kept for live
 BREAK_AFTER = 3            # consecutive failures that stand a provider down
 BREAK_BASE_S = 30          # its first pause; each further failure doubles it ...
 BREAK_MAX_S = 900          # ... up to this. A rate limit stands it down at once
@@ -48,11 +54,13 @@ KYBER_ROUTER = "0x6131b5fae19ea4f9d964eac0408e4408b66337b5"     # MetaAggregatio
 LIFI_DIAMOND = "0xb477751b76cf82d00a686a1232f5fcd772414af3"     # LI.FI on chain 4663: router and spender
 RELAY_PROXY = "0xccc88a9d1b4ed6b0eaba998850414b24f1c315be"      # Relay's approval proxy (quote-only here)
 ALLOWED = {"pons": {"to": (C.UNIVERSAL_ROUTER,), "spender": (C.PERMIT2,)},
+           "pons-v3": {"to": (C.UNIVERSAL_ROUTER,), "spender": (C.PERMIT2,)},
            "kyber": {"to": (KYBER_ROUTER,), "spender": (KYBER_ROUTER,)},
            "lifi": {"to": (LIFI_DIAMOND,), "spender": (LIFI_DIAMOND,)},
            "relay": {"to": (RELAY_PROXY,), "spender": (RELAY_PROXY,)}}
 PROVIDERS = ("kyber", "lifi", "relay")      # asked by best_quote
-EXECUTABLE = ("pons", "kyber", "lifi")      # may be chosen, on paper and live alike
+EXECUTABLE = ("pons", "pons-v3", "kyber", "lifi")   # may be chosen, on paper and live alike
+OWN = ("pons", "pons-v3")   # the token's own pool (and, for an exit, the other asset's v3 pool to USDG): no aggregator
 TRADE = ("kyber", "lifi")                   # asked on the exit and valuation paths: only what could be chosen
 
 KYBER_SWAP = selector("swap((address,address,bytes,(address,address,address[],uint256[],address[],uint256[],"
@@ -94,42 +102,71 @@ class _State:
         self.open_until = 0.0
 
 
-_state = {p: _State() for p in PROVIDERS}
+_state = {(p, lane): _State() for p in PROVIDERS for lane in LANES}   # breakers, per provider and lane
+_paced = {p: _State() for p in PROVIDERS}                             # pacing, per provider: a rate limit is per address
+_spent = {p: deque() for p in PROVIDERS}                              # (when, lane) of every request in the budget window
 _session = requests.Session()
 _pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="route")
 
 
 def reset():
-    """Forget every provider's pacing and failures (tests; a fresh process starts this way)."""
+    """Forget every provider's pacing, budget and failures (tests; a fresh process starts this way)."""
     for p in PROVIDERS:
-        _state[p] = _State()
+        _paced[p], _spent[p] = _State(), deque()
+        for lane in LANES:
+            _state[(p, lane)] = _State()
 
 
 def status():
-    """{provider: {fails, backing_off_s}}: what the breakers hold now."""
+    """{lane: {provider: {fails, backing_off_s}}, 'lifi_budget': {...}}: what the breakers and the budget hold now."""
     now = time.time()
-    return {p: {"fails": s.fails, "backing_off_s": max(0, round(s.open_until - now))} for p, s in _state.items()}
+    out = {lane: {p: {"fails": _state[(p, lane)].fails, "backing_off_s": max(0, round(_state[(p, lane)].open_until - now))}
+                  for p in PROVIDERS} for lane in LANES}
+    if not C.LIFI_KEY:
+        used = [lane for ts, lane in _spent["lifi"] if now - ts < LIFI_WINDOW_S]
+        out["lifi_budget"] = {"limit": LIFI_FREE_LIMIT, "used": len(used), "paper": used.count("paper")}
+    return out
 
 
-def _available(p, now=None):
-    return (now or time.time()) >= _state[p].open_until
+def _available(p, lane="paper", now=None):
+    return (now or time.time()) >= _state[(p, lane)].open_until
+
+
+def _admit(p, lane):
+    """Does the provider's request budget allow one more request on this lane? LI.FI without a key allows 75 per two
+    hours; paper may use all but LIFI_LIVE_RESERVE of them, so valuations and paper exits can never exhaust live's."""
+    if p != "lifi" or C.LIFI_KEY:
+        return True
+    now, spent = time.time(), _spent[p]
+    with _paced[p].lock:
+        while spent and now - spent[0][0] >= LIFI_WINDOW_S:
+            spent.popleft()
+        paper = sum(1 for _, lane_ in spent if lane_ == "paper")
+        if len(spent) >= LIFI_FREE_LIMIT or (lane == "paper" and paper >= LIFI_FREE_LIMIT - LIFI_LIVE_RESERVE):
+            return False
+        spent.append((now, lane))
+        return True
+
+
+def _gap(p):
+    return max(MIN_GAP_S, MIN_GAP.get(p, 0)) if MIN_GAP_S else 0.0
 
 
 def _pace(p):
-    """Reserve the provider's next slot, MIN_GAP_S after the last, and wait for it outside the lock."""
-    s = _state[p]
+    """Reserve the provider's next slot, its gap after the last, and wait for it outside the lock."""
+    s = _paced[p]
     with s.lock:
         now = time.time()
-        slot = max(now, s.last + MIN_GAP_S)
+        slot = max(now, s.last + _gap(p))
         s.last = slot
     if slot > now:
         time.sleep(slot - now)
 
 
-def _record(p, ok, limited=False):
+def _record(p, ok, limited=False, lane="paper"):
     """A success closes the breaker. BREAK_AFTER failures in a row (or one rate limit) open it for
     BREAK_BASE_S, doubling with every further failure up to BREAK_MAX_S; the first request after that is the probe."""
-    s = _state[p]
+    s = _state[(p, lane)]
     with s.lock:
         if ok:
             s.fails, s.open_until = 0, 0.0
@@ -141,7 +178,10 @@ def _record(p, ok, limited=False):
 
 
 def _request(method, url, **kw):
-    r = _session.request(method, url, timeout=TIMEOUT_S, headers=HEADERS, **kw)
+    headers = dict(HEADERS)
+    if url.startswith(LIFI) and C.LIFI_KEY:
+        headers["x-lifi-api-key"] = C.LIFI_KEY       # optional (WH_LIFI_API_KEY): a higher limit; never logged
+    r = _session.request(method, url, timeout=TIMEOUT_S, headers=headers, **kw)
     if r.status_code == 429:
         raise RateLimited("rate limited")
     if r.status_code >= 400:
@@ -258,17 +298,17 @@ def _relay(token_in, token_out, amount_in):
 ASK = {"kyber": _kyber, "lifi": _lifi, "relay": _relay}
 
 
-def _ask(p, token_in, token_out, amount_in):
+def _ask(p, token_in, token_out, amount_in, lane="paper"):
     _pace(p)
     try:
         c = ASK[p](token_in, token_out, amount_in)
     except RateLimited:
-        _record(p, False, limited=True)
+        _record(p, False, limited=True, lane=lane)
         raise
     except Exception:
-        _record(p, False)
+        _record(p, False, lane=lane)
         raise
-    _record(p, True)
+    _record(p, True, lane=lane)
     return c
 
 
@@ -276,22 +316,28 @@ def _why(e):
     return "rate limited" if isinstance(e, RateLimited) else type(e).__name__ if not isinstance(e, ProviderError) else str(e)
 
 
-def best_quote(token_in, token_out, amount_in, *, extra=(), expect=None, max_fee_usd=None, providers=PROVIDERS, wait_s=WAIT_S):
+def best_quote(token_in, token_out, amount_in, *, extra=(), expect=None, max_fee_usd=None, providers=PROVIDERS,
+               wait_s=WAIT_S, side="entry", lane="paper"):
     """The executable route giving the most `token_out` for `amount_in` of `token_in` (base units), asking
-    `providers` in parallel (a provider standing down after failures is skipped) and adding `extra` candidates
-    (the token's own Pons pool). `expect` is the amount out the pool's own mid implies: a route further than
-    MID_BAND from it is not believed. `max_fee_usd` caps an aggregator's own fee. The result is the chosen
-    candidate plus `compared` (every route seen) and `failed` ({provider: why}). Raises NoRoute when nothing
-    executable is left."""
+    `providers` in parallel (a provider standing down after failures, or out of its request budget, is skipped)
+    and adding `extra` candidates (the token's own pool). `expect` is the amount out the pool's own mid implies.
+    On an entry a route further than MID_BAND from it either way is not believed. On an exit (side="exit") only a
+    route paying suspiciously MORE than the mid is refused, and the token's own pool never is: a thin pool after a
+    dump pays well under its last mid, and a stop that cannot fill protects nothing. `max_fee_usd` caps an
+    aggregator's own fee. `lane` keeps live's breakers apart from paper's. The result is the chosen candidate plus
+    `compared` (every route seen) and `failed` ({provider: why}). Raises NoRoute when nothing executable is left."""
     token_in, token_out, amount_in = _addr(token_in), _addr(token_out), int(amount_in)
-    if amount_in <= 0:
+    if amount_in <= 0 or side not in ("entry", "exit") or lane not in LANES:
         raise ValueError("nothing to route")
     found, failed, jobs = [c for c in extra if c], {}, {}
     for p in providers:
-        if not _available(p):
+        if not _available(p, lane):
             failed[p] = "backing off"
             continue
-        jobs[_pool.submit(_ask, p, token_in, token_out, amount_in)] = p
+        if not _admit(p, lane):
+            failed[p] = "request budget spent"
+            continue
+        jobs[_pool.submit(_ask, p, token_in, token_out, amount_in, lane)] = p
     done, late = _wait(jobs, timeout=wait_s) if jobs else (set(), set())
     for f in done:
         try:
@@ -301,7 +347,10 @@ def best_quote(token_in, token_out, amount_in, *, extra=(), expect=None, max_fee
     for f in late:
         failed[jobs[f]] = "timed out"
     for c in found:
-        c["band_ok"] = expect is None or (expect > 0 and abs(c["out"] / expect - 1) <= MID_BAND)
+        if side == "exit":
+            c["band_ok"] = c["provider"] in OWN or expect is None or (expect > 0 and c["out"] / expect - 1 <= MID_BAND)
+        else:
+            c["band_ok"] = expect is None or (expect > 0 and abs(c["out"] / expect - 1) <= MID_BAND)
         c["fee_ok"] = max_fee_usd is None or c["fee_usd"] <= max_fee_usd
     usable = [c for c in found if c["executable"] and c["band_ok"] and c["fee_ok"]]
     compared = [{"provider": c["provider"], "out": str(c["out"]), "executable": c["executable"], "band_ok": c["band_ok"],
@@ -309,7 +358,7 @@ def best_quote(token_in, token_out, amount_in, *, extra=(), expect=None, max_fee
     if not usable:
         raise NoRoute("no executable route within limits", found, failed)
     # Most out wins; on a tie the pool itself (no aggregator between the wallet and the pool).
-    best = max(usable, key=lambda c: (c["out"], c["provider"] == "pons"))
+    best = max(usable, key=lambda c: (c["out"], c["provider"] in OWN))
     return {**best, "compared": compared, "failed": failed}
 
 
@@ -325,7 +374,8 @@ def summary(q):
 def evidence():
     """What decides a route: part of the paper evidence spec (trade_checks.evidence_spec)."""
     return {"providers": list(PROVIDERS), "executable": list(EXECUTABLE), "mid_band": MID_BAND, "max_fee": MAX_FEE,
-            "timeout_s": TIMEOUT_S, "wait_s": WAIT_S, "quote_ttl": QUOTE_TTL,
+            "timeout_s": TIMEOUT_S, "wait_s": WAIT_S, "quote_ttl": QUOTE_TTL, "exit_band": "above only; own pool never",
+            "lifi_budget": [LIFI_FREE_LIMIT, LIFI_WINDOW_S, LIFI_LIVE_RESERVE],
             "allowed": {p: {k: list(v) for k, v in a.items()} for p, a in sorted(ALLOWED.items())}}
 
 

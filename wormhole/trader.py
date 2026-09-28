@@ -143,6 +143,73 @@ def swap_calldata(pk, zero_for_one, amount_in, min_out, currency_in, currency_ou
                                                              [V4_SWAP, inputs, deadline if deadline is not None else int(time.time()) + 600]).hex()
 
 
+# ---- the direct exit: the token's own pool, then the other asset's Uniswap v3 pool to USDG, one transaction ----
+V3_SWAP_EXACT_IN, WRAP_ETH, TAKE = b"\x00", b"\x0b", b"\x0e"
+MSG_SENDER = "0x0000000000000000000000000000000000000001"      # Universal Router: the caller
+ADDRESS_THIS = "0x0000000000000000000000000000000000000002"    # Universal Router: the router itself
+CONTRACT_BALANCE = 1 << 255                                     # Universal Router: all the router holds
+V3_FEES = (100, 500, 3000, 10000)
+V3_QUOTE_T = "(address,address,uint256,uint24,uint160)"
+V3_GAS = 200_000                                                # the v3 leg and the wrap, on top of the v4 swap's own estimate
+V3_FEE_TTL_S = 3600
+_v3_fee = {}                                                    # asset -> (fee tier, when it was found best)
+
+
+def quote_v3(rpc, token_in, token_out, amount_in, fee):
+    """QuoterV2.quoteExactInputSingle on one Uniswap v3 pool: the amount out (0 when it has no liquidity)."""
+    data = "0x" + keccak(text=f"quoteExactInputSingle({V3_QUOTE_T})")[:4].hex() + encode(
+        [V3_QUOTE_T], [(token_in, token_out, amount_in, fee, 0)]).hex()
+    raw = rpc.eth_call(C.QUOTER_V3, data)
+    return int(decode(["uint256", "uint160", "uint32", "uint256"], bytes.fromhex(raw[2:]))[0])
+
+
+def best_v3(rpc, token_in, token_out, amount_in):
+    """(fee tier, amount out) of the best Uniswap v3 pool from token_in to token_out. The tier found best is asked
+    alone for an hour; when it fails, every tier is asked again. Raises when no pool quotes."""
+    cached = _v3_fee.get(token_in)
+    if cached and time.time() - cached[1] < V3_FEE_TTL_S:
+        try:
+            out = quote_v3(rpc, token_in, token_out, amount_in, cached[0])
+            if out > 0:
+                return cached[0], out
+        except Exception:
+            pass
+    found = []
+    for fee in V3_FEES:
+        try:
+            found.append((quote_v3(rpc, token_in, token_out, amount_in, fee), fee))
+        except Exception:
+            continue
+    out, fee = max(found, default=(0, None))
+    if out <= 0:
+        raise ValueError("no v3 pool to USDG")
+    _v3_fee[token_in] = (fee, time.time())
+    return fee, out
+
+
+def exit_calldata(pk, token, amount_in, min_out, v3_fee, deadline):
+    """One Universal Router call that sells `amount_in` of `token` on its own Pons pool for the pool's other asset
+    (ETH is wrapped), kept inside the router, and swaps all of it to USDG on that asset's Uniswap v3 pool, paid to
+    the caller. It reverts below `min_out` USDG: the whole exit happens or none of it. Nothing but the Universal
+    Router and the pools is involved, so no aggregator has to be up for a position to be sold."""
+    quote = pk["quote"]
+    if quote in (C.USDG, None) or not 0 < min_out:
+        raise ValueError("the direct exit is for a pool against ETH or a stock")
+    actions = SWAP_EXACT_IN_SINGLE + SETTLE_ALL + TAKE
+    params = [encode([SWAP_T], [(_key_tuple(pk), pk["c0"] == token, amount_in, 0, 0, b"")]),
+              encode(["address", "uint256"], [token, amount_in]),
+              encode(["address", "address", "uint256"], [quote, ADDRESS_THIS, 0])]
+    commands, inputs, middle = V4_SWAP, [encode(["bytes", "bytes[]"], [actions, params])], quote
+    if quote == C.ZERO:
+        commands += WRAP_ETH
+        inputs.append(encode(["address", "uint256"], [ADDRESS_THIS, CONTRACT_BALANCE]))
+        middle = C.WETH
+    path = bytes.fromhex(middle[2:]) + int(v3_fee).to_bytes(3, "big") + bytes.fromhex(C.USDG[2:])
+    commands += V3_SWAP_EXACT_IN
+    inputs.append(encode(["address", "uint256", "uint256", "bytes", "bool"], [MSG_SENDER, CONTRACT_BALANCE, min_out, path, False]))
+    return selector("execute(bytes,bytes[],uint256)") + encode(["bytes", "bytes[]", "uint256"], [commands, inputs, deadline]).hex()
+
+
 def simulate_buy(rpc, wallet, pk, token, amount_in, min_out, zero_for_one):
     """eth_call of the real router call with a pretend ETH balance. Only meaningful for ETH-quoted pools."""
     if pk["quote"] != C.ZERO:
