@@ -162,18 +162,27 @@ def clear_route_allowance(rpc, db, acct, currency, spender, token, swapped):
         db.add_event('error', 'a routed allowance could not be reset yet; it is retried when the order settles', token)
 
 
-def route_tx(rpc, quote, approved):
-    """The chosen aggregator's transaction for this wallet, refused unless it goes to that provider's own router,
-    sends no ETH, pays this wallet at least the quote's minimum (our slippage cap, decoded from the calldata) and
-    spends exactly the amount quoted; then simulated from the wallet at the latest block (with the exact approval
-    it still needs when `approved` is False), which must deliver the minimum and spend exactly that amount."""
+def route_ready(rpc, quote):
+    """Before an approval, and without asking any provider to build for the wallet: the quote is fresh, its provider
+    may be executed, and every contract its transaction runs through still holds its pinned code."""
     q = quote['route']
     if time.time() >= min(quote['expires_at'], q['expires_at']):
         raise ValueError('stale route quote')
+    if q['provider'] not in route.EXECUTABLE or q['provider'] in route.OWN:
+        raise route.UnsafeRoute("this provider's transactions are not executed")
     route.verify_contracts(rpc, q['provider'])
+
+
+def route_tx(rpc, quote):
+    """The chosen aggregator's transaction for this wallet, built only now, when the order is decided and approved:
+    refused unless it goes to that provider's own router, sends no ETH and is exactly our trade (route.check: pays
+    this wallet at least the quote's minimum, our slippage cap, and spends exactly the amount quoted); then
+    simulated from the wallet at the latest block, which must deliver the minimum and spend exactly that amount."""
+    route_ready(rpc, quote)
+    q = quote['route']
     tx = route.build(q, C.WALLET, int(time.time()) + execution.SWAP_TTL)
     route.check(q, tx, C.WALLET, int(quote['minimum_raw']))
-    route.verify_simulation(rpc, C.WALLET, q, tx, int(quote['minimum_raw']), approve_to=None if approved else q['spender'])
+    route.verify_simulation(rpc, C.WALLET, q, tx, int(quote['minimum_raw']))
     return tx
 
 
@@ -358,7 +367,7 @@ def decide(rpc, db, runway, acct, ready):
                 continue
             provider = quote.get('provider') or 'pons'
             if provider != 'pons':
-                route_tx(rpc, quote, approved=False)       # refused or short in simulation: no approval gas spent
+                route_ready(rpc, quote)                   # a stale quote or a changed contract: no approval gas spent
             attempt = db.insert('INSERT INTO trade_attempts(ts,token,side,gas_usd) VALUES(?,?,?,?)',
                                 (int(time.time()), r['token'], 'buy', quote['gas_usd']))
             tx, spender, tid = None, None, None
@@ -366,7 +375,6 @@ def decide(rpc, db, runway, acct, ready):
                 if provider == 'pons':
                     expiry = approve_exact(rpc, acct, C.USDG, quote['amount_raw'])
                 else:
-                    route.verify_contracts(rpc, provider)       # fail closed before any allowance exists
                     spender = quote['route']['spender']
                     approve_route(rpc, acct, C.USDG, spender, quote['amount_raw'])
                     expiry = int(time.time()) + execution.SWAP_TTL
@@ -377,7 +385,7 @@ def decide(rpc, db, runway, acct, ready):
                 if (quote.get('provider') or 'pons') != provider or quote['amount_raw'] > balance:
                     raise ValueError('the route changed after approval')
                 if provider != 'pons':
-                    tx = route_tx(rpc, quote, approved=True)
+                    tx = route_tx(rpc, quote)
                 tid = submit(rpc, db, acct, r['token'], r['symbol'], 'buy', size, quote,
                        {'arm': validation['arm'], 'policy': policy, 'rule': r['strategy']}, expiry, tx=tx)
             finally:
@@ -423,10 +431,9 @@ def _sell_own(rpc, db, acct, p, pk, amount, tolerance, mid, snapshot, quote=None
 
 def _sell_routed(rpc, db, acct, p, pk, amount, tolerance, mid, snapshot, quote):
     provider = quote['provider']
-    route_tx(rpc, quote, approved=False)
+    route_ready(rpc, quote)                             # fail closed before any allowance exists
     attempt = db.insert('INSERT INTO trade_attempts(ts,token,side,gas_usd) VALUES(?,?,?,?)',
                         (int(time.time()), p['token'], 'sell', quote['gas_usd']))
-    route.verify_contracts(rpc, provider)               # fail closed before any allowance exists
     spender, tid = quote['route']['spender'], None
     try:
         approve_route(rpc, acct, p['token'], spender, amount)
@@ -435,7 +442,7 @@ def _sell_routed(rpc, db, acct, p, pk, amount, tolerance, mid, snapshot, quote):
                                      providers=(provider,), direct=False, lane='live')
         if quote.get('provider') != provider:
             raise ValueError('the route changed after approval')
-        tx = route_tx(rpc, quote, approved=True)
+        tx = route_tx(rpc, quote)
         tid = submit(rpc, db, acct, p['token'], p['symbol'], 'sell', 0, quote, snapshot, expiry, tx=tx)
     finally:
         clear_route_allowance(rpc, db, acct, p['token'], spender, p['token'], tid is not None)

@@ -551,8 +551,8 @@ def routed(setup, monkeypatch):
 def test_a_routed_buy_is_built_for_the_wallet_checked_simulated_and_sent_to_the_allowlisted_router(routed):
     s = routed
     buy(s)
-    assert s.built == [C.WALLET, C.WALLET]                              # built afresh after the approval
-    assert s.sims == [KYBER, None]                                      # first with the exact approval simulated, then as it is on chain
+    assert s.built == [C.WALLET]                                        # built for the wallet only once decided and approved
+    assert s.sims == [None]                                             # simulated as it will run, the approval on chain
     assert s.approvals == [(C.USDG, KYBER, 10_000_000)]
     assert len(s.sent) == 1 and s.sent[0]['to'] == KYBER and s.sent[0]['value'] == 0
     assert s.pins and s.pins[0] == 'kyber' and s.cleared == [(C.USDG, KYBER, True)]   # pinned before, nothing left after
@@ -564,7 +564,7 @@ def test_a_routed_buy_is_built_for_the_wallet_checked_simulated_and_sent_to_the_
 
 
 @pytest.mark.parametrize('unsafe', ['router', 'value', 'receiver', 'minimum', 'amount', 'short', 'overspend', 'relay', 'stale'])
-def test_an_unsafe_route_is_refused_before_any_approval(routed, unsafe):
+def test_an_unsafe_route_is_refused_and_leaves_no_allowance(routed, unsafe):
     s = routed
     if unsafe == 'router': s.tx['to'] = '0x' + '66' * 20
     if unsafe == 'value': s.tx['value'] = 1
@@ -576,8 +576,12 @@ def test_an_unsafe_route_is_refused_before_any_approval(routed, unsafe):
     if unsafe == 'relay': s.quote.update(provider='relay', route=R.candidate('relay', C.USDG, s.token, 10_000_000, 10**21, 1, 0, R.RELAY_PROXY, R.RELAY_PROXY))
     if unsafe == 'stale': s.quote['route']['expires_at'] = time.time() - 1
     buy(s)
-    assert not s.approvals and not s.sent and not s.db.q('SELECT * FROM trades')
+    assert not s.sent and not s.db.q('SELECT * FROM trades')
     assert s.db.one('SELECT blocked_until FROM trade_intents WHERE token=?', (s.token,))['blocked_until'] > time.time()
+    if unsafe in ('relay', 'stale'):
+        assert not s.approvals and not s.built                            # refused before any approval or build
+    else:
+        assert s.approvals and s.cleared == [(C.USDG, KYBER, False)]      # refused at the final build: the allowance reset
 
 
 def test_a_different_winner_after_the_approval_is_not_bought(routed, monkeypatch):

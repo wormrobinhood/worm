@@ -223,7 +223,7 @@ def test_a_token_paired_with_anything_is_bought_by_the_best_route_at_its_full_ro
     q = E.entry(object(), db, token, 10., reference=.01)
     out = int(10**7 * 10**14 * .98)
     assert q['provider'] == 'kyber' and q['live_fill'] and q['out_raw'] == out and q['amount_raw'] == 10**7
-    assert q['route']['to'] == q['route']['spender'] and {c['provider'] for c in q['route']['compared']} == {'kyber', 'lifi', 'relay'}
+    assert q['route']['to'] == q['route']['spender'] and {c['provider'] for c in q['route']['compared']} == {'kyber', 'lifi'}
     back = int(out * 97 // 100 / 1e18 * .01 * 1e6 * .98)
     assert q['roundtrip_ratio'] == pytest.approx((back * .97 / 1e6 - .04 - .04) / 10)
     assert q['liquidation_usd'] == pytest.approx(back * 97 // 100 / 1e6 - .04)

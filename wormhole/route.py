@@ -46,7 +46,7 @@ BUILD_SLIPPAGE_BPS = 250   # the minimum a built transaction encodes, below its 
 KYBER = "https://aggregator-api.kyberswap.com/robinhood/api/v1"
 LIFI = "https://li.quest/v1"
 RELAY = "https://api.relay.link"
-HEADERS = {"User-Agent": "wormhole/0.1", "Accept": "application/json", "x-client-id": "wormhole"}
+HEADERS = {"Accept": "application/json"}   # no client id, no name: KyberSwap wrote one into every transaction's data
 
 # Every address a transaction may be sent to, or an allowance granted to, per provider (seen on 2026-09-28 in
 # live quotes). A quote naming anything else is not executable; a built transaction naming anything else is refused.
@@ -58,7 +58,7 @@ ALLOWED = {"pons": {"to": (C.UNIVERSAL_ROUTER,), "spender": (C.PERMIT2,)},
            "kyber": {"to": (KYBER_ROUTER,), "spender": (KYBER_ROUTER,)},
            "lifi": {"to": (LIFI_DIAMOND,), "spender": (LIFI_DIAMOND,)},
            "relay": {"to": (RELAY_PROXY,), "spender": (RELAY_PROXY,)}}
-PROVIDERS = ("kyber", "lifi", "relay")      # asked by best_quote
+PROVIDERS = ("kyber", "lifi", "relay")      # everything known; Relay is asked only by scripts/route-compare.py
 EXECUTABLE = ("pons", "pons-v3", "kyber", "lifi")   # may be chosen, on paper and live alike
 OWN = ("pons", "pons-v3")   # the token's own pool (and, for an exit, the other asset's v3 pool to USDG): no aggregator
 TRADE = ("kyber", "lifi")                   # asked on the exit and valuation paths: only what could be chosen
@@ -316,7 +316,7 @@ def _why(e):
     return "rate limited" if isinstance(e, RateLimited) else type(e).__name__ if not isinstance(e, ProviderError) else str(e)
 
 
-def best_quote(token_in, token_out, amount_in, *, extra=(), expect=None, max_fee_usd=None, providers=PROVIDERS,
+def best_quote(token_in, token_out, amount_in, *, extra=(), expect=None, max_fee_usd=None, providers=None,
                wait_s=WAIT_S, side="entry", lane="paper"):
     """The executable route giving the most `token_out` for `amount_in` of `token_in` (base units), asking
     `providers` in parallel (a provider standing down after failures, or out of its request budget, is skipped)
@@ -327,6 +327,7 @@ def best_quote(token_in, token_out, amount_in, *, extra=(), expect=None, max_fee
     aggregator's own fee. `lane` keeps live's breakers apart from paper's. The result is the chosen candidate plus
     `compared` (every route seen) and `failed` ({provider: why}). Raises NoRoute when nothing executable is left."""
     token_in, token_out, amount_in = _addr(token_in), _addr(token_out), int(amount_in)
+    providers = TRADE if providers is None else providers     # a quote-only provider adds load and nothing chosen
     if amount_in <= 0 or side not in ("entry", "exit") or lane not in LANES:
         raise ValueError("nothing to route")
     found, failed, jobs = [c for c in extra if c], {}, {}

@@ -260,7 +260,7 @@ def _limits(impact, roundtrip, fee, dollars):
         raise ValueError('price impact, round-trip loss or gas exceeds the pilot limit')
 
 
-def entry(rpc, db, token, dollars, *, reference=None, fallback=False, providers=route.PROVIDERS, direct=True, lane='paper'):
+def entry(rpc, db, token, dollars, *, reference=None, fallback=False, providers=route.TRADE, direct=True, lane='paper'):
     """A buy of `dollars` USDG of `token` by the best checked route, with its round trip back to USDG by the
     best route for the tokens it would at least get: every hop's fee, the creator tax, the impact, the
     aggregator's own fee and gas on both legs. `reference` is the mid the caller just read from the token's

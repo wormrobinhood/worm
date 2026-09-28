@@ -87,9 +87,11 @@ def test_best_quote_takes_the_most_out_among_executable_routes(monkeypatch):
     calls = answer(monkeypatch, buys())
     q = R.best_quote(USDG, KLV, 10_000_000)
     assert q['provider'] == 'kyber' and q['out'] == 2367719523394184099659776
-    assert {c['provider'] for c in q['compared']} == {'kyber', 'lifi', 'relay'} and q['failed'] == {}
-    # a read-only quote never names a real wallet
-    assert len(calls) == 3 and C.WALLET
+    assert {c['provider'] for c in q['compared']} == {'kyber', 'lifi'} and q['failed'] == {}
+    # Relay is quote-only: it is not even asked unless named (scripts/route-compare.py)
+    assert not any(provider_of(u) == 'relay' for _, u, _ in calls)
+    # a read-only quote never names a real wallet, and carries no client id or name
+    assert len(calls) == 2 and C.WALLET and 'x-client-id' not in R.HEADERS and 'User-Agent' not in R.HEADERS
     for method, url, kw in calls:
         body = json.dumps(kw).lower()
         assert C.WALLET[2:] not in body
@@ -100,7 +102,7 @@ def test_a_quote_only_provider_never_wins_even_when_it_offers_more(monkeypatch):
     answers = buys()
     answers['relay'] = json.loads(json.dumps(answers['relay']).replace('2364013931076494517338112', '9364013931076494517338112'))
     answer(monkeypatch, answers)
-    assert R.best_quote(USDG, KLV, 10_000_000)['provider'] == 'kyber'
+    assert R.best_quote(USDG, KLV, 10_000_000, providers=R.PROVIDERS)['provider'] == 'kyber'
 
 
 def test_the_pool_itself_is_a_fourth_candidate_and_wins_a_tie(monkeypatch):
@@ -138,7 +140,7 @@ def test_one_provider_down_leaves_the_others(monkeypatch):
 def test_every_provider_down_is_no_route_and_says_why(monkeypatch):
     answer(monkeypatch, {'kyber': R.ProviderError('http 500'), 'lifi': R.RateLimited('rate limited'), 'relay': ValueError('bad json')})
     with pytest.raises(R.NoRoute) as e:
-        R.best_quote(USDG, KLV, 10_000_000)
+        R.best_quote(USDG, KLV, 10_000_000, providers=R.PROVIDERS)
     assert e.value.failed == {'kyber': 'http 500', 'lifi': 'rate limited', 'relay': 'ValueError'}
 
 
