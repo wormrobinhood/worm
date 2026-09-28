@@ -401,16 +401,71 @@ def build(q, wallet, deadline):
     raise UnsafeRoute("this provider's transactions are not executed")
 
 
+# What a KyberSwap or LI.FI transaction may contain, pinned from real builds (2026-09-28). Anything else is refused:
+# changing one of these is a code change, reviewed, never something a provider's answer can do.
+KYBER_EXECUTOR = "0x8f10b468b06c6fd214b65f87778827f7d113f996"   # the router hands the input to this executor only
+KYBER_FLAGS = 0x200               # the only flag bit its builds carry, buys and sells; 0x1 (a partial fill), fee flags
+                                  # and the burn/claim flags are refused with everything else
+LIFI_FACET = "0xb129ce9c3fcd55726ff314a2764d3937fa496071"      # the diamond's facet behind both swap functions
+LIFI_FEE_COLLECTOR = "0xf4bffe4dfc693f37715a47c15bda8af9ed8f7cf1"
+LIFI_FEE_RECIPIENT = "0xc06ebbefd94032b85424d51906e2a335efae264b"
+LIFI_FEE_CALL = selector("forwardERC20Fees(address,(address,uint256)[])")
+CODE_HASHES = {   # keccak of the deployed code: a contract swapped under the same address is refused before any approval
+    KYBER_ROUTER: "0xdc6eb20a6d4701d8f0f04f9a3342d254eb2698bbad281d8578d6efba21865867",
+    KYBER_EXECUTOR: "0xfc8bfd5c118d0c06e9ff71b223fc3ba9612ac167edbf7e7e6e22bec156a5e70d",
+    LIFI_DIAMOND: "0xca0fd158089c97d9e77828a4254bc7037be8ee6f784e45d80204df0e56013101",
+    LIFI_FACET: "0xdb3f706ca7f78237a197ccab9300628db168f0bc6c509835771200f9c163daa5",
+    LIFI_FEE_COLLECTOR: "0x7ee455a6853068874bfd201f93d6383ed6d88934a922316db5575b057e2ebe74",
+}
+PINNED = {"kyber": (KYBER_ROUTER, KYBER_EXECUTOR), "lifi": (LIFI_DIAMOND, LIFI_FACET, LIFI_FEE_COLLECTOR)}
+FACET_OF = selector("facetAddress(bytes4)")
+
+
+def verify_contracts(rpc, provider):
+    """Fail closed unless every contract a provider's transaction runs through still holds the code pinned in
+    CODE_HASHES, and LI.FI's diamond still routes both swap functions to the pinned facet. Read-only."""
+    from eth_utils import keccak
+    if provider not in PINNED:
+        raise UnsafeRoute("this provider's transactions are not executed")
+    if provider == "lifi":
+        for fn in (LIFI_MULTI, LIFI_SINGLE):
+            raw = rpc.call("eth_call", [{"to": LIFI_DIAMOND, "data": FACET_OF + fn[2:].ljust(64, "0")}, "latest"])
+            if _addr("0x" + (raw or "")[-40:]) != LIFI_FACET:
+                raise UnsafeRoute("the LI.FI diamond routes its swap to another facet")
+    for address in PINNED[provider]:
+        code = rpc.call("eth_getCode", [address, "latest"])
+        if not code or code == "0x" or "0x" + keccak(hexstr=code).hex() != CODE_HASHES[address]:
+            raise UnsafeRoute("a pinned contract's code changed")
+
+
 def decode_kyber(data):
+    """Everything of a MetaAggregationRouterV2 swap that decides where the money goes."""
     if not data.startswith(KYBER_SWAP):
         raise UnsafeRoute("unexpected router function")
     (p,) = decode([KYBER_T], bytes.fromhex(data[10:]))
     d = p[3]
     return {"token_in": _addr(d[0]), "token_out": _addr(d[1]), "receiver": _addr(d[6]), "amount_in": int(d[7]),
-            "min_out": int(d[8])}
+            "min_out": int(d[8]), "call_target": _addr(p[0]), "approve_target": _addr(p[1]),
+            "src_receivers": [_addr(a) for a in d[2]], "src_amounts": [int(a) for a in d[3]],
+            "fee_receivers": list(d[4]), "fee_amounts": list(d[5]), "flags": int(d[9]), "permit": bytes(d[10])}
+
+
+def check_kyber(d):
+    """Exactly our trade: the whole input to the pinned executor and nowhere else, no fee to anyone, no permit, no
+    partial fill, no flag outside the pinned set."""
+    if d["call_target"] != KYBER_EXECUTOR or d["approve_target"] != C.ZERO:
+        raise UnsafeRoute("the swap runs through another executor")
+    if d["src_receivers"] != [KYBER_EXECUTOR] or sum(d["src_amounts"]) != d["amount_in"] or len(d["src_amounts"]) != 1:
+        raise UnsafeRoute("the input is split to someone else")
+    if d["fee_receivers"] or d["fee_amounts"]:
+        raise UnsafeRoute("the swap pays a fee to someone")
+    if d["flags"] & ~KYBER_FLAGS or d["permit"]:
+        raise UnsafeRoute("the swap carries a flag or a permit outside the pinned set")
 
 
 def decode_lifi(data):
+    """A GenericSwapFacetV3 swap: receiver, minimum and every swap step (callTo, approveTo, sending asset,
+    receiving asset, amount, calldata, requiresDeposit)."""
     if data.startswith(LIFI_MULTI):
         v = decode(["bytes32", "string", "string", "address", "uint256", f"{LIFI_SWAP_T}[]"], bytes.fromhex(data[10:]))
         swaps = list(v[5])
@@ -421,18 +476,48 @@ def decode_lifi(data):
         raise UnsafeRoute("unexpected router function")
     if not swaps:
         raise UnsafeRoute("no swap in the transaction")
-    return {"token_in": _addr(swaps[0][2]), "token_out": _addr(swaps[-1][3]), "receiver": _addr(v[3]),
-            "amount_in": int(swaps[0][4]), "min_out": int(v[4])}
+    steps = [{"call_to": _addr(x[0]), "approve_to": _addr(x[1]), "send": _addr(x[2]), "receive": _addr(x[3]),
+              "amount": int(x[4]), "calldata": bytes(x[5]), "deposit": bool(x[6])} for x in swaps]
+    return {"token_in": steps[0]["send"], "token_out": steps[-1]["receive"], "receiver": _addr(v[3]),
+            "amount_in": steps[0]["amount"], "min_out": int(v[4]), "steps": steps}
 
 
-DECODERS = {"kyber": decode_kyber, "lifi": decode_lifi}
+def check_lifi(d):
+    """Exactly our trade: the wallet deposits once, for the first step, in the token it sells; every later step
+    spends what the step before it received; the only fee step is the first, the pinned fee collector's, paid
+    in that token to the pinned recipient, at most MAX_FEE of the order, and the next step spends the rest."""
+    steps, amount = d["steps"], d["amount_in"]
+    if not steps[0]["deposit"] or any(s["deposit"] for s in steps[1:]):
+        raise UnsafeRoute("the swap pulls more than one deposit from the wallet")
+    for before, after in zip(steps, steps[1:]):
+        if after["send"] != before["receive"]:
+            raise UnsafeRoute("a step spends a token the step before it did not produce")
+    if any(s["call_to"] == LIFI_FEE_COLLECTOR or s["approve_to"] == LIFI_FEE_COLLECTOR for s in steps[1:]):
+        raise UnsafeRoute("a fee step after the first")
+    first = steps[0]
+    if first["call_to"] == LIFI_FEE_COLLECTOR:
+        if (first["approve_to"] != LIFI_FEE_COLLECTOR or first["send"] != first["receive"] or len(steps) < 2
+                or not first["calldata"].hex().startswith(LIFI_FEE_CALL[2:])):
+            raise UnsafeRoute("an unexpected fee step")
+        token, paid = decode(["address", "(address,uint256)[]"], first["calldata"][4:])
+        fee = sum(int(a) for _, a in paid)
+        if (_addr(token) != first["send"] or any(_addr(r) != LIFI_FEE_RECIPIENT for r, _ in paid)
+                or fee > amount * MAX_FEE or steps[1]["amount"] != amount - fee):
+            raise UnsafeRoute("the fee step pays someone else or too much")
+    elif first["send"] == first["receive"]:
+        raise UnsafeRoute("an unexpected fee step")
+
+
+CHECKS = {"kyber": (decode_kyber, check_kyber), "lifi": (decode_lifi, check_lifi)}
+DECODERS = {p: c[0] for p, c in CHECKS.items()}
 
 
 def check(q, tx, wallet, min_out):
-    """Refuse anything but this provider's own router, an allowance to its own spender, no ETH sent, and calldata
-    that pays `wallet` at least `min_out` of the token asked for while spending exactly the amount quoted."""
+    """Refuse anything but exactly our trade: this provider's own router, an allowance to its own spender, no ETH
+    sent, and calldata that pays `wallet` at least `min_out` of the token asked for while spending exactly the
+    amount quoted, with nothing else in it (check_kyber, check_lifi)."""
     p = q.get("provider")
-    if p not in DECODERS or p not in EXECUTABLE:
+    if p not in CHECKS or p not in EXECUTABLE:
         raise UnsafeRoute("this provider's transactions are not executed")
     allowed = ALLOWED[p]
     if _addr(tx.get("to")) not in allowed["to"]:
@@ -441,13 +526,20 @@ def check(q, tx, wallet, min_out):
         raise UnsafeRoute("spender not on the allowlist")
     if _int(tx.get("value")) != 0:
         raise UnsafeRoute("a swap from USDG or into USDG never sends ETH")
-    d = DECODERS[p](tx.get("data") or "")
+    decoder, pinned = CHECKS[p]
+    try:
+        d = decoder(tx.get("data") or "")
+    except UnsafeRoute:
+        raise
+    except Exception:
+        raise UnsafeRoute("calldata that does not decode")
     if d["receiver"] != _addr(wallet):
         raise UnsafeRoute("the swap pays someone else")
     if d["token_in"] != q["token_in"] or d["token_out"] != q["token_out"] or d["amount_in"] != int(q["amount_in"]):
         raise UnsafeRoute("the swap is not the one quoted")
     if min_out <= 0 or d["min_out"] < min_out:
         raise UnsafeRoute("the swap's own minimum is below ours")
+    pinned(d)
     return d
 
 

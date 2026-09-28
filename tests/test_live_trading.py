@@ -512,9 +512,9 @@ from wormhole import route as R
 KYBER = R.KYBER_ROUTER
 
 
-def kyber_calldata(src, dst, receiver, amount, min_out):
-    desc = (src, dst, [], [], [], [], receiver, amount, min_out, 0, b'')
-    return R.KYBER_SWAP + abi_encode([R.KYBER_T], [(C.ZERO, C.ZERO, b'', desc, b'')]).hex()
+def kyber_calldata(src, dst, receiver, amount, min_out, flags=R.KYBER_FLAGS):
+    desc = (src, dst, [R.KYBER_EXECUTOR], [amount], [], [], receiver, amount, min_out, flags, b'')
+    return R.KYBER_SWAP + abi_encode([R.KYBER_T], [(R.KYBER_EXECUTOR, C.ZERO, b'', desc, b'')]).hex()
 
 
 @pytest.fixture
@@ -537,6 +537,9 @@ def routed(setup, monkeypatch):
     monkeypatch.setattr(R, 'build', build)
     monkeypatch.setattr(R, 'simulate', simulate)
     monkeypatch.setattr(L, 'approve_route', lambda rpc, acct, currency, spender, need: s.approvals.append((currency, spender, need)))
+    s.pins, s.cleared = [], []
+    monkeypatch.setattr(R, 'verify_contracts', lambda rpc, provider: s.pins.append(provider))
+    monkeypatch.setattr(L, 'clear_route_allowance', lambda rpc, db, acct, currency, spender, token, swapped: s.cleared.append((currency, spender, swapped)))
     def sender(rpc, acct, to, data, **kwargs):
         s.sent.append({'to': to, 'data': data, 'value': kwargs.get('value', 0)})
         kwargs['on_broadcast'](HASH)
@@ -552,6 +555,7 @@ def test_a_routed_buy_is_built_for_the_wallet_checked_simulated_and_sent_to_the_
     assert s.sims == [KYBER, None]                                      # first with the exact approval simulated, then as it is on chain
     assert s.approvals == [(C.USDG, KYBER, 10_000_000)]
     assert len(s.sent) == 1 and s.sent[0]['to'] == KYBER and s.sent[0]['value'] == 0
+    assert s.pins and s.pins[0] == 'kyber' and s.cleared == [(C.USDG, KYBER, True)]   # pinned before, nothing left after
     snap = json.loads(s.db.one("SELECT execution FROM trades")['execution'])
     assert snap['provider'] == 'kyber' and snap['router'] == KYBER
     settle_buy(s)
@@ -735,3 +739,54 @@ def test_an_exit_that_fails_on_every_path_is_written_as_an_error(routed, monkeyp
     trader.mark(s.rpc, s.db, True, s.acct)
     assert not s.sent
     assert s.db.one("SELECT kind FROM events WHERE text LIKE 'exit for%failed on every path%'")['kind'] == 'error'
+
+
+
+def test_an_unsafe_route_after_the_approval_leaves_no_allowance(routed, monkeypatch):
+    s = routed
+    original = R.simulate
+    def short_after_approval(rpc, wallet, tx, token_in, token_out, amount_in, approve_to=None):
+        got, spent = original(rpc, wallet, tx, token_in, token_out, amount_in, approve_to)
+        return (1 if approve_to is None else got), spent       # the final simulation delivers almost nothing
+    monkeypatch.setattr(R, 'simulate', short_after_approval)
+    buy(s)
+    assert s.approvals and not s.sent and s.cleared == [(C.USDG, KYBER, False)]
+
+
+def test_a_changed_contract_stops_the_order_before_any_approval(routed, monkeypatch):
+    s = routed
+    monkeypatch.setattr(R, 'verify_contracts', lambda rpc, provider: (_ for _ in ()).throw(R.UnsafeRoute("a pinned contract's code changed")))
+    buy(s)
+    assert not s.approvals and not s.sent and not s.cleared
+
+
+def test_an_allowance_left_standing_is_reset_and_one_left_after_a_swap_is_an_error(db, monkeypatch):
+    state = {'allowance': 7}
+    sent = []
+    monkeypatch.setattr(L, 'erc20_allowance', lambda rpc, currency, spender: state['allowance'])
+    def send(rpc, acct, to, data, **kw):
+        spender, amount = abi_decode(['address', 'uint256'], bytes.fromhex(data[10:]))
+        sent.append((to, spender.lower(), amount))
+        state['allowance'] = amount
+        return HASH, {'status': '0x1'}
+    monkeypatch.setattr(L, 'send_tx', send)
+    acct = SimpleNamespace(address=C.WALLET)
+    L.clear_route_allowance(None, db, acct, C.USDG, KYBER, tok(1), swapped=True)
+    assert sent == [(C.USDG, KYBER, 0)] and db.one("SELECT kind FROM events WHERE text LIKE 'a router left%'")['kind'] == 'error'
+    sent.clear()
+    L.clear_route_allowance(None, db, acct, C.USDG, KYBER, tok(1), swapped=False)
+    assert sent == []                                         # nothing stands: nothing sent
+    state['allowance'] = 5
+    monkeypatch.setattr(L, 'send_tx', lambda *a, **k: (_ for _ in ()).throw(RuntimeError('unresolved transaction')))
+    L.clear_route_allowance(None, db, acct, C.USDG, KYBER, tok(1), swapped=False)
+    assert db.one("SELECT COUNT(*) n FROM events WHERE text LIKE 'a routed allowance could not be reset yet%'")['n'] == 1
+
+
+def test_a_settled_routed_order_is_checked_for_a_standing_allowance(routed, monkeypatch):
+    s = routed
+    buy(s)
+    s.cleared.clear()
+    s.rpc.receipts[HASH] = receipt(s.token, C.WALLET, [970 * 10**18])
+    s.rpc.receipts[HASH]['logs'].append(transfer(C.USDG, C.WALLET, C.HOOK, 10_000_000))
+    trader.reconcile(s.rpc, s.db, s.acct)
+    assert s.cleared == [(C.USDG, KYBER, True)]

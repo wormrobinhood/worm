@@ -246,8 +246,9 @@ def test_lifi_calldata_is_decoded_to_its_receiver_and_minimum():
     j = fx('lifi_buy_KLV')
     q = R.parse_lifi(j, USDG, KLV, 10_000_000)
     d = R.decode_lifi(j['transactionRequest']['data'])
-    assert d == {'token_in': USDG, 'token_out': KLV, 'receiver': R.DUMMY, 'amount_in': 10_000_000,
-                 'min_out': int(j['estimate']['toAmountMin'])}
+    assert {k: d[k] for k in ('token_in', 'token_out', 'receiver', 'amount_in', 'min_out')} == {
+        'token_in': USDG, 'token_out': KLV, 'receiver': R.DUMMY, 'amount_in': 10_000_000, 'min_out': int(j['estimate']['toAmountMin'])}
+    R.check_lifi(d)                                              # the real build is exactly a trade of ours
     with pytest.raises(R.UnsafeRoute, match='someone else'):     # built for the dummy, so never for us
         R.check(q, {**q['tx'], 'spender': q['spender']}, WALLET, 1)
 
@@ -378,3 +379,117 @@ def test_an_exit_refuses_only_a_route_paying_suspiciously_more_than_the_mid(monk
     with pytest.raises(R.NoRoute):
         R.best_quote(KLV, USDG, 10**24, extra=[thin, rich], expect=10_000_000)            # an entry: both ways
     assert R.best_quote(KLV, USDG, 10**24, extra=[own], expect=10_000_000, side='exit')['provider'] == 'pons'   # never banded
+
+
+
+# ---- exactly our trade: malicious calldata the reviewer built, and more ------------------------------
+
+EVIL = '0x' + 'ee' * 20
+
+
+def kyber_built(**change):
+    """The recorded build with fields of its swap description changed, and a quote matching the recorded amounts."""
+    data = fx('kyber_build_KLV')['data']['data']
+    (p,) = decode([R.KYBER_T], bytes.fromhex(data[10:]))
+    p, d = list(p), list(p[3])
+    keys = {'srcReceivers': 2, 'srcAmounts': 3, 'feeReceivers': 4, 'feeAmounts': 5, 'flags': 9, 'permit': 10}
+    for k, v in change.items():
+        if k in keys:
+            d[keys[k]] = v
+    p[3] = tuple(d)
+    if 'callTarget' in change:
+        p[0] = change['callTarget']
+    if 'approveTarget' in change:
+        p[1] = change['approveTarget']
+    q = {'provider': 'kyber', 'token_in': USDG, 'token_out': KLV, 'amount_in': d[7], 'spender': R.KYBER_ROUTER}
+    tx = {'to': R.KYBER_ROUTER, 'value': 0, 'spender': R.KYBER_ROUTER, 'data': R.KYBER_SWAP + encode([R.KYBER_T], [tuple(p)]).hex()}
+    return q, tx, d[6], d[8]
+
+
+def test_the_recorded_kyber_build_is_exactly_our_trade():
+    q, tx, receiver, minimum = kyber_built()
+    assert R.check(q, tx, receiver, minimum)['flags'] == 0x200
+
+
+@pytest.mark.parametrize('change,match', [
+    (dict(flags=0x201), 'flag'),                                              # a partial fill
+    (dict(feeReceivers=(EVIL,), feeAmounts=(290,), flags=0x200 | 0x40 | 0x80), 'fee'),
+    (dict(srcReceivers=(R.KYBER_EXECUTOR, EVIL), srcAmounts=(10_000_000 - 1, 1)), 'split'),
+    (dict(srcReceivers=(EVIL,)), 'split'),
+    (dict(srcAmounts=(9_000_000,)), 'split'),
+    (dict(callTarget=EVIL, srcReceivers=(EVIL,)), 'executor'),
+    (dict(approveTarget=EVIL), 'executor'),
+    (dict(permit=b'\x01' * 32), 'permit'),
+])
+def test_kyber_calldata_that_is_not_exactly_our_trade_is_refused(change, match):
+    q, tx, receiver, minimum = kyber_built(**change)
+    with pytest.raises(R.UnsafeRoute, match=match):
+        R.check(q, tx, receiver, minimum)
+
+
+LIFI_T = ["bytes32", "string", "string", "address", "uint256", f"{R.LIFI_SWAP_T}[]"]
+
+
+def lifi_built(edit):
+    j = fx('lifi_buy_KLV')
+    v = list(decode(LIFI_T, bytes.fromhex(j['transactionRequest']['data'][10:])))
+    swaps = [list(x) for x in v[5]]
+    swaps = edit(swaps) or swaps
+    v[5] = [tuple(x) for x in swaps]
+    q = {'provider': 'lifi', 'token_in': USDG, 'token_out': KLV, 'amount_in': 10_000_000, 'spender': R.LIFI_DIAMOND}
+    tx = {'to': R.LIFI_DIAMOND, 'value': 0, 'spender': R.LIFI_DIAMOND, 'data': R.LIFI_MULTI + encode(LIFI_T, v).hex()}
+    return q, tx, v[3], v[4]
+
+
+def fee_call(token, paid):
+    return bytes.fromhex(R.LIFI_FEE_CALL[2:]) + encode(['address', '(address,uint256)[]'], [token, paid])
+
+
+@pytest.mark.parametrize('edit,match', [
+    # the reviewer's: a second deposit, pulling a token the wallet approved elsewhere
+    (lambda s: [s[0], [s[1][0], s[1][1], '0x' + 'ab' * 20, KLV, 10**24, b'', True], s[1]], 'deposit'),
+    (lambda s: [s[0], [s[1][0], s[1][1], '0x' + 'ab' * 20, KLV, 10**24, b'', False], s[1]], 'did not produce'),
+    (lambda s: s.__setitem__(1, [s[1][0], s[1][1], USDG, KLV, s[1][4], s[1][5], True]), 'deposit'),
+    (lambda s: s.__setitem__(0, [s[0][0], s[0][1], USDG, USDG, s[0][4], fee_call(USDG, [(EVIL, 25000)]), True]), 'someone else'),
+    (lambda s: s.__setitem__(0, [s[0][0], s[0][1], USDG, USDG, s[0][4], fee_call(USDG, [(R.LIFI_FEE_RECIPIENT, 200_000)]), True]), 'too much'),
+    (lambda s: s.__setitem__(0, [EVIL, EVIL, USDG, USDG, s[0][4], s[0][5], True]), 'fee step'),
+    (lambda s: [s[0], s[1], [R.LIFI_FEE_COLLECTOR, R.LIFI_FEE_COLLECTOR, KLV, KLV, 1, fee_call(KLV, [(R.LIFI_FEE_RECIPIENT, 1)]), False]], 'fee step after'),
+    (lambda s: s.__setitem__(1, [s[1][0], s[1][1], USDG, KLV, s[1][4] + 1, s[1][5], False]), 'too much'),   # spends more than is left
+])
+def test_lifi_calldata_that_is_not_exactly_our_trade_is_refused(edit, match):
+    q, tx, receiver, minimum = lifi_built(edit)
+    with pytest.raises(R.UnsafeRoute, match=match):
+        R.check(q, tx, receiver, minimum)
+
+
+def test_the_recorded_lifi_build_is_exactly_our_trade():
+    q, tx, receiver, minimum = lifi_built(lambda s: None)
+    assert R.check(q, tx, receiver, minimum)['steps'][0]['call_to'] == R.LIFI_FEE_COLLECTOR
+
+
+class CodeRpc:
+    """eth_getCode with the pinned code (keccak matching is faked by answering the hash's preimage map), facets."""
+    def __init__(self, codes, facet=R.LIFI_FACET):
+        self.codes, self.facet = codes, facet
+
+    def call(self, method, params):
+        if method == 'eth_getCode':
+            return self.codes.get(params[0], '0x')
+        assert method == 'eth_call' and params[0]['to'] == R.LIFI_DIAMOND and params[0]['data'].startswith(R.FACET_OF)
+        return '0x' + self.facet[2:].rjust(64, '0')
+
+
+def test_contracts_are_pinned_by_code_and_facet_and_fail_closed(monkeypatch):
+    from eth_utils import keccak
+    codes = {a: '0x60' + f'{i:02x}' for i, a in enumerate(R.CODE_HASHES)}
+    monkeypatch.setattr(R, 'CODE_HASHES', {a: '0x' + keccak(hexstr=c).hex() for a, c in codes.items()})
+    R.verify_contracts(CodeRpc(codes), 'kyber')
+    R.verify_contracts(CodeRpc(codes), 'lifi')
+    with pytest.raises(R.UnsafeRoute, match='code changed'):
+        R.verify_contracts(CodeRpc({**codes, R.KYBER_EXECUTOR: '0x6099'}), 'kyber')
+    with pytest.raises(R.UnsafeRoute, match='code changed'):
+        R.verify_contracts(CodeRpc({**codes, R.LIFI_DIAMOND: '0x'}), 'lifi')
+    with pytest.raises(R.UnsafeRoute, match='facet'):
+        R.verify_contracts(CodeRpc(codes, facet=EVIL), 'lifi')
+    with pytest.raises(R.UnsafeRoute):
+        R.verify_contracts(CodeRpc(codes), 'relay')
