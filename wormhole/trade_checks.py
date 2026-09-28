@@ -233,7 +233,7 @@ def _limits(impact, roundtrip, fee, dollars):
         raise ValueError('price impact, round-trip loss or gas exceeds the pilot limit')
 
 
-def entry(rpc, db, token, dollars, *, reference=None, fallback=False, providers=route.PROVIDERS):
+def entry(rpc, db, token, dollars, *, reference=None, fallback=False, providers=route.PROVIDERS, direct=True):
     """A buy of `dollars` USDG of `token` by the best checked route, with its round trip back to USDG by the
     best route for the tokens it would at least get: every hop's fee, the creator tax, the impact, the
     aggregator's own fee and gas on both legs. `reference` is the mid the caller just read from the token's
@@ -241,7 +241,8 @@ def entry(rpc, db, token, dollars, *, reference=None, fallback=False, providers=
     believed. Raw amounts are USDG (6 decimals) and the token (18).
 
     fallback (paper only): when no route answers and the pool trades against ETH, the pool is quoted directly as
-    before routing; that fill is marked live_fill=False, since live holds no ETH to make it."""
+    before routing; that fill is marked live_fill=False, since live holds no ETH to make it. `providers` and
+    `direct` narrow the candidates (live, re-quoting through the provider it has just approved)."""
     if rpc is None or not math.isfinite(dollars) or dollars <= 0:
         raise ValueError('execution quotes unavailable')
     started = time.time()
@@ -251,7 +252,7 @@ def entry(rpc, db, token, dollars, *, reference=None, fallback=False, providers=
         raise ValueError('fresh reference price unavailable')
     amount = int(round(dollars * 10 ** 6))
     try:
-        buy = route.best_quote(C.USDG, token, amount, extra=[_direct(rpc, pk, C.USDG, token, amount)],
+        buy = route.best_quote(C.USDG, token, amount, extra=[_direct(rpc, pk, C.USDG, token, amount) if direct else None],
                                expect=dollars / price * 1e18, max_fee_usd=dollars * route.MAX_FEE, providers=providers)
     except route.NoRoute:
         if not fallback or pk['quote'] != C.ZERO:
@@ -260,7 +261,7 @@ def entry(rpc, db, token, dollars, *, reference=None, fallback=False, providers=
     out = buy['out']
     minimum = out * 9700 // 10000
     sell = route.best_quote(token, C.USDG, minimum, extra=[_direct(rpc, pk, token, C.USDG, minimum)],
-                            expect=minimum / 1e18 * price * 1e6, max_fee_usd=dollars * route.MAX_FEE, providers=providers)
+                            expect=minimum / 1e18 * price * 1e6, max_fee_usd=dollars * route.MAX_FEE)
     fee, sell_fee = gas_cost(rpc, buy['gas']), gas_cost(rpc, sell['gas'])
     impact = 1 - (out / 1e18 * price / dollars)
     roundtrip = (sell['out'] * (1 - SLIPPAGE) / 1e6 - fee - sell_fee) / dollars
@@ -301,7 +302,7 @@ def _entry_direct(rpc, pk, token, dollars, price, started):
 
 
 def exit_quote(rpc, pk, token, amount, *, tolerance=None, cached_prices=False, fallback=False, reference=None,
-               providers=route.TRADE):
+               providers=route.TRADE, direct=True):
     """A sell of `amount` tokens into USDG by the best checked route (the token's own pool included when it
     trades against USDG). `reference`, the pool's USD mid when the caller has it, sets the band a route must sit
     in. fallback (paper only): with no route and an ETH pool, the pool is quoted directly, less FALLBACK_HAIRCUT,
@@ -318,8 +319,8 @@ def exit_quote(rpc, pk, token, amount, *, tolerance=None, cached_prices=False, f
         raise ValueError('fresh cached gas pricing unavailable')
     expect = amount / 1e18 * reference * 1e6 if reference else None
     try:
-        q = route.best_quote(token, C.USDG, amount, extra=[_direct(rpc, pk, token, C.USDG, amount)], expect=expect,
-                             providers=providers)
+        q = route.best_quote(token, C.USDG, amount, extra=[_direct(rpc, pk, token, C.USDG, amount) if direct else None],
+                             expect=expect, providers=providers)
         (unit, usd), out, gas, direction, haircut = (10 ** 6, 1.0), q['out'], q['gas'], q.get('direction'), 0.0
     except route.NoRoute:
         if not fallback or pk['quote'] != C.ZERO:

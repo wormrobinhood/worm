@@ -372,7 +372,7 @@ def _mark(rpc, db, live, acct, mids):
         if p["mode"] == "live":
             db.x("UPDATE positions SET peak_usd=? WHERE token=?", (st["peak"], p["token"]))
             if live and acct and LIVE_SELL_READY:
-                live_trading.sell(rpc, db, acct, p, st, frac, why)
+                live_trading.sell(rpc, db, acct, p, st, frac, why, mid=px)
             else:
                 _say_once(db, "trade", f"sell ${p['symbol']} ({why}): live selling needs a verified rehearsal; deferred", p["token"])
             continue
@@ -401,5 +401,5 @@ def summary(db):
             "budget": live_trading.budget(db),
             "policy": ("" if C.TRADING else "off by policy until the strategy is proven on paper; only the creator turns it on; when on: ")
                       + f"readiness ≥ {RD.READY_AT}% first (evidence only, see the readiness panel); live follows paper: only a token the paper book has just bought under an entry rule whose paper cohort passed; size min(${MAX_POSITION_USD:.0f}, 10% of surplus, what is left of the lifetime budget); "
-                      f"≤ {MAX_OPEN} open; ≤ ${MAX_DAILY_USD:.0f} a day; only from the surplus above the 90-day reserve; verified USDG pools only; losses use the lifetime budget up and profits never refill it (they go to the burn); daily gross loss breaker applies to entries"
+                      f"≤ {MAX_OPEN} open; ≤ ${MAX_DAILY_USD:.0f} a day; only from the surplus above the 90-day reserve; any Pons pool, bought and sold from USDG by the best checked route (an allowlisted aggregator or the token's own USDG pool), simulated before signing; losses use the lifetime budget up and profits never refill it (they go to the burn); daily gross loss breaker applies to entries"
                       + ("" if LIVE_SELL_READY else "; live buys wait for live sells")}

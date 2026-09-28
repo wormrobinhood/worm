@@ -502,3 +502,154 @@ def test_paper_and_receipt_settlement_share_the_same_exit_basis(setup, monkeypat
     assert decisions[0] == decisions[1]
     assert decisions[0][1][0] == 0  # the old mid-price reference would have sold here
     assert decisions[0][-1][0] == 1
+
+
+# ---- routed orders (any pair, through an allowlisted aggregator) ----------------------------------------
+
+from eth_abi import decode as abi_decode, encode as abi_encode
+from wormhole import route as R
+
+KYBER = R.KYBER_ROUTER
+
+
+def kyber_calldata(src, dst, receiver, amount, min_out):
+    desc = (src, dst, [], [], [], [], receiver, amount, min_out, 0, b'')
+    return R.KYBER_SWAP + abi_encode([R.KYBER_T], [(C.ZERO, C.ZERO, b'', desc, b'')]).hex()
+
+
+@pytest.fixture
+def routed(setup, monkeypatch):
+    """The setup's buy, routed through KyberSwap: build, simulation and approvals recorded, never on the network."""
+    s = setup
+    s.quote.update(provider='kyber', route=R.candidate('kyber', C.USDG, s.token, 10_000_000, 1000 * 10**18, 500_000, 0,
+                                                        KYBER, KYBER, route_summary={}))
+    s.tx = {}                      # overrides for the built transaction
+    s.sim = {'got': 990 * 10**18, 'spent': 10_000_000}
+    s.approvals, s.sims, s.sent, s.built = [], [], [], []
+    def build(q, wallet, deadline):
+        s.built.append(wallet)
+        t = {'receiver': wallet, 'min_out': q['out'] * 975 // 1000, 'amount': q['amount_in'], 'to': KYBER, 'value': 0, **s.tx}
+        return {'to': t['to'], 'value': t['value'], 'spender': KYBER, 'out': q['out'],
+                'data': kyber_calldata(q['token_in'], q['token_out'], t['receiver'], t['amount'], t['min_out'])}
+    def simulate(rpc, wallet, tx, token_in, token_out, amount_in, approve_to=None):
+        s.sims.append(approve_to)
+        return (s.sim['got'], s.sim['spent']) if token_in == C.USDG else (s.sim['usdg'], amount_in)
+    monkeypatch.setattr(R, 'build', build)
+    monkeypatch.setattr(R, 'simulate', simulate)
+    monkeypatch.setattr(L, 'approve_route', lambda rpc, acct, currency, spender, need: s.approvals.append((currency, spender, need)))
+    def sender(rpc, acct, to, data, **kwargs):
+        s.sent.append({'to': to, 'data': data, 'value': kwargs.get('value', 0)})
+        kwargs['on_broadcast'](HASH)
+        return HASH, None
+    monkeypatch.setattr(L, 'send_tx', sender)
+    return s
+
+
+def test_a_routed_buy_is_built_for_the_wallet_checked_simulated_and_sent_to_the_allowlisted_router(routed):
+    s = routed
+    buy(s)
+    assert s.built == [C.WALLET, C.WALLET]                              # built afresh after the approval
+    assert s.sims == [KYBER, None]                                      # first with the exact approval simulated, then as it is on chain
+    assert s.approvals == [(C.USDG, KYBER, 10_000_000)]
+    assert len(s.sent) == 1 and s.sent[0]['to'] == KYBER and s.sent[0]['value'] == 0
+    snap = json.loads(s.db.one("SELECT execution FROM trades")['execution'])
+    assert snap['provider'] == 'kyber' and snap['router'] == KYBER
+    settle_buy(s)
+    p = s.db.one('SELECT * FROM positions')
+    assert p['qty_raw'] == str(970 * 10**18) and p['quote'] == 'USDG'
+
+
+@pytest.mark.parametrize('unsafe', ['router', 'value', 'receiver', 'minimum', 'amount', 'short', 'overspend', 'relay', 'stale'])
+def test_an_unsafe_route_is_refused_before_any_approval(routed, unsafe):
+    s = routed
+    if unsafe == 'router': s.tx['to'] = '0x' + '66' * 20
+    if unsafe == 'value': s.tx['value'] = 1
+    if unsafe == 'receiver': s.tx['receiver'] = '0x' + '88' * 20
+    if unsafe == 'minimum': s.tx['min_out'] = 1                          # the router's own floor under our slippage cap
+    if unsafe == 'amount': s.tx['amount'] = 10_000_001
+    if unsafe == 'short': s.sim['got'] = 969 * 10**18                    # the simulation delivers less than our minimum
+    if unsafe == 'overspend': s.sim['spent'] = 10_000_001
+    if unsafe == 'relay': s.quote.update(provider='relay', route=R.candidate('relay', C.USDG, s.token, 10_000_000, 10**21, 1, 0, R.RELAY_PROXY, R.RELAY_PROXY))
+    if unsafe == 'stale': s.quote['route']['expires_at'] = time.time() - 1
+    buy(s)
+    assert not s.approvals and not s.sent and not s.db.q('SELECT * FROM trades')
+    assert s.db.one('SELECT blocked_until FROM trade_intents WHERE token=?', (s.token,))['blocked_until'] > time.time()
+
+
+def test_a_different_winner_after_the_approval_is_not_bought(routed, monkeypatch):
+    s = routed
+    quotes = iter([dict(s.quote), {**s.quote, 'provider': 'lifi', 'route': R.candidate('lifi', C.USDG, s.token, 10_000_000,
+                                                                                         10**21, 1, .025, R.LIFI_DIAMOND, R.LIFI_DIAMOND)}])
+    monkeypatch.setattr(L.execution, 'entry', lambda *a, **kw: next(quotes))
+    buy(s)
+    assert s.approvals and not s.sent and not s.db.q('SELECT * FROM trades')
+
+
+def test_the_requote_after_approval_asks_only_the_approved_provider(routed, monkeypatch):
+    s = routed
+    seen = []
+    monkeypatch.setattr(L.execution, 'entry', lambda *a, **kw: seen.append(kw) or dict(s.quote))
+    buy(s)
+    assert 'providers' not in seen[0] and seen[1]['providers'] == ('kyber',) and seen[1]['direct'] is False
+
+
+def test_a_routed_exit_sells_through_the_allowlisted_router_with_an_exact_approval(routed, monkeypatch):
+    s = routed
+    buy(s); settle_buy(s)
+    monkeypatch.setattr(trader.poolstate, 'position_mids', lambda rpc, rows: ({s.token: .003}, {s.token}))
+    s.sim['usdg'] = 2_050_000
+    seen = []
+    def quote(rpc, pk, token, amount, **kw):
+        seen.append(kw)
+        return {**s.quote, 'amount_raw': amount, 'minimum_raw': 2_000_000, 'provider': 'kyber',
+                'route': R.candidate('kyber', token, C.USDG, amount, 2_060_000, 500_000, 0, KYBER, KYBER, route_summary={})}
+    monkeypatch.setattr(L.execution, 'exit_quote', quote)
+    s.rpc.receipts.clear()
+    s.sent.clear(); s.approvals.clear()
+    trader.mark(s.rpc, s.db, True, s.acct)
+    assert s.approvals == [(s.token, KYBER, 970 * 10**18)] and s.sent and s.sent[0]['to'] == KYBER
+    assert seen[0]['reference'] == .003 and seen[1]['providers'] == ('kyber',)       # the mid that triggered it bands the route
+    (params,) = abi_decode([R.KYBER_T], bytes.fromhex(s.sent[0]['data'][10:]))
+    assert params[3][0].lower() == s.token and params[3][1].lower() == C.USDG and params[3][6].lower() == C.WALLET
+
+
+def test_routed_approvals_are_exact_zeroed_first_and_never_unlimited(monkeypatch):
+    acct = SimpleNamespace(address=C.WALLET)
+    state = {'allowance': 5}
+    sent = []
+    def call_fn(rpc, to, sig, out, types, args):
+        assert sig == 'allowance(address,address)' and args == [C.WALLET, KYBER]
+        return [state['allowance']]
+    def send(rpc, acct, to, data, **kw):
+        spender, amount = abi_decode(['address', 'uint256'], bytes.fromhex(data[10:]))
+        sent.append((to, spender.lower(), amount))
+        state['allowance'] = amount
+        return HASH, {'status': '0x1'}
+    monkeypatch.setattr(L, 'call_fn', call_fn)
+    monkeypatch.setattr(L, 'send_tx', send)
+    L.approve_route(None, acct, C.USDG, KYBER, 10_000_000)
+    assert sent == [(C.USDG, KYBER, 0), (C.USDG, KYBER, 10_000_000)]            # an old allowance is zeroed first
+    sent.clear()
+    L.approve_route(None, acct, C.USDG, KYBER, 10_000_000)
+    assert sent == []                                                            # exactly right already: nothing sent
+    for bad in ((C.USDG, KYBER, 2**256 - 1), (C.USDG, KYBER, 0), (C.USDG, R.RELAY_PROXY, 1), (C.USDG, C.PERMIT2, 1),
+                (C.USDG, '0x' + '66' * 20, 1)):
+        with pytest.raises(ValueError):
+            L.approve_route(None, acct, *bad)
+    monkeypatch.setattr(L, 'send_tx', lambda *a, **k: (HASH, {'status': '0x1'}))          # a token that ignores approve
+    with pytest.raises(RuntimeError, match='readback'):
+        L.approve_route(None, acct, C.USDG, KYBER, 7)
+
+
+def test_only_allowlisted_routers_are_journaled_or_sent_to():
+    assert L.routers() == {C.UNIVERSAL_ROUTER, R.KYBER_ROUTER, R.LIFI_DIAMOND}
+    with pytest.raises(ValueError):
+        L.submit(None, None, None, tok(1), 'T', 'buy', 1, {'expires_at': time.time() + 30, 'pool': {}}, {}, int(time.time()) + 60,
+                 tx={'to': R.RELAY_PROXY, 'data': '0x', 'value': 0})
+
+
+def test_no_standing_exit_approval_for_a_pool_not_against_usdg(db, monkeypatch):
+    trader.ensure_tables(db)
+    db.x("INSERT INTO positions(token,symbol,status,mode,pool_key) VALUES(?,?,?,?,?)", (tok(1), 'T', 'open', 'live', json.dumps({'quote': C.ZERO})))
+    monkeypatch.setattr(L, 'approve_exact', lambda *a, **k: pytest.fail('a Permit2 approval for a pool the router cannot sell into'))
+    assert L.prepare_exit(None, db, SimpleNamespace(address=C.WALLET), tok(1), 10**18) is False

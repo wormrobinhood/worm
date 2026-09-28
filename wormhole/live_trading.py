@@ -1,7 +1,10 @@
 """Bounded USDG trading pilot. Integration remains disabled pending a funded exit rehearsal.
 
 Live follows paper: the only thing ever bought is a token the paper book has just bought under an entry
-rule whose prospective paper cohort holds a fresh pass, and only from its verified USDG pool. Entries are
+rule whose prospective paper cohort holds a fresh pass, paid in USDG through the same best checked route the
+paper fill used (an allowlisted aggregator router, or the token's own USDG pool), whatever the pool is paired
+with. A routed swap is built for this wallet only after exact approvals, decoded and simulated from the wallet
+before it is signed, and settled from its receipt like any other. Entries are
 capped three ways: per position, per day, and by a lifetime budget that losses use up and profits never
 refill. Only policy-confirmed Transfer evidence changes holdings. An order that failed before the key was
 used is released; one whose hash was not stored is matched to the private journal by its calldata, and
@@ -15,10 +18,10 @@ from decimal import Decimal
 import rlp
 from eth_abi import encode
 from eth_utils import keccak
-from . import config as C, finality, lab, outbox, poolstate, strategy_validation, trade_checks as execution, trade_risk
+from . import config as C, finality, lab, outbox, poolstate, route, strategy_validation, trade_checks as execution, trade_risk
 from .chain import call_fn, selector, addr_from_topic
 from .pons import TRANSFER
-from .prices import token_prices, usable_price
+from .prices import eth_usd, token_prices, usable_price
 from .tx import send_tx
 
 ENTRY_MAX_AGE_S = 120         # a paper entry older than this is no longer the same trade
@@ -98,6 +101,42 @@ def approve_exact(rpc, acct, currency, need, ttl=None):
     return expiry
 
 
+def erc20_allowance(rpc, currency, spender):
+    return int(call_fn(rpc, currency, 'allowance(address,address)', ['uint256'], ['address', 'address'], [C.WALLET, spender])[0])
+
+
+def approve_route(rpc, acct, currency, spender, need):
+    """An exact ERC-20 allowance for one routed swap: `spender`, an allowlisted aggregator router, may pull exactly
+    `need` of `currency`, never more and never "unlimited". A different allowance left from before is first set
+    to zero (some tokens refuse to move a non-zero allowance to another non-zero one). Read back before anything
+    relies on it. The router pulls all of it in the swap, which the simulation checks, so nothing stands after."""
+    routers = {s for p in route.EXECUTABLE if p != 'pons' for s in route.ALLOWED[p]['spender']}
+    if acct.address.lower() != C.WALLET or spender not in routers or not 0 < need < 2 ** 255:
+        raise ValueError('invalid routed approval')
+    current = erc20_allowance(rpc, currency, spender)
+    for amount in [] if current == need else [need] if current == 0 else [0, need]:
+        data = selector('approve(address,uint256)') + encode(['address', 'uint256'], [spender, amount]).hex()
+        _, rc = send_tx(rpc, acct, currency, data, poll_s=TRADE_POLL_S)
+        if not rc or rc.get('status') != '0x1':
+            raise RuntimeError('routed approval did not settle')
+    if erc20_allowance(rpc, currency, spender) != need:
+        raise RuntimeError('routed approval failed readback')
+
+
+def route_tx(rpc, quote, approved):
+    """The chosen aggregator's transaction for this wallet, refused unless it goes to that provider's own router,
+    sends no ETH, pays this wallet at least the quote's minimum (our slippage cap, decoded from the calldata) and
+    spends exactly the amount quoted; then simulated from the wallet at the latest block (with the exact approval
+    it still needs when `approved` is False), which must deliver the minimum and spend exactly that amount."""
+    q = quote['route']
+    if time.time() >= min(quote['expires_at'], q['expires_at']):
+        raise ValueError('stale route quote')
+    tx = route.build(q, C.WALLET, int(time.time()) + execution.SWAP_TTL)
+    route.check(q, tx, C.WALLET, int(quote['minimum_raw']))
+    route.verify_simulation(rpc, C.WALLET, q, tx, int(quote['minimum_raw']), approve_to=None if approved else q['spender'])
+    return tx
+
+
 def net_transfer(receipt, currency, wallet):
     value, seen = 0, False
     for lg in receipt.get('logs') or []:
@@ -112,16 +151,30 @@ def net_transfer(receipt, currency, wallet):
     return value if seen else None
 
 
-def submit(rpc, db, acct, token, symbol, side, usd, quote, snapshot, approval_expiry):
+def routers():
+    """Every address a trading transaction may be sent to: the Universal Router and the allowlisted aggregators."""
+    return {a for p in route.EXECUTABLE for a in route.ALLOWED[p]['to']}
+
+
+def submit(rpc, db, acct, token, symbol, side, usd, quote, snapshot, approval_expiry, tx=None):
+    """One swap: the pool's own through the Universal Router, or `tx`, an aggregator's transaction route_tx built and
+    checked. Its intent is stored before anything is signed."""
     from . import trader
     deadline = min(int(time.time()) + execution.SWAP_TTL, approval_expiry)
     if time.time() >= quote['expires_at'] or deadline <= time.time():
         raise ValueError('stale swap quote')
     currency_in, currency_out = (C.USDG, token) if side == 'buy' else (token, C.USDG)
-    data = trader.swap_calldata(quote['pool'], quote['direction'], quote['amount_raw'], quote['minimum_raw'],
-                               currency_in, currency_out, deadline=deadline)
+    if tx is None:
+        to = C.UNIVERSAL_ROUTER
+        data = trader.swap_calldata(quote['pool'], quote['direction'], quote['amount_raw'], quote['minimum_raw'],
+                                   currency_in, currency_out, deadline=deadline)
+    else:
+        to, data = tx['to'], tx['data']
+        if to not in routers() or to == C.UNIVERSAL_ROUTER or int(tx.get('value') or 0) != 0:
+            raise ValueError('routed transaction outside the allowlist')
     snapshot = {**snapshot, 'pool': quote['pool'], 'amount_raw': str(quote['amount_raw']),
                 'minimum_raw': str(quote['minimum_raw']), 'gas_usd': quote['gas_usd'], 'wallet': C.WALLET,
+                'provider': quote.get('provider') or 'pons', 'router': to,
                 'calldata': '0x' + keccak(hexstr=data).hex()}       # how a journaled transaction is matched back to this order
     with db.transaction():
         if db.one("SELECT 1 FROM trades WHERE token=? AND note IN ('PENDING','REVIEW')", (token,)):
@@ -132,7 +185,7 @@ def submit(rpc, db, acct, token, symbol, side, usd, quote, snapshot, approval_ex
         # send_tx invokes this before broadcast; failures leave the private outbox held for review.
         db.x('UPDATE trades SET tx=? WHERE id=? AND note=\'PENDING\'', (h, tid))
     try:
-        send_tx(rpc, acct, C.UNIVERSAL_ROUTER, data, wait=True, on_broadcast=persist_hash,
+        send_tx(rpc, acct, to, data, wait=True, on_broadcast=persist_hash,
                 valid_until=min(deadline, quote['expires_at']), poll_s=TRADE_POLL_S)
     except Exception as e:
         row = db.one('SELECT tx FROM trades WHERE id=?', (tid,))
@@ -151,15 +204,15 @@ def submit(rpc, db, acct, token, symbol, side, usd, quote, snapshot, approval_ex
 
 
 def _journaled_calldata():
-    """{keccak(calldata): hash} for every transaction in the private journal sent to the router, leaving out
+    """{keccak(calldata): hash} for every transaction in the private journal sent to a trading router, leaving out
     those the journal proves never executed (abandoned before broadcast, dropped for a used nonce)."""
-    out = {}
+    out, targets = {}, {a[2:] for a in routers()}
     with outbox.journal() as j:
         rows = j.execute("SELECT hash, raw FROM intents WHERE state NOT IN ('abandoned','dropped')").fetchall()
     for r in rows:
         try:
             fields = rlp.decode(bytes.fromhex(r['raw'][2:]))
-            if len(fields) >= 6 and fields[3].hex() == C.UNIVERSAL_ROUTER[2:]:
+            if len(fields) >= 6 and fields[3].hex() in targets:
                 out['0x' + keccak(fields[5]).hex()] = r['hash']
         except Exception:
             continue
@@ -203,12 +256,13 @@ def liquidation_marks(rpc, db):
 
 
 def pool_mid(rpc, pk, token):
-    """The pool's mid at the latest block (poolstate: one storage read), the reference the paper book's entry
-    used. Raises when the node does not answer: no order is measured against a guess. For real money the pool is
+    """The pool's mid at the latest block (poolstate: one storage read, in USD through ETH's or the stock's fresh
+    price when the pool is not against USDG), the reference the paper book's entry used. Raises when the node does
+    not answer or no fresh price converts it: no order is measured against a guess. For real money the pool is
     also checked against an independent reading: when the price API has a fresh price and the two disagree by
     more than MID_API_BAND, the pool may be mid-manipulation (one swap moves a thin pool) and nothing is bought.
     No API price is no veto: the pool's own quote still has to pass every check in trade_checks.entry."""
-    mid = poolstate.mids(rpc, {token: pk}, None).get(token)     # a USDG pool: no ETH price needed
+    mid = poolstate.mids(rpc, {token: pk}, eth_usd(strict=True) if pk.get('quote') == C.ZERO else None).get(token)
     if not mid:
         raise ValueError('pool price unavailable')
     try:
@@ -223,7 +277,8 @@ def pool_mid(rpc, pk, token):
 def decide(rpc, db, runway, acct, ready):
     """Buy what the paper book has just bought, when every gate is open: the policy switch, the sell release
     gate, readiness, a fresh paper-cohort pass for that entry rule, real surplus, no unresolved order, the
-    loss breaker, the per-position, daily and lifetime limits, and a verified USDG pool with a round-trip quote."""
+    loss breaker, the per-position, daily and lifetime limits, and a verified Pons pool with a round-trip route quote
+    that sits within the band of the pool's own mid."""
     from . import trader
     if not C.TRADING or not trader.LIVE_SELL_READY or not acct or acct.address.lower() != C.WALLET or not ready or not ready.get('ready'):
         return
@@ -243,7 +298,7 @@ def decide(rpc, db, runway, acct, ready):
         try:
             pk = execution.pool(rpc, db, r['token'])
         except Exception:
-            # Not a verified USDG pool: outside the pilot, and not worth a line in the log every cycle.
+            # No verified Pons pool: outside the pilot, and not worth a line in the log every cycle.
             db.x("INSERT OR REPLACE INTO trade_intents(token,arm,scored_at,status) VALUES(?,?,?,'unsupported')",
                  (r['token'], validation['arm'], r['opened_ts']))
             continue
@@ -254,13 +309,27 @@ def decide(rpc, db, runway, acct, ready):
             balance = call_fn(rpc, C.USDG, 'balanceOf(address)', ['uint256'], ['address'], [C.WALLET])[0]
             if balance < quote['amount_raw']:
                 continue
+            provider = quote.get('provider') or 'pons'
+            if provider != 'pons':
+                route_tx(rpc, quote, approved=False)       # refused or short in simulation: no approval gas spent
             attempt = db.insert('INSERT INTO trade_attempts(ts,token,side,gas_usd) VALUES(?,?,?,?)',
                                 (int(time.time()), r['token'], 'buy', quote['gas_usd']))
-            expiry = approve_exact(rpc, acct, C.USDG, quote['amount_raw'])
-            # approvals may take time; refresh both directions, and the mid they are measured against
-            quote = execution.entry(rpc, db, r['token'], size, reference=pool_mid(rpc, pk, r['token']))
+            tx = None
+            if provider == 'pons':
+                expiry = approve_exact(rpc, acct, C.USDG, quote['amount_raw'])
+            else:
+                approve_route(rpc, acct, C.USDG, quote['route']['spender'], quote['amount_raw'])
+                expiry = int(time.time()) + execution.SWAP_TTL
+            # approvals may take time; refresh both directions, through the provider approved, and the mid they are
+            # measured against. A different winner now would need another approval: the order waits instead.
+            quote = execution.entry(rpc, db, r['token'], size, reference=pool_mid(rpc, pk, r['token']),
+                                    providers=() if provider == 'pons' else (provider,), direct=provider == 'pons')
+            if (quote.get('provider') or 'pons') != provider or quote['amount_raw'] > balance:
+                raise ValueError('the route changed after approval')
+            if provider != 'pons':
+                tx = route_tx(rpc, quote, approved=True)
             tid = submit(rpc, db, acct, r['token'], r['symbol'], 'buy', size, quote,
-                   {'arm': validation['arm'], 'policy': policy, 'rule': r['strategy']}, expiry)
+                   {'arm': validation['arm'], 'policy': policy, 'rule': r['strategy']}, expiry, tx=tx)
             db.x('UPDATE trade_attempts SET trade_id=? WHERE id=?', (tid, attempt))
             reconcile(rpc, db, acct)  # the receipt is usually in hand: open the position and stand its exit approval now
             return  # at most one new position per call
@@ -274,7 +343,14 @@ def decide(rpc, db, runway, acct, ready):
 def prepare_exit(rpc, db, acct, token, qty_raw):
     """Stand the sell approvals as soon as a buy settles, for exactly what was bought, so a stop is one
     transaction instead of three. The router can only pull what this wallet's own swap spends. A failure here
-    costs nothing but time: sell() approves again when it has to."""
+    costs nothing but time: sell() approves again when it has to. Only for a USDG pool, where the pool's own
+    route may sell: an aggregator's exact allowance is granted at the sell, to whichever router wins then."""
+    try:
+        pk = json.loads((db.one("SELECT pool_key FROM positions WHERE token=?", (token,)) or {}).get('pool_key') or 'null') or {}
+    except ValueError:
+        pk = {}
+    if pk.get('quote') != C.USDG:
+        return False
     try:
         approve_exact(rpc, acct, token, int(qty_raw), ttl=EXIT_APPROVAL_S)
         return True
@@ -283,7 +359,9 @@ def prepare_exit(rpc, db, acct, token, qty_raw):
         return False
 
 
-def sell(rpc, db, acct, p, st, frac, why):
+def sell(rpc, db, acct, p, st, frac, why, mid=None):
+    """Sell `frac` of a live position into USDG by the best checked route; `mid` is the pool's price that
+    triggered the exit, the band a route must sit in."""
     from . import trader
     if not trader.LIVE_SELL_READY or not acct or acct.address.lower() != C.WALLET:
         return
@@ -303,13 +381,27 @@ def sell(rpc, db, acct, p, st, frac, why):
         if balance < remaining or amount <= 0:
             raise ValueError('tracked holdings do not match available balance')
         pk = json.loads(p['pool_key'])
-        quote = execution.exit_quote(rpc, pk, p['token'], amount, tolerance=tolerance)  # check liquidity before spending approval gas
+        # check liquidity (and a routed transaction, in simulation) before spending approval gas
+        quote = execution.exit_quote(rpc, pk, p['token'], amount, tolerance=tolerance, reference=mid)
+        provider = quote.get('provider') or 'pons'
+        if provider != 'pons':
+            route_tx(rpc, quote, approved=False)
         attempt = db.insert('INSERT INTO trade_attempts(ts,token,side,gas_usd) VALUES(?,?,?,?)',
                             (int(time.time()), p['token'], 'sell', quote['gas_usd']))
-        expiry = approve_exact(rpc, acct, p['token'], amount, ttl=EXIT_APPROVAL_S)
-        quote = execution.exit_quote(rpc, pk, p['token'], amount, tolerance=tolerance)
+        tx = None
+        if provider == 'pons':
+            expiry = approve_exact(rpc, acct, p['token'], amount, ttl=EXIT_APPROVAL_S)
+        else:
+            approve_route(rpc, acct, p['token'], quote['route']['spender'], amount)
+            expiry = int(time.time()) + execution.SWAP_TTL
+        quote = execution.exit_quote(rpc, pk, p['token'], amount, tolerance=tolerance, reference=mid,
+                                     providers=() if provider == 'pons' else (provider,), direct=provider == 'pons')
+        if (quote.get('provider') or 'pons') != provider:
+            raise ValueError('the route changed after approval')
+        if provider != 'pons':
+            tx = route_tx(rpc, quote, approved=True)
         tid = submit(rpc, db, acct, p['token'], p['symbol'], 'sell', 0, quote,
-               {'state': st, 'reason': why, 'expected_remaining': str(remaining)}, expiry)
+               {'state': st, 'reason': why, 'expected_remaining': str(remaining)}, expiry, tx=tx)
         db.x('UPDATE trade_attempts SET trade_id=? WHERE id=?', (tid, attempt))
         reconcile(rpc, db, acct)
     except Exception:
