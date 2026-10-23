@@ -1,6 +1,6 @@
 # Every dependency pinned to the version installed and tested on 2026-09-12.
 # Deployment installs requirements.lock with --require-hashes. Regenerate it when updating dependencies.
-Pillow==12.3.0
+Pillow==13.0.0
 eth-abi==6.0.0
 eth-account==0.13.7
 eth-hash[pycryptodome]==0.8.0
